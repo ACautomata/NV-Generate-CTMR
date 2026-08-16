@@ -1,0 +1,2 @@
+# 数据目录（BraTS 等）— 许可受限且为大型二进制，永不入库（见 datasets/brats2023_samples/MANIFEST.md）
+/datasets/
