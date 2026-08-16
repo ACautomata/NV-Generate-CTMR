@@ -108,6 +108,18 @@
 
 > 参照 `data/README.md` 的微调格式（P2 ControlNet 见 §4.3；P1 image-only 扩散见 §3.x + `scripts/diff_model_train.py`）。issue 文中写「§3.3 微调示例」，实际「`*_emb.nii.gz` + combined label + JSON data list」对应 **§4.3**；两阶段格式我都列出。
 
+### 4.0 预处理要求清单（有序步骤，供 issue #8 落地）
+
+以单个子挑战训练集为例，把 BraTS 原始发布处理成 MAISI 可训练格式的有序步骤：
+
+0. **获取与核验**：Synapse 下载（见 §3）；核对每例 5 文件齐全、网格 240×240×155、seg 值 ∈ {0,1,2,3}。
+1. **（仅 P2）标签重映射**：BraTS seg 的 1/2/3 在 MAISI 词表无对应，必须重映射——推荐 1→401 / 2→402 / 3→403（`label_dict_ctmr.json` 语义天然对应，见 §4.3 路线 R1），或 released 0–255 空闲码（R2）；脑背景可用 `brain=22`。
+2. **逐 (病例×模态) 生成 VAE embedding**：`scripts/diff_model_create_training_data.py` + `autoencoder_v1.pt`。**网格处理见 §5**（默认 resize 到 128 倍数 vs 推荐 pad 到 256×256×160）；脚本按 `modality` 自动做 MR 百分位归一化（0–99.5→[0,1]），**无需对 BraTS 预归一化**。
+3. **标注 modality**：每 (病例×模态) 标注 t1n/t1c/t2w/t2f → `mri_t1=9 / mri_t1c=17 / mri_t2=10 / mri_flair=11`（注意 t1c skull-stripped 无专用码，见 G4）。
+4. **生成 P1 侧 sidecar `<emb>.json`**（含 spacing + modality）——embedding 脚本**不写**此文件，需自建（见 G2）。
+5. **（仅 P2）combined label**：把重映射后的肿瘤掩码叠到脑掩码（+背景）上，最近邻重采样到 **4× latent** 网格（见 §4.2 / §5）。
+6. **构建 JSON data list**：P1 = 主 JSON 列原始影像路径 + 逐例 sidecar；P2 = 单文件内联 `image`(emb)+`label`(combined)+`spacing`+`dim`+`modality`+`fold`。注意 fold 切分（默认 fold 0 = 验证）。
+
 ### 4.1 目标格式速查
 
 **P1（image-only 扩散微调，`diff_model_train.py`）**——每个 (病例 × 模态) 一条样本：
