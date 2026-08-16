@@ -9,9 +9,9 @@
 
 ## TL;DR（结论速览）
 
-- **BraTS 2023 是「挑战集群」，共 8 个任务，其中 5 个是分割子挑战**：Adult Glioma（GLI）、Sub-Saharan Africa（SSA/BraTS-Africa）、Meningioma（MEN）、Brain Metastases（METS）、Pediatrics（PED）；另有 3 个非分割任务（BraSyn 缺失模态合成、局部 inpainting、augmentation 评测）。**2023 没有 "MENA" 子挑战**（issue 中列举的 MENA 在 2023 并不存在；2023 的区域性子挑战是 Sub-Saharan Africa）。issue 中的 "Breast-METS" 实为 **Brain Metastases（BraTS-METS）**——脑转移瘤（原发灶可来自乳腺/肺等），是单个子挑战。
+- **BraTS 2023 是「挑战集群」，共 8 个任务，其中 5 个是分割子挑战**：Adult Glioma（GLI）、Sub-Saharan Africa（SSA/BraTS-Africa）、Meningioma（MEN）、Brain Metastases（METS）、Pediatrics（PED）；另有 3 个非分割任务（BraSyn 缺失模态合成、局部 inpainting、augmentation 评测）。**2023 没有 "MENA" 子挑战**（经核 2023/2024/2025 官方清单均无 MENA；这三年唯一的区域性子挑战是 Sub-Saharan Africa，MENA 仅以埃及机构向 METS 供数的形式出现）。issue 中的 "Breast-METS" 实为 **Brain Metastases（BraTS-METS）**——脑转移瘤（原发灶可来自乳腺/肺等），是单个子挑战。
 - **标签数值在 5 个分割子挑战间统一为 1/2/3，但语义按子挑战略有差异；2023 年起 ET 由 4 改名为 3，全集群已不使用 label 4**。WT/TC/ET 派生结构一致（WT=1∪2∪3，TC=1∪3，ET=3）。
-- **数据格式高度统一**：全部 NIfTI（`.nii.gz`）、SRI24 atlas 空间、1mm 各向同性、240×240×155、已 skull-stripped；**官方不做强度归一化**（留给参赛者）。
+- **数据格式高度统一**：全部 NIfTI（`.nii.gz`）、SRI24 atlas 空间、1mm 各向同性、已 skull-stripped，且 **5 个分割子挑战每例均严格 240×240×155**（已逐项确认，PED/METS 亦不例外）；**官方不做强度归一化**（留给参赛者）。
 - **对本仓的关键结论**：
   - 网格约束比 issue 假设的「4 的倍数」更严——**实为 image 边长需 ÷32**（VAE 4× 下采样 + 4 级扩散 U-Net 要求 latent ÷8）。BraTS 的 240（latent 60，非 ÷8）与 155（latent 38.75，非整数）两轴都需处理。
   - **强度归一化由本仓管线自动完成**（MR 走 0–99.5 百分位 → [0,1]），BraTS 原始强度可直接喂入，无需预归一化。
@@ -21,28 +21,33 @@
 
 ## 1. 数据清单表（2023 五个分割子挑战）
 
-> 病例数为「训练集（带 GT）/ 验证集」。每个病例 = 4 模态（t1n, t1c, t2w, t2f）+ 1 个 seg（仅训练/部分验证含 seg）。
-> 计数以来源标注为准；存在口径差异处已标注「待核实」。
+> 病例数格式为「训练（带 GT）/ 验证 / 测试」（验证/测试 GT 均不公开）。每个病例 = 4 模态（t1n, t1c, t2w, t2f）+ 1 个 seg（仅训练含 seg）。
+> 各子挑战计数、Synapse ID、标签语义均经一手来源（各子挑战论文 + MDPI Sensors 综述 + Synapse + BrainLesion/BraTS 官方仓库）逐项交叉核对。
 
-| 子挑战 | 官方全名 | 训练集（带 seg） | 验证/测试 | 模态 | 主获取渠道 | 许可/门槛 |
+| 子挑战 | 官方全名 | 训练 / 验证 / 测试 | 每例 4模态+seg | seg 标签(1/2/3) | Synapse ID | 许可/门槛 |
 |---|---|---|---|---|---|---|
-| **GLI** | Adult Glioma（RSNA-ASNR-MICCAI BraTS 连续评测） | **1251**（总队列 1470 患者/5880 扫描） | 验证 219（GT 不公开） | t1n/t1c/t2w/t2f | Synapse（主）；CBICA UPenn；Kaggle 社区镜像 | 注册 + DUA 审批；research-only，禁止再分发 |
-| **SSA** | BraTS-Africa（Sub-Saharan Africa 成人胶质瘤） | **~60**（待核实精确值） | 有验证/测试（GT 不公开） | 同上 | Synapse | 注册 + DUA；research-only |
-| **MEN** | ASNR-MICCAI Intracranial Meningioma | **~1000**（待核实精确值） | 有验证/测试 | 同上 | Synapse | 注册 + DUA；research-only |
-| **METS** | ASNR-MICCAI Brain Metastasis | **238 或 402**（两来源口径不一，见下注） | 验证 31 / 测试 59 | 同上 | Synapse | 注册 + DUA；research-only |
-| **PED** | ASNR-MICCAI Pediatrics Tumor（儿童高级别胶质瘤/DMG/DIPG） | **99** | 验证 45 / 测试 84 | 同上 | Synapse | 注册 + DUA；research-only |
+| **GLI** | Adult Glioma（RSNA-ASNR-MICCAI BraTS 连续评测，术前；数据完全复用 BraTS 2021） | **1251 / 219 / 570**（总 1470 患者/5880 扫描） | 是 | 1=NCR, 2=ED, 3=ET | 父项目 `syn51156910` | CC BY-NC 4.0（非商业）+ Synapse 注册 + data-access 申请审批；禁止再分发 |
+| **SSA** | BraTS-Africa（Sub-Saharan Africa 成人胶质瘤，1.5T 低场强、低图像质量） | **60 / 15 / 30** | 是 | 1=NETC, 2=SNFH, 3=ET | `syn51514109` | 同上 |
+| **MEN** | ASNR-MICCAI Intracranial Meningioma（术前） | **1000 / 141 / 283**（测试集私有；总 1424） | 是 | 1=NETC, 2=SNFH, 3=ET | `syn51514106` | 同上 |
+| **METS** | ASNR-MICCAI Brain Metastasis（治疗前 MRI） | **402 / 31 / 59**（402 含 3076 病灶；另有 474 例可选训练，缺原始 T2） | 是 | 1=NETC, 2=SNFH, 3=ET | `syn51514107` | 同上 |
+| **PED** | BraTS-PEDs（CBTN-CONNECT-DIPGR-ASNR-MICCAI，儿童高级别胶质瘤含 DIPG） | **98 / 44 / 24**（挑战口径 167 患者；更大汇编队列 99/45/84，228 患者） | 是 | 1=NC(含囊变), 2=ED, 3=ET | 父项目 `syn51156910` | 同上 |
 
-> **METS 计数口径说明**：MDPI 综述（2012–2025）记 2023 METS 训练为「402 studies / 3076 lesions」；另一来源记「238 training cases」。两者可能分别对应「研究数（含多病灶）」与「病例数」，或反映了数据集在 2023 后的扩充。执行「样例数据获取」票前需以 Synapse 页面当日数字为准（待子任务交叉确认）。
-> **PED/METS/SSA/MEN 是否每例都严格 240×240×155**：GLI 已确认为 240×240×155；其余子挑战的逐例网格一致性需以下载后实测为准（多数来源表明 2023 全集群统一该网格，PED/METS 待实测确认）。
+> **METS 计数口径已澄清**：官方公开训练 = **402 例（3076 病灶）**＝5 机构 238 例（Duke 26 + Cairo 32 + Missouri 16 + WashU 27 + Yale 137）+ NYU 164 例（单独托管）；二手表单里的「238」是不含 NYU 的子集口径，二者非矛盾。
+> **网格一致性已确认**：2023 全部 5 个分割子挑战**每例均严格 240×240×155**（PED/METS 已逐项确认；PED 额外做 de-facing 隐私处理）。对比：BraTS-GLI **2024 起**才改为 MNI152 / 182×218×182——勿混用年份数据。
+> **PED 计数两口径**：挑战实际评测用 **98/44/24**（结果论文）；**99/45/84** 是含未排名病例的更大汇编队列（设计论文+综述）。引用时注明口径与出处年份。
 
-**关于 "MENA"**：检索 2023 与 2024 官方资料均无 "BraTS-MENA" 子挑战；2023 的区域性子挑战是 **BraTS-Africa（Sub-Saharan Africa）**。若后续确需 MENA，应核实其是否属 BraTS 2024/2025 新增（本普查范围以 2023 为准，MENA 不纳入）。
+**关于 "MENA"**：经核 **2023 / 2024 / 2025 官方清单均无 "BraTS-MENA" 子挑战**（对照 BrainLesion/BraTS 官方仓库按年份列出的 task 清单）；这三年唯一的区域性子挑战都是 **BraTS-Africa（Sub-Saharan Africa，SSA）**。MENA 区域仅以埃及一家机构向 METS 贡献数据的形式出现。故 issue 中列举的 "MENA" 不纳入本普查（按非 2023 处理；若未来确需，再核实其归属年份）。
 
 来源：
-- BraTS 2023 集群结构与 8 任务清单、各子挑战标签语义、ET 4→3 改名、GLI 1470 患者：MDPI Sensors 综述《Advancing Precision: A Comprehensive Review of MRI Segmentation Datasets from BraTS Challenges (2012–2025)》§4.10 — https://www.mdpi.com/1424-8220/25/6/1838
-- GLI 训练 1251 / 验证 219、总队列 1470、SRI24、1mm、240×240×155、skull-stripped：MDPI 综述 §4.10 — https://www.mdpi.com/1424-8220/25/6/1838 ；BraTS 2023 GLI 论文 — https://pmc.ncbi.nlm.nih.gov/articles/PMC10441440/
-- METS 402 studies/3076 lesions、+31 val/+59 test：BraTS-METS 2023 — https://pmc.ncbi.nlm.nih.gov/articles/PMC10312806/ 与 https://arxiv.org/abs/2306.00838
-- PED 训练 99 / 验证 45 / 测试 84：MDPI 综述 §4.10 — https://www.mdpi.com/1424-8220/25/6/1838
-- 各子挑战训练数（GLI 1251 / METS 238 / MEN 1000 / PED 99 / SSA 60）汇总：CodeSOTA BraTS 2023 leaderboard — https://www.codesota.com/benchmark/brats-2023
+- 集群结构（2023 = 5 分割 + 3 非分割任务）、各子挑战标签映射、ET 4→3、计数：MDPI Sensors 综述《A Comprehensive Review of MRI Segmentation Datasets from BraTS Challenges (2012–2025)》§4.10 — https://www.mdpi.com/1424-8220/25/6/1838 （PMC 版：https://pmc.ncbi.nlm.nih.gov/articles/PMC11945730/ ）
+- GLI（1251/219/570、复用 BraTS 2021、SRI24、1mm、240×240×155、skull-stripped）：BraTS 2023 GLI — https://pmc.ncbi.nlm.nih.gov/articles/PMC10441440/ ；BraSyn 论文（注明复用 2021 数据 + ET 4→3）— https://arxiv.org/html/2305.09011v6
+- SSA / BraTS-Africa（60/15/30、NETC/SNFH/ET）— https://arxiv.org/abs/2305.19369 ；PMC https://pmc.ncbi.nlm.nih.gov/articles/PMC10312814/
+- MEN（1000/141/283、syn51514106、TC/WT 定义）— https://arxiv.org/html/2405.09787v2 ；MELBA https://www.melba-journal.org/papers/2025:003.html
+- METS（402/31/59、3076 病灶、238 vs 402 口径、syn51514107、WT/TC/ET 公式、ET 4→3 声明）— https://arxiv.org/html/2306.00838v3 ；PMC https://pmc.ncbi.nlm.nih.gov/articles/PMC10312806/
+- PED（挑战口径 98/44/24：结果论文 https://arxiv.org/html/2407.08855 ；大队列 99/45/84、228 患者、NC 含囊变：设计论文 https://arxiv.org/html/2305.17033v7 ）
+- 获取与许可：Synapse 门户 https://www.synapse.org/Synapse:syn51156910 ；CC BY-NC + 需先完成官方 data-access 申请 — https://arxiv.org/html/2607.22135v2
+- MENA 不属于 2023/2024/2025（BrainLesion/BraTS 官方仓库按年份列 task）— https://github.com/BrainLesion/BraTS
+- 社区事实表（辅助核对）：https://github.com/openmedlab/Awesome-Medical-Dataset （BraTS2023-SSA / -MET / -PED 等资源页）
 
 ---
 
@@ -71,18 +76,18 @@
 | 2 | ED（瘤周水肿/浸润） | **SNFH**（瘤周非增强 FLAIR 高信号） | ED（瘤周水肿） |
 | 3 | ET（增强肿瘤，**由 4 改来**） | ET（增强肿瘤） | ET（增强肿瘤） |
 
-- **WT/TC/ET 派生结构在 5 个分割子挑战一致**：WT = 1∪2∪3（全肿瘤）；TC = 1∪3（肿瘤核心）；ET = 3（增强肿瘤）。即无论各子挑战对 1/2 的具体命名如何（NCR/NETC/NC、ED/SNFH），派生规则相同。
+- **WT/TC/ET 派生结构在 5 个分割子挑战一致**（METS/PED/MEN 论文均有逐字公式）：WT = 1∪2∪3（全肿瘤）；TC = 1∪3（肿瘤核心）；ET = 3（增强肿瘤）。即无论各子挑战对 1/2 的具体命名如何（NCR/NETC/NC、ED/SNFH），派生规则相同。
+- **最实质的语义差异在 PED**：其 label 1（NC）把**囊变成分（cystic component, CC）**并入非增强成分（原始 4 亚区 ET/NET/CC/ED 合并为 3），而成人 GLI 的 label 1（NCR）不含独立囊变标注。混训 PED 与 GLI 时 label 1 的解剖含义略有偏移（对生成建模影响有限，但做精确亚区条件时需注意）。label 2（ED vs SNFH）与 label 3（ET）各子挑战语义基本对应，仅命名不同。
 - **数据准备实战 gotcha**：若把 ≤2022 旧 BraTS（ET=4）与 2023（ET=3）混用，ET 索引会错位；本普查只用 2023，统一按 1/2/3 处理即可。
-- 来源：MDPI 综述 §4.10（各子挑战标签映射 + ET 4→3 说明）— https://www.mdpi.com/1424-8220/25/6/1838 ；BraTS 2023 — https://pmc.ncbi.nlm.nih.gov/articles/PMC10441440/
+- 来源：MDPI 综述 §4.10 — https://www.mdpi.com/1424-8220/25/6/1838 ；METS（含 ET 4→3 逐字声明 + WT/TC/ET 公式）https://arxiv.org/html/2306.00838v3 ；PED（NC 含囊变）https://arxiv.org/html/2407.08855
 
 ---
 
 ## 3. 获取渠道、门槛与许可
 
-**主渠道：Synapse 平台**（https://www.synapse.org/）。BraTS 2023 全集群统一经 Synapse 分发。
-- 入口示例：BraTS 2023 门户 `syn51156910`（GLI 等子挑战各有子页面/wiki，如 PED 的 `syn51156910/wiki/622461`）。来源：https://www.synapse.org/#!Synapse:syn51156910
-- **门槛**：注册 Synapse 账号 → 提交 **DUA（Data Use Agreement）** → 组织者审批通过后方可下载。审批为人工/机构流程，**非即时**，执行 issue #8 时应预留审批时间。
-- **许可**：research-only，**禁止再分发**（每位使用者须自行签署 DUA）。不可替代签署。
+**主渠道：Synapse 平台**（https://www.synapse.org/）。BraTS 2023 全集群统一经 Synapse 分发，门户父项目 `syn51156910`；各子挑战下载入口见 §1 表（SSA `syn51514109` / MEN `syn51514106` / METS `syn51514107`；GLI 与 PED 经父项目子页面）。来源：https://www.synapse.org/Synapse:syn51156910
+- **门槛**：注册 Synapse 账号 → 在官方门户完成 **data-access application / 接受 DUA（Data Use Agreement）** → 组织者审批通过后方可下载。审批为人工/机构流程，**非即时**，执行 issue #8 时应预留数天审批时间。
+- **许可**：**CC BY-NC 4.0（非商业研究用途）**，**禁止再分发**（每位使用者须自行完成申请，不可替代签署）。本项目据此产出（embeddings、合成数据、下游模型）的对外再分发同样受限。
 
 **其他渠道**：
 - **CBICA / UPenn**（成人胶质瘤 GLI 的历史分发口，CaPTk/IPP）。来源：https://www.med.upenn.edu/cbica/captk/
