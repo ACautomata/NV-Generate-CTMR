@@ -25,18 +25,23 @@ cd "$REPO"
 [ -f /opt/dtk/env.sh ] && source /opt/dtk/env.sh
 [ -f /root/private_data/.ai_user_info/ai_proxy ] && source /root/private_data/.ai_user_info/ai_proxy
 
-echo "=== [1/4] env/runtime check (checklist items 1,2,3,7,8,11) ==="
+echo "=== [1/5] env/runtime check (checklist items 1,2,3,7,8,11) ==="
 python "$SMOKE/dcu_env_check.py"
 
-echo "=== [2/4] build smoke data list (n_cases=$N_CASES) ==="
+echo "=== [2/5] build smoke data list (n_cases=$N_CASES) ==="
 python "$SMOKE/make_smoke_datalist.py" --data-base-dir "$DATA_BASE" --out "$SMOKE/dataset_dcu_smoke.json" --n-cases "$N_CASES"
 
-echo "=== [3/4] data prep: VAE-encode -> *_emb.nii.gz ==="
+echo "=== [3/5] data prep: VAE-encode -> *_emb.nii.gz ==="
 python -m scripts.diff_model_create_training_data \
     -e "$SMOKE/environment_dcu_smoke.json" -c "$SMOKE/config_dcu_smoke.json" \
     -t ./configs/config_network_rflow.json -g 1
 
-echo "=== [4/4] train: single-card $AMP_DTYPE, 1 epoch (checklist items 4,6,9,10) ==="
+echo "=== [4/5] write <emb>.json companion metadata (spacing + modality) ==="
+python "$SMOKE/write_emb_metadata.py" \
+    --data-list "$SMOKE/dataset_dcu_smoke.json" \
+    --embedding-base-dir /root/private_data/nv-dcu-smoke/embeddings
+
+echo "=== [5/5] train: single-card $AMP_DTYPE, 1 epoch (checklist items 4,6,9,10) ==="
 python -m scripts.diff_model_train \
     -e "$SMOKE/environment_dcu_smoke.json" -c "$SMOKE/config_dcu_smoke.json" \
     -t ./configs/config_network_rflow.json -g 1 --amp_dtype "$AMP_DTYPE"

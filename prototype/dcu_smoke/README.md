@@ -37,9 +37,13 @@ python prototype/dcu_smoke/make_smoke_datalist.py \
     --out prototype/dcu_smoke/dataset_dcu_smoke.json --n-cases 6
 python -m scripts.diff_model_create_training_data -e prototype/dcu_smoke/environment_dcu_smoke.json \
     -c prototype/dcu_smoke/config_dcu_smoke.json -t configs/config_network_rflow.json -g 1
+python prototype/dcu_smoke/write_emb_metadata.py --data-list prototype/dcu_smoke/dataset_dcu_smoke.json \
+    --embedding-base-dir /root/private_data/nv-dcu-smoke/embeddings
 python -m scripts.diff_model_train -e prototype/dcu_smoke/environment_dcu_smoke.json \
     -c prototype/dcu_smoke/config_dcu_smoke.json -t configs/config_network_rflow.json -g 1 --amp_dtype bf16
 ```
+
+> **冒烟中发现的上游缺口**:`diff_model_train.py` 对每个 embedding 读一个伴侣 `<emb>.json`(键 `spacing`/`modality`，见 `prepare_data` 的 `_load_data_from_file`)，但本仓与上游 NVIDIA 仓的 `diff_model_create_training_data.py` 都**只写 `_emb.nii.gz`、不写该 json**。冒烟用 `write_emb_metadata.py` 补齐（spacing 读回 emb 自身 affine 的 pixdim;modality 取自数据 list)。spec 的全量数据管线需含这一步。
 
 ## 11 项实机验证清单 ↔ 覆盖方式
 
