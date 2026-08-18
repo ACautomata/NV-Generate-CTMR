@@ -79,8 +79,8 @@ _Avoid_: 依赖下载顺序的随机切分、将 subject ID 清单提交到 Git
 完整 spec 终验只在 GLI、SSA、MEN、METS、PED 五个分割子挑战均完成对应划分并通过完整 L1/L2/L3 后成立。缺少任一子挑战的运行只能称为 provisional smoke 或原型结果，不能外推为全量 BraTS 通过。
 
 **L2 肿瘤测量仪器**:
-冻结的 **MONAI nnU-Net** BraTS 肿瘤分割网络及其权重，仅用于从生成影像推断 WT/TC/ET mask，以测量肿瘤体积、位置与强化比例分布。它须先在开发集真实 BraTS 上校准误差范围；它不是下游分割效用验证，不以 Dice/HD95 作为生成候选的通过线。
-_Avoid_: 用真实病例 mask 代替生成影像 mask、以 MIC-DKFZ 独立 nnU-Net 实现替代 MONAI、将测量仪器的推断质量混同为下游分割性能
+为受控研究自行训练、并在真实 BraTS 开发集校准前冻结的 **MONAI nnU-Net** BraTS 肿瘤分割网络及其权重，仅用于从生成影像推断 WT/TC/ET mask，以测量肿瘤体积、位置与强化比例分布。它不是下游分割效用验证，不以 Dice/HD95 作为生成候选的通过线。
+_Avoid_: 用真实病例 mask 代替生成影像 mask、以 MIC-DKFZ 独立 nnU-Net 实现替代 MONAI、以第三方 SegResNet 作为条件性例外、将测量仪器的推断质量混同为下游分割性能
 
 **weighted_loss(肿瘤区加权)**:
 以 label 构造的图像体素损失加权(作用于肿瘤亚区),与条件模态无关——label 进 loss 与验收,不进 P3 条件。
