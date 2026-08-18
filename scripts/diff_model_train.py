@@ -265,8 +265,10 @@ def train_one_epoch(
     Returns:
         torch.Tensor: Training loss for the epoch.
     """
-    include_body_region = unet.include_top_region_index_input
-    include_modality = unet.num_class_embeds is not None
+    # Unwrap DDP for custom-attribute reads (DDP does not forward module attributes).
+    unet_module = unet.module if isinstance(unet, DistributedDataParallel) else unet
+    include_body_region = unet_module.include_top_region_index_input
+    include_modality = unet_module.num_class_embeds is not None
 
     if local_rank == 0:
         current_lr = optimizer.param_groups[0]["lr"]
@@ -433,8 +435,10 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
 
     unet = load_unet(args, device, logger)
     noise_scheduler = define_instance(args, "noise_scheduler")
-    include_body_region = unet.include_top_region_index_input
-    include_modality = unet.num_class_embeds is not None
+    # Unwrap DDP for custom-attribute reads (DDP does not forward module attributes).
+    unet_module = unet.module if isinstance(unet, DistributedDataParallel) else unet
+    include_body_region = unet_module.include_top_region_index_input
+    include_modality = unet_module.num_class_embeds is not None
     if include_modality:
         with open(args.modality_mapping_path) as f:
             args.modality_mapping = json.load(f)
