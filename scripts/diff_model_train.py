@@ -239,6 +239,7 @@ def train_one_epoch(
     logger: logging.Logger,
     local_rank: int,
     amp: bool = True,
+    amp_dtype: str = "fp16",
 ) -> torch.Tensor:
     """
     Train the model for one epoch.
@@ -259,6 +260,7 @@ def train_one_epoch(
         logger (logging.Logger): Logger for logging information.
         local_rank (int): Local rank for distributed training.
         amp (bool): Use automatic mixed precision training.
+        amp_dtype (str): Autocast dtype, "fp16" (default, uses GradScaler) or "bf16" (no GradScaler).
 
     Returns:
         torch.Tensor: Training loss for the epoch.
@@ -292,7 +294,7 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast("cuda", enabled=amp):
+        with autocast("cuda", dtype=torch.bfloat16 if amp_dtype == "bf16" else torch.float16, enabled=amp):
             noise = torch.randn_like(images)
 
             if isinstance(noise_scheduler, RFlowScheduler):
@@ -342,7 +344,8 @@ def train_one_epoch(
 
             loss = loss_pt(model_output.float(), model_gt.float())
 
-        if amp:
+        if amp and amp_dtype == "fp16":
+            # fp16 needs gradient scaling; bf16 has enough dynamic range, so it skips the GradScaler.
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -400,7 +403,7 @@ def save_checkpoint(
     )
 
 
-def diff_model_train(env_config_path: str, model_config_path: str, model_def_path: str, num_gpus: int, amp: bool = True) -> None:
+def diff_model_train(env_config_path: str, model_config_path: str, model_def_path: str, num_gpus: int, amp: bool = True, amp_dtype: str = "fp16") -> None:
     """
     Main function to train a diffusion model.
 
@@ -410,6 +413,7 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
         model_def_path (str): Path to the model definition file.
         num_gpus (int): Number of GPUs to use for training.
         amp (bool): Use automatic mixed precision training.
+        amp_dtype (str): Autocast dtype, "fp16" (default) or "bf16" (recommended on DCU).
     """
     args = load_config(env_config_path, model_config_path, model_def_path)
     local_rank, world_size, device = initialize_distributed(num_gpus)
@@ -496,6 +500,7 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
             logger,
             local_rank,
             amp=amp,
+            amp_dtype=amp_dtype,
         )
 
         loss_torch = loss_torch.tolist()
@@ -536,6 +541,13 @@ if __name__ == "__main__":
     parser.add_argument("-t", "--model_def_path", type=str, default="./configs/config_maisi.json", help="Path to model definition file")
     parser.add_argument("-g", "--num_gpus", type=int, default=1, help="Number of GPUs to use for training")
     parser.add_argument("--no_amp", dest="amp", action="store_false", help="Disable automatic mixed precision training")
+    parser.add_argument(
+        "--amp_dtype",
+        type=str,
+        default="fp16",
+        choices=["fp16", "bf16"],
+        help="Autocast dtype: fp16 (default, uses GradScaler) or bf16 (no GradScaler; recommended on DCU/ROCm).",
+    )
 
     args = parser.parse_args()
-    diff_model_train(args.env_config_path, args.model_config_path, args.model_def_path, args.num_gpus, args.amp)
+    diff_model_train(args.env_config_path, args.model_config_path, args.model_def_path, args.num_gpus, args.amp, args.amp_dtype)
