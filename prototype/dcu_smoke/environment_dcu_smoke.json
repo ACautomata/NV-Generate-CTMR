@@ -1,0 +1,12 @@
+{
+    "data_base_dir": "/root/private_data/datasets/ASNR-MICCAI-BraTS2023/ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData",
+    "embedding_base_dir": "/root/private_data/nv-dcu-smoke/embeddings",
+    "json_data_list": "/root/private_data/nv-dcu-smoke/NV-Generate-CTMR/prototype/dcu_smoke/dataset_dcu_smoke.json",
+    "model_dir": "/root/private_data/nv-dcu-smoke/models_trained",
+    "model_filename": "diff_unet_3d_rflow-mr-brain_v1.pt",
+    "output_dir": "/root/private_data/nv-dcu-smoke/output",
+    "output_prefix": "unet_3d",
+    "trained_autoencoder_path": "/root/private_data/nv-dcu-smoke/NV-Generate-CTMR/models/autoencoder_v1.pt",
+    "existing_ckpt_filepath": "/root/private_data/nv-dcu-smoke/NV-Generate-CTMR/models/diff_unet_3d_rflow-mr-brain_v1.pt",
+    "modality_mapping_path": "/root/private_data/nv-dcu-smoke/NV-Generate-CTMR/configs/modality_mapping.json"
+}
