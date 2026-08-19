@@ -20,6 +20,12 @@ from pathlib import Path
 import torch
 from monai.apps.nnunet import nnUNetV2Runner
 
+# nnU-Net checkpoint 的 logging/init_args 携带 numpy 标量（spacing 等），
+# weights_only 加载需按官方推荐白名单该被动类型；仍拒绝任意可执行类。
+import numpy
+
+torch.serialization.add_safe_globals([numpy.core.multiarray.scalar])
+
 
 PERSISTENT_ROOT = Path("/root/private_data")
 TRAINER_CLASS = "nnUNetTrainer250Epochs"
