@@ -27,7 +27,7 @@ from monai.apps.nnunet import nnUNetV2Runner
 import numpy
 
 torch.serialization.add_safe_globals(
-    [numpy.core.multiarray.scalar]
+    [numpy.core.multiarray.scalar, numpy.dtype]
     + [type(numpy.dtype(name)) for name in ("bool", "uint8", "int8", "int16", "int32", "int64",
                                             "float16", "float32", "float64", "complex64", "complex128")]
 )
