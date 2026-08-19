@@ -21,7 +21,13 @@ import torch  # noqa: E402
 
 import numpy  # noqa: E402
 
-torch.serialization.add_safe_globals([numpy.core.multiarray.scalar, numpy.dtype])  # nnU-Net checkpoint 携带 numpy 标量与其 dtype
+# nnU-Net checkpoint 携带 numpy 标量与其 dtype（numpy>=2 反序列化为
+# numpy.dtypes.*DType 子类），按数值 dtype 类集合白名单被动类型。
+torch.serialization.add_safe_globals(
+    [numpy.core.multiarray.scalar]
+    + [type(numpy.dtype(name)) for name in ("bool", "uint8", "int8", "int16", "int32", "int64",
+                                            "float16", "float32", "float64", "complex64", "complex128")]
+)
 
 from nnunet_l2_instrument import (  # noqa: E402
     PERSISTENT_ROOT,

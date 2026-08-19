@@ -22,9 +22,15 @@ from monai.apps.nnunet import nnUNetV2Runner
 
 # nnU-Net checkpoint 的 logging/init_args 携带 numpy 标量（spacing 等）与其
 # dtype，weights_only 加载需按官方推荐白名单这些被动类型；仍拒绝任意可执行类。
+# numpy>=2 中 dtype 反序列化为 numpy.dtypes.*DType 具体子类，按标量实际
+# 使用的数值 dtype 集合逐一放行。
 import numpy
 
-torch.serialization.add_safe_globals([numpy.core.multiarray.scalar, numpy.dtype])
+torch.serialization.add_safe_globals(
+    [numpy.core.multiarray.scalar]
+    + [type(numpy.dtype(name)) for name in ("bool", "uint8", "int8", "int16", "int32", "int64",
+                                            "float16", "float32", "float64", "complex64", "complex128")]
+)
 
 
 PERSISTENT_ROOT = Path("/root/private_data")
