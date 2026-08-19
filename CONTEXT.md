@@ -72,11 +72,11 @@ _Avoid_: 随机切分、逐条目切分
 _Avoid_: 将最终验收持出集用于每 epoch 监控、以高分 L1 抵消 L2/L3 失败、逐条目切分、跨阶段改变病例归属
 
 **Split manifest**:
-以 `split_id`、子挑战名和官方 subject ID 的 SHA-256 排序，按已定名额确定病例侧别的受控清单。完整清单含受 DUA 约束的 ID，必须留在受控数据目录；ADR 仅记录算法、名额和 manifest 内容摘要。增量数据只能创建新版本 manifest，不得悄悄重排已冻结候选的病例归属。
-_Avoid_: 依赖下载顺序的随机切分、将 subject ID 清单提交到 Git
+以 `split_id`、子挑战名和官方 subject ID 的 SHA-256 排序，按已定名额确定病例侧别的受控清单。名额由各子挑战可得全量按 70/10/20 以最大余额法取整导出，平手归终验持出侧。完整清单含受 DUA 约束的 ID，必须留在受控数据目录；ADR 仅记录算法、名额和 manifest 内容摘要。增量数据只能创建新版本 manifest，不得悄悄重排已冻结候选的病例归属。
+_Avoid_: 依赖下载顺序的随机切分、逐项四舍五入取整名额、将 subject ID 清单提交到 Git
 
 **完整 spec 终验 / provisional smoke**:
-完整 spec 终验只在 GLI、SSA、MEN、METS、PED 五个分割子挑战均完成对应划分并通过完整 L1/L2/L3 后成立。缺少任一子挑战的运行只能称为 provisional smoke 或原型结果，不能外推为全量 BraTS 通过。
+完整 spec 终验只在 GLI、SSA、MEN、METS、PED 五个分割子挑战均完成对应划分并通过完整 L1/L2/L3 后成立；「对应划分」以各子挑战**可得全量**为基数——METS 即 5 机构 238 例公开训练集口径（NYU 164 例系 syn51514107 单独托管 entity，2026-08-19 确认不可得，不构成完整性缺口；未来若可得，按增量纪律走新 manifest 版本）。缺少任一子挑战的运行只能称为 provisional smoke 或原型结果，不能外推为全量 BraTS 通过。
 
 **undecided(终验判定态)**:
 终验判定的第三态——当 L2 肿瘤测量仪器在待测生成样本上的失败率或层级违反率超出真实校准包络时，该子挑战 L2 记 undecided(仪器不可用)而非 fail(生成不合格)；undecided 同样阻塞完整 spec 终验，修复方向是仪器或重跑，而非生成候选。
