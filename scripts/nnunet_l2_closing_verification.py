@@ -21,7 +21,7 @@ import torch  # noqa: E402
 
 import numpy  # noqa: E402
 
-torch.serialization.add_safe_globals([numpy.core.multiarray.scalar])  # nnU-Net checkpoint 携带 numpy 标量
+torch.serialization.add_safe_globals([numpy.core.multiarray.scalar, numpy.dtype])  # nnU-Net checkpoint 携带 numpy 标量与其 dtype
 
 from nnunet_l2_instrument import (  # noqa: E402
     PERSISTENT_ROOT,
