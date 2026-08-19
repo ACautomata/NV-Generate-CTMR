@@ -17,8 +17,9 @@ Implements the pinned decisions of issues #13/#32:
 - channel order t1n/t1c/t2w/t2f -> ``_0000.._0003`` (pinned, see #32 frozen-input contract);
 - fold_0 80/20 case-level inside the training side; fold val cases are half of the calibration set.
 
-Quotas below cover GLI/SSA/MEN/PED. METS is absent on purpose: its NYU portion (164 cases) is
-unavailable, so the METS quota must be re-pinned (see the re-pin ticket) before METS is added here.
+Quotas below cover all five sub-challenges. METS is based on the available 238-case release
+(five-institution public training set); its separately hosted NYU portion (164 cases) is
+unavailable and is not a completeness gap (issue #42 re-pin, largest-remainder rounding).
 
 Usage (each subcommand is standalone; manifest first):
     python scripts/brats2023_nnunet_prep.py manifest --brats-root DIR --out splits.json
@@ -39,11 +40,12 @@ import numpy as np
 
 SPLIT_ID = "brats2023-rflow-v1"
 
-# Pinned 70/10/20 quotas per sub-challenge (issue #13). METS deliberately omitted (NYU 164 unavailable).
+# Pinned 70/10/20 quotas per sub-challenge (issue #13; METS 238-case scope re-pinned in issue #42).
 QUOTAS = {
     "GLI": {"train": 876, "dev": 125, "holdout": 250},
     "SSA": {"train": 42, "dev": 6, "holdout": 12},
     "MEN": {"train": 700, "dev": 100, "holdout": 200},
+    "METS": {"train": 166, "dev": 24, "holdout": 48},
     "PED": {"train": 68, "dev": 10, "holdout": 20},
 }
 
