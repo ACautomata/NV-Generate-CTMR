@@ -1,0 +1,410 @@
+<title>Compile 路径故障</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --ink: #17212b;
+    --ink-soft: #4a5b69;
+    --paper: #eaf2f8;
+    --paper-strong: #f7fbff;
+    --paper-muted: #dce8f0;
+    --rule: #adc2d1;
+    --midnight: #101923;
+    --blueprint: #1d3446;
+    --blueprint-soft: #29485e;
+    --teal: #237d73;
+    --teal-soft: #d5efea;
+    --amber: #9b6500;
+    --amber-soft: #fff0cb;
+    --fault: #b23e31;
+    --fault-soft: #fde3df;
+    --code-bg: #101923;
+    --code-ink: #dceaf3;
+    --focus: #e9a63b;
+    --shadow: rgba(29, 52, 70, 0.12);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #e8f0f5;
+      --ink-soft: #abc0cd;
+      --paper: #101923;
+      --paper-strong: #172635;
+      --paper-muted: #1d3446;
+      --rule: #3f5b6d;
+      --midnight: #091117;
+      --blueprint: #172b3b;
+      --blueprint-soft: #294a61;
+      --teal: #62c2b4;
+      --teal-soft: #123b39;
+      --amber: #f2bd54;
+      --amber-soft: #453713;
+      --fault: #f18474;
+      --fault-soft: #482625;
+      --code-bg: #091117;
+      --code-ink: #dceaf3;
+      --focus: #f2bd54;
+      --shadow: rgba(0, 0, 0, 0.24);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ink: #e8f0f5;
+    --ink-soft: #abc0cd;
+    --paper: #101923;
+    --paper-strong: #172635;
+    --paper-muted: #1d3446;
+    --rule: #3f5b6d;
+    --midnight: #091117;
+    --blueprint: #172b3b;
+    --blueprint-soft: #294a61;
+    --teal: #62c2b4;
+    --teal-soft: #123b39;
+    --amber: #f2bd54;
+    --amber-soft: #453713;
+    --fault: #f18474;
+    --fault-soft: #482625;
+    --code-bg: #091117;
+    --code-ink: #dceaf3;
+    --focus: #f2bd54;
+    --shadow: rgba(0, 0, 0, 0.24);
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--paper); color: var(--ink); }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 15px;
+    line-height: 1.72;
+  }
+  a { color: inherit; }
+  a:focus-visible, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+  .mono { font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace; }
+  .tabular { font-variant-numeric: tabular-nums; }
+  .wrap { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+
+  .masthead {
+    position: relative;
+    overflow: hidden;
+    color: #eef6fb;
+    background: var(--midnight);
+    border-bottom: 6px solid var(--amber);
+  }
+  .masthead::after {
+    content: "";
+    position: absolute;
+    right: -15vw;
+    top: -33vw;
+    width: 64vw;
+    height: 64vw;
+    border: 1px solid rgba(142, 184, 210, 0.22);
+    transform: rotate(28deg);
+    background-image: linear-gradient(rgba(142, 184, 210, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(142, 184, 210, 0.08) 1px, transparent 1px);
+    background-size: 22px 22px;
+    pointer-events: none;
+  }
+  .masthead-inner { position: relative; z-index: 1; padding: 58px 0 48px; }
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #9fc0d4;
+    font: 600 12px/1 "IBM Plex Mono", monospace;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .eyebrow::before { content: ""; width: 31px; height: 1px; background: var(--amber); }
+  h1, h2, h3, p { margin: 0; }
+  h1 {
+    max-width: 760px;
+    margin-top: 16px;
+    color: #f5fbff;
+    font-family: "Barlow Condensed", "Noto Sans SC", sans-serif;
+    font-size: clamp(44px, 8vw, 85px);
+    font-weight: 600;
+    letter-spacing: 0.015em;
+    line-height: 0.9;
+    text-wrap: balance;
+  }
+  .lede { max-width: 735px; margin-top: 22px; color: #c7d9e4; font-size: 17px; line-height: 1.75; }
+  .badge-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
+  .badge { border: 1px solid rgba(190, 216, 231, 0.34); padding: 5px 9px; color: #dceaf3; font: 500 11px/1.2 "IBM Plex Mono", monospace; }
+  .badge.fault { border-color: rgba(241, 132, 116, 0.75); color: #ffb1a7; }
+  .badge.amber { border-color: rgba(242, 189, 84, 0.75); color: #ffd887; }
+
+  .incident-strip { background: var(--blueprint); color: #f0f7fb; }
+  .incident-grid { display: grid; grid-template-columns: 1.45fr repeat(3, 1fr); }
+  .incident-cell { min-height: 105px; padding: 21px 22px; border-right: 1px solid rgba(192, 218, 232, 0.22); }
+  .incident-cell:last-child { border-right: 0; }
+  .incident-label { color: #a6c4d5; font: 500 10px/1.2 "IBM Plex Mono", monospace; letter-spacing: 0.1em; text-transform: uppercase; }
+  .incident-value { margin-top: 9px; font-size: 15px; font-weight: 600; line-height: 1.38; }
+  .incident-value.fault { color: #ffaca2; }
+
+  main { padding: 46px 0 66px; }
+  .section { border-top: 1px solid var(--rule); padding: 40px 0; }
+  .section:first-child { border-top: 0; padding-top: 0; }
+  .section-head { display: grid; grid-template-columns: 150px 1fr; gap: 32px; align-items: start; }
+  .section-kicker { color: var(--ink-soft); font: 600 11px/1.2 "IBM Plex Mono", monospace; letter-spacing: 0.11em; text-transform: uppercase; padding-top: 6px; }
+  h2 { font-size: clamp(25px, 4vw, 37px); line-height: 1.13; letter-spacing: -0.035em; text-wrap: balance; }
+  h3 { font-size: 17px; line-height: 1.35; }
+  .section-body { grid-column: 2; max-width: 800px; }
+  .section-body > * + * { margin-top: 18px; }
+  .note { color: var(--ink-soft); }
+
+  .callout {
+    border-left: 5px solid var(--amber);
+    padding: 19px 22px;
+    background: var(--amber-soft);
+    color: var(--ink);
+  }
+  .callout strong { display: block; font-size: 17px; line-height: 1.35; }
+  .callout p { margin-top: 7px; }
+  .callout.fault { border-left-color: var(--fault); background: var(--fault-soft); }
+  .callout.success { border-left-color: var(--teal); background: var(--teal-soft); }
+
+  .matrix-wrap, .code-wrap { overflow-x: auto; border: 1px solid var(--rule); background: var(--paper-strong); }
+  table { width: 100%; min-width: 690px; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 13px 15px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--rule); }
+  tr:last-child td { border-bottom: 0; }
+  th { background: var(--paper-muted); color: var(--ink-soft); font: 600 10px/1.2 "IBM Plex Mono", monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+  td:first-child { font-weight: 600; }
+  .state { display: inline-flex; gap: 6px; align-items: center; font: 600 11px/1.2 "IBM Plex Mono", monospace; white-space: nowrap; }
+  .state::before { content: ""; width: 8px; height: 8px; background: currentColor; }
+  .state.ok { color: var(--teal); }
+  .state.fail { color: var(--fault); }
+  .state.warn { color: var(--amber); }
+
+  .pathway { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--rule); }
+  .path { min-height: 163px; padding: 20px; border-right: 1px solid var(--rule); position: relative; background: var(--paper-strong); }
+  .path:last-child { border-right: 0; }
+  .path::after { content: "→"; position: absolute; right: -10px; top: 62px; z-index: 2; color: var(--ink-soft); font: 600 22px/1 "IBM Plex Mono", monospace; }
+  .path:last-child::after { display: none; }
+  .path-no { color: var(--ink-soft); font: 600 10px/1 "IBM Plex Mono", monospace; }
+  .path h3 { margin-top: 12px; }
+  .path p { margin-top: 8px; color: var(--ink-soft); font-size: 13px; line-height: 1.58; }
+  .path.fail { background: var(--fault-soft); border-top: 4px solid var(--fault); }
+  .path.pass { background: var(--teal-soft); border-top: 4px solid var(--teal); }
+
+  pre { margin: 0; padding: 20px 22px; overflow-x: auto; color: var(--code-ink); background: var(--code-bg); font: 400 12px/1.7 "IBM Plex Mono", monospace; }
+  .code-label { display: flex; justify-content: space-between; gap: 15px; padding: 10px 14px; background: var(--blueprint); color: #dceaf3; font: 500 10px/1.2 "IBM Plex Mono", monospace; letter-spacing: 0.06em; text-transform: uppercase; }
+  .error-line { color: #ff9f92; }
+  .ir-line { color: #f4c96e; }
+
+  .evidence-list { display: grid; gap: 0; border: 1px solid var(--rule); }
+  .evidence { display: grid; grid-template-columns: 132px 1fr; gap: 18px; padding: 16px 18px; border-bottom: 1px solid var(--rule); background: var(--paper-strong); }
+  .evidence:last-child { border-bottom: 0; }
+  .evidence-key { color: var(--ink-soft); font: 600 10px/1.45 "IBM Plex Mono", monospace; letter-spacing: 0.06em; text-transform: uppercase; }
+  .evidence-value { font-size: 14px; }
+
+  .action-list { list-style: none; padding: 0; display: grid; gap: 10px; }
+  .action-list li { display: grid; grid-template-columns: 32px 1fr; gap: 13px; padding: 14px 0; border-bottom: 1px solid var(--rule); }
+  .action-list li:last-child { border-bottom: 0; }
+  .action-no { color: var(--amber); font: 600 14px/1.5 "IBM Plex Mono", monospace; }
+  .action-list strong { display: block; }
+  .action-list span { color: var(--ink-soft); }
+
+  .foot { border-top: 1px solid var(--rule); padding: 22px 0 42px; color: var(--ink-soft); font-size: 12px; }
+  .foot-grid { display: flex; justify-content: space-between; gap: 22px; flex-wrap: wrap; }
+  .sources { max-width: 790px; }
+  .sources a { text-underline-offset: 3px; }
+
+  @media (max-width: 760px) {
+    .wrap { width: min(100% - 28px, 1120px); }
+    .masthead-inner { padding: 42px 0 38px; }
+    .incident-grid { grid-template-columns: 1fr 1fr; }
+    .incident-cell { border-bottom: 1px solid rgba(192, 218, 232, 0.22); }
+    .incident-cell:nth-child(2) { border-right: 0; }
+    .section-head { grid-template-columns: 1fr; gap: 13px; }
+    .section-body { grid-column: 1; }
+    .pathway { grid-template-columns: 1fr; }
+    .path { min-height: 0; border-right: 0; border-bottom: 1px solid var(--rule); }
+    .path:last-child { border-bottom: 0; }
+    .path::after { content: "↓"; top: auto; right: auto; bottom: -14px; left: 23px; }
+    .evidence { grid-template-columns: 1fr; gap: 5px; }
+  }
+
+  @media print {
+    :root { --paper: #ffffff; --paper-strong: #ffffff; --paper-muted: #edf4f8; --ink: #111820; --ink-soft: #435563; --rule: #93aab9; }
+    body { font-size: 11pt; }
+    .masthead { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .section { break-inside: avoid; }
+    .matrix-wrap, .code-wrap, .pathway, .evidence-list { break-inside: avoid; }
+  }
+</style>
+
+<header class="masthead">
+  <div class="wrap masthead-inner">
+    <div class="eyebrow">DCU / TorchInductor / Triton · 工程故障报告</div>
+    <h1>Compile 路径故障</h1>
+    <p class="lede">在匹配的 DTK 26.04、torch-dcu 2.9 与 Triton 3.5.1 DCU 构建上，大体积 <span class="mono">Conv3d</span> 的反向传播触发 Triton 4-warp shared-memory lowering 失败并导致进程段错误。</p>
+    <div class="badge-row">
+      <span class="badge fault">复现状态：稳定失败</span>
+      <span class="badge amber">严重性：阻塞 torch.compile 训练</span>
+      <span class="badge">数据内容：未涉及</span>
+      <span class="badge">目标：gfx936</span>
+    </div>
+  </div>
+</header>
+
+<section class="incident-strip" aria-label="事件摘要">
+  <div class="wrap incident-grid">
+    <div class="incident-cell">
+      <div class="incident-label">Failure boundary</div>
+      <div class="incident-value fault">大体积 3D Conv backward<br>4-warp shared-memory kernel</div>
+    </div>
+    <div class="incident-cell">
+      <div class="incident-label">Observed error</div>
+      <div class="incident-value mono">addSource: error<br>expected type</div>
+    </div>
+    <div class="incident-cell">
+      <div class="incident-label">Process outcome</div>
+      <div class="incident-value mono">SIGSEGV · exit 139</div>
+    </div>
+    <div class="incident-cell">
+      <div class="incident-label">Stable workaround</div>
+      <div class="incident-value mono">nnUNet_compile=f</div>
+    </div>
+  </div>
+</section>
+
+<main class="wrap">
+  <section class="section">
+    <div class="section-head">
+      <div class="section-kicker">01 / 结论</div>
+      <div class="section-body">
+        <h2>不是装错 Triton，而是正确 DCU 构建中的一个特定 codegen 分支失效。</h2>
+        <div class="callout fault">
+          <strong>高置信度诊断</strong>
+          <p>图捕获、基础 Triton kernel、3D 卷积前向和小尺寸 3D 训练图都可运行。失败只在默认 nnU-Net patch 尺寸下、<span class="mono">Conv3d.backward()</span> 所触发的 shared-memory 4-warp Triton reduction 中出现。故障停在 Triton 的 LLVM IR → AMDGCN 后端阶段，尚未形成目标 HSACO code object。</p>
+        </div>
+        <p class="note">本报告不声称已经定位到供应方内部库的单一源文件；它记录的是可重复的边界、生成 IR 与可用于修复的具体失败候选。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <div class="section-kicker">02 / 环境矩阵</div>
+      <div class="section-body">
+        <h2>构建标识与运行时目标一致</h2>
+        <div class="matrix-wrap">
+          <table class="tabular">
+            <thead><tr><th>层级</th><th>实际值</th><th>核验结果</th></tr></thead>
+            <tbody>
+              <tr><td>DTK</td><td class="mono">/opt/dtk-26.04</td><td><span class="state ok">对齐</span> DTK 26.04 基线</td></tr>
+              <tr><td>DCU 编译器</td><td class="mono">dcc 25.10.0-0 · LLVM 17</td><td><span class="state ok">可用</span> 实际失败 LLIR 可由 dcc / clang 解析</td></tr>
+              <tr><td>torch-dcu</td><td class="mono">2.9.0+das.opt1.dtk2604</td><td><span class="state ok">对齐</span> dtk2604 构建</td></tr>
+              <tr><td>Triton</td><td class="mono">3.5.1+das.opt1.dtk2604.torch290</td><td><span class="state ok">对齐</span> 同时标注 dtk2604 与 torch290</td></tr>
+              <tr><td>HIP runtime</td><td class="mono">torch.version.hip = 6.3.26093</td><td><span class="state ok">加载正常</span></td></tr>
+              <tr><td>实际 DCU target</td><td class="mono">BW · gfx936:sramecc+:xnack-</td><td><span class="state ok">对齐</span> Triton kernel 元数据为 <span class="mono">backend=hip, arch=gfx936</span></td></tr>
+              <tr><td>Python 安装来源</td><td class="mono">单一 triton/ + 单一 .dist-info</td><td><span class="state ok">无混装</span> 非 generic PyPI CUDA wheel</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout success">
+          <strong>版本匹配结论</strong>
+          <p><span class="mono">triton.__version__ = 3.5.1</span> 未显示 local suffix 是模块内版本常量的正常表现；分发元数据的 <span class="mono">+das.opt1.dtk2604.torch290</span> 才是 ABI 构建标识。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <div class="section-kicker">03 / 最小复现</div>
+      <div class="section-body">
+        <h2>只需一个 Conv3d，即可离开 nnU-Net 复现</h2>
+        <p>以下探针只使用随机张量，不读取训练数据。原始 nnU-Net 训练默认 <span class="mono">torch.compile</span> 同样失败；最小测试的 <span class="mono">fullgraph=True</span> 仅用于将诊断图固定为单一编译单元。</p>
+        <div class="code-wrap">
+          <div class="code-label"><span>最小 Python 探针</span><span>DCU / GPU 0</span></div>
+          <pre>import torch
+from torch import nn
+
+model = nn.Conv3d(4, 8, kernel_size=3, padding=1).cuda().train()
+x = torch.randn(2, 4, 128, 160, 112, device="cuda")
+compiled = torch.compile(model, backend="inductor", fullgraph=True)
+
+y = compiled(x)                 # 前向：成功
+torch.cuda.synchronize()
+y.mean().backward()             # 反向：失败，进程 SIGSEGV / 139
+torch.cuda.synchronize()</pre>
+        </div>
+        <div class="pathway" aria-label="定位流程">
+          <article class="path pass"><div class="path-no">PROBE A</div><h3>Pointwise</h3><p><span class="mono">x + 1</span> 经 compile 执行成功，Triton 基础路径正常。</p></article>
+          <article class="path pass"><div class="path-no">PROBE B</div><h3>小 3D 图</h3><p><span class="mono">Conv3d → InstanceNorm3d → LeakyReLU</span>，<span class="mono">32³</span> 前向+反向成功。</p></article>
+          <article class="path pass"><div class="path-no">PROBE C</div><h3>真实 patch 前向</h3><p>batch 2、<span class="mono">128×160×112</span> 的 <span class="mono">Conv3d</span> 前向成功。</p></article>
+          <article class="path fail"><div class="path-no">PROBE D</div><h3>真实 patch 反向</h3><p>同一 Conv3d 加入 <span class="mono">backward()</span>，稳定触发 <span class="mono">addSource</span> 与 SIGSEGV。</p></article>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <div class="section-kicker">04 / 关键证据</div>
+      <div class="section-body">
+        <h2>失败 IR 来自 Conv3d backward 的 4-warp 共享内存变体</h2>
+        <div class="code-wrap">
+          <div class="code-label"><span>失败 kernel：triton_per_fused_convolution_backward_1.llir</span><span>实际缓存产物</span></div>
+          <pre><span class="ir-line">@global_smem = external local_unnamed_addr addrspace(3)</span>
+<span class="ir-line">  global [0 x i8], align 16</span>
+
+<span class="error-line">%57 = getelementptr inbounds nuw i8,</span>
+<span class="error-line">      ptr addrspace(3) @global_smem, i64 %56, !dbg !21</span></pre>
+        </div>
+        <div class="evidence-list">
+          <div class="evidence"><div class="evidence-key">失败变体</div><div class="evidence-value"><span class="mono">BJN… / triton_per_fused_convolution_backward_1</span>，<span class="mono">num_warps=4</span>；有 <span class="mono">global_smem</span>，仅生成至 <span class="mono">.llir/.ttgir/.source</span>，未生成 <span class="mono">.amdgcn/.hsaco</span>。</div></div>
+          <div class="evidence"><div class="evidence-key">成功变体</div><div class="evidence-value"><span class="mono">MY5… / triton_per_fused_convolution_backward_1</span>，<span class="mono">num_warps=1</span>；无该 shared-memory IR，成功生成有效 AMD GPU HSACO ELF。</div></div>
+          <div class="evidence"><div class="evidence-key">外部编译器对照</div><div class="evidence-value">把失败的真实 <span class="mono">.llir</span> 直接交给命令行 <span class="mono">dcc</span> 与 <span class="mono">clang</span>，两者均解析成功（exit 0）。</div></div>
+          <div class="evidence"><div class="evidence-key">Inductor 源节点</div><div class="evidence-value">生成 Python 明确将该 kernel 标记为 <span class="mono">Original ATen: aten.convolution_backward</span>；其 <span class="mono">max_autotune=False</span>，不是用户开启最大 autotune 所致。</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <div class="section-kicker">05 / 影响与恢复</div>
+      <div class="section-body">
+        <h2>训练无法安全使用 compile；失败后还会遗留 data-loader 子进程</h2>
+        <div class="callout fault">
+          <strong>训练影响</strong>
+          <p>使用默认 nnU-Net 3D plans 的训练在首个大体积 Conv3d backward 触发后退出。父进程出现 SIGSEGV（exit 139）；观察到 data-loader 子进程可能不随父进程退出，虽不占 GPU，但会继续消耗 CPU / RAM。</p>
+        </div>
+        <div class="callout success">
+          <strong>当前稳定回退</strong>
+          <p>设置 <span class="mono">nnUNet_compile=f</span>。这只禁用 JIT 包装；不会改变模型、默认 plans、batch、优化器、epoch、数据增强或 fold 定义。</p>
+        </div>
+        <p><strong>请勿</strong>用 PyPI generic Triton 覆盖当前包，也不要以来源不明的 wheel 降级。任何尝试版本应同时满足 <span class="mono">dtk2604</span> 和 <span class="mono">torch290</span> ABI 标识，并重新执行本报告的最小 Conv3d backward 探针。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <div class="section-kicker">06 / 请工程师协助</div>
+      <div class="section-body">
+        <h2>建议的修复与验证清单</h2>
+        <ol class="action-list">
+          <li><div class="action-no">01</div><div><strong>复现 4-warp shared-memory persistent reduction</strong><span>使用本报告的随机 Conv3d probe，目标 <span class="mono">gfx936</span>，shape <span class="mono">[2, 4, 128, 160, 112]</span>。</span></div></li>
+          <li><div class="action-no">02</div><div><strong>审查 LLVM IR → AMDGCN 阶段的 shared-memory GEP 处理</strong><span>重点检查 <span class="mono">addrspace(3) @global_smem</span> 与 <span class="mono">getelementptr inbounds nuw</span>，以及 4-warp lowering 与 1-warp lowering 的差异。</span></div></li>
+          <li><div class="action-no">03</div><div><strong>避免 JIT 编译错误升级为段错误</strong><span>若特定候选不能编译，运行时应报告可诊断错误或回退到可用变体，不应让训练父进程 SIGSEGV 并遗留 data-loader 子进程。</span></div></li>
+          <li><div class="action-no">04</div><div><strong>发布严格 ABI 匹配的修复 wheel</strong><span>目标组合：<span class="mono">DTK 26.04 + torch-dcu 2.9.0 + gfx936</span>；请提供 sourcefind 可获取的版本与升级说明。</span></div></li>
+          <li><div class="action-no">05</div><div><strong>加入回归测试</strong><span>覆盖 pointwise、<span class="mono">32³</span> 小图、真实 patch Conv3d forward、真实 patch Conv3d backward、以及 nnU-Net 默认 3D plans 的首个训练 step。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-grid">
+    <div class="sources">证据范围：DTK / torch-dcu / Triton 本机元数据、实际 DCU probe、TorchInductor cache 和生成的 Triton IR。未上传患者数据、训练样本、认证信息或代理配置。LLVM GEP 语法背景可见 <a href="https://llvm.org/docs/LangRef.html">LLVM LangRef</a> 与 <a href="https://discourse.llvm.org/t/rfc-add-nusw-and-nuw-flags-for-getelementptr/78672">GEP flags RFC</a>。</div>
+    <div class="mono tabular">observed · 2026-08-19<br>report scope · DCU compile path</div>
+  </div>
+</footer>
