@@ -19,6 +19,7 @@ PARENT_CONFIGURATION = "3d_fullres"
 VARIANT_CONFIGURATION = "3d_fullres_bs16"
 GLOBAL_BATCH_SIZE = 16
 WORLD_SIZE = 8
+PERSISTENT_ROOT = Path("/root/private_data")
 
 
 class PlanVariantBuilder:
@@ -53,6 +54,13 @@ class PlanVariantBuilder:
         return audit
 
     def _reject_overwrite(self) -> None:
+        for label, path in {
+            "source_plans": self.source_plans,
+            "derived_plans": self.derived_plans,
+            "audit_path": self.audit_path,
+        }.items():
+            if not path.resolve().is_relative_to(PERSISTENT_ROOT):
+                raise ValueError(f"{label} must be under {PERSISTENT_ROOT}: {path}")
         if not self.source_plans.is_file():
             raise FileNotFoundError(f"source plans not found: {self.source_plans}")
         if self.source_plans.resolve() == self.derived_plans.resolve():

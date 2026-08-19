@@ -28,10 +28,11 @@ SSA 的外部 nnunetv2 2.8.1 默认 `3d_fullres` plans 在当前数据上产生 
 4. 训练固定使用 8 张 DCU、global batch 16、local batch 2；这是 SSA 专属 custom-plan 仪器，不得描述为“全默认 nnU-Net”。
 5. 训练入口固定为 MONAI `nnUNetV2Runner.train_single_model`，传入 `config="3d_fullres_bs16"`、`fold=0`、8-card `gpu_id` tuple 和 `p="nnUNetPlans_SSA_bs16_v1"`。
 6. 环境固定 `nnUNet_compile=f`。这只关闭已知不稳定的 JIT 包装；不改变模型或训练配方的其余字段。
+7. 外部 `nnunetv2==2.8.1` 的 stock `nnUNetTrainer` 默认会训练 1000 epochs，不能满足 #35 的 250-epoch 契约。正式 run 必须使用可 hash 的 `nnUNetTrainer250Epochs`：它只将 `num_epochs` 设为 250，并保留 upstream `num_iterations_per_epoch=250`；不得以在 epoch 250 手动终止 stock trainer 取代正常完成。
 
 ## 审计与校准纪律
 
-受控持久化目录必须记录原始/派生 plans、fingerprint、dataset.json、splits_final.json、训练命令、环境摘要、DDP preflight、checkpoint 与日志的 hash。逐病例 subject ID、原始数据、权重与校准原始产物不得提交到 Git 或公开上传。
+受控持久化目录必须记录原始/派生 plans、fingerprint、dataset.json、splits_final.json、实际训练命令、环境摘要、250-epoch trainer 与 upstream trainer source 的 hash、DDP preflight、checkpoint 与日志的 hash。逐病例 subject ID、原始数据、权重与校准原始产物不得提交到 Git 或公开上传。
 
 校准开始后，派生 plan、batch、checkpoint 和推理配置均冻结。不得依据校准结果调整 batch、plans、learning rate、patch、preprocessor、epoch 或 iteration。仅执行缺陷或明确版本升级允许重训；每次重训都产生新的版本标识、hash 与校准记录。
 

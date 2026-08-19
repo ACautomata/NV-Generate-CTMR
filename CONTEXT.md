@@ -87,7 +87,7 @@ _Avoid_: 把仪器失效混同为生成质量失败、以 pass/fail 二态强判
 _Avoid_: 用真实病例 mask 代替生成影像 mask、以 MIC-DKFZ 独立 nnU-Net 实现替代 MONAI、以第三方 SegResNet 作为条件性例外、将测量仪器的推断质量混同为下游分割性能
 
 **SSA 派生 Batch-16 仪器计划**:
-仅 SSA `Dataset502` / fold_0 的受控 custom-plan 修订——原始 `nnUNetPlans.json` 不变，派生 `nnUNetPlans_SSA_bs16_v1` 的 `3d_fullres_bs16` 配置仅覆写 global batch=16；8 张 DCU 各 local batch=2。它保留原始 split、patch、spacing、网络与 preprocessor，并在 DTK 26.04 的已知 compile 缺陷下固定 `nnUNet_compile=f`。这是 SSA 专属仪器版本，不得称作全默认 nnU-Net，亦不自动推广至其余四个子挑战。
+仅 SSA `Dataset502` / fold_0 的受控 custom-plan 修订——原始 `nnUNetPlans.json` 不变，派生 `nnUNetPlans_SSA_bs16_v1` 的 `3d_fullres_bs16` 配置仅覆写 global batch=16；8 张 DCU 各 local batch=2。它保留原始 split、patch、spacing、网络与 preprocessor，并在 DTK 26.04 的已知 compile 缺陷下固定 `nnUNet_compile=f`。正式训练另使用可 hash 的 `nnUNetTrainer250Epochs`，它仅把外部 nnunetv2 的 epoch 数设为 250，保留每 epoch 250 iterations。它是 SSA 专属仪器版本，不得称作全默认 nnU-Net，亦不自动推广至其余四个子挑战。
 _Avoid_: 覆盖原始 plans、把 SSA 修订泛化为五子挑战规则、以校准结果反调 batch/plans、启用 torch.compile
 
 **仪器使用协议**:
