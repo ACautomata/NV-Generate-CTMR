@@ -279,6 +279,20 @@ class InstrumentRun:
             gpu_id=self.configuration.gpu_ids,
             p=self.protocol.plans_identifier(),
         )
+        # MONAI 的 run_cmd 默认 check=False：训练命令失败不会在此抛错，
+        # 必须显式确认 final checkpoint 已产生。
+        checkpoint = (
+            self.configuration.results_root
+            / self.spec.dataset_name
+            / f"{TRAINER_CLASS}__{self.protocol.plans_identifier()}__{self.protocol.configuration()}"
+            / "fold_0"
+            / "checkpoint_final.pth"
+        )
+        if not checkpoint.is_file():
+            raise FileNotFoundError(
+                "training command returned without producing a final checkpoint; "
+                f"the training itself failed — see its output/log. Expected: {checkpoint}"
+            )
         self.ledger.append_completion(self._completion())
 
     def verify_completion(self) -> dict:
