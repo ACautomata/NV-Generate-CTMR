@@ -86,6 +86,10 @@ _Avoid_: 把仪器失效混同为生成质量失败、以 pass/fail 二态强判
 为受控研究自行训练、并在校准集(10% 开发集 ∪ 仪器 fold 内部验证集)真实 BraTS 上校准误差包络前冻结的 **MONAI nnU-Net** BraTS 肿瘤分割网络及其权重——五子挑战各持一个专属仪器，仅用于从生成影像推断 WT/TC/ET mask，以测量肿瘤体积、位置与强化比例分布。它不是下游分割效用验证，不以 Dice/HD95 作为生成候选的通过线。
 _Avoid_: 用真实病例 mask 代替生成影像 mask、以 MIC-DKFZ 独立 nnU-Net 实现替代 MONAI、以第三方 SegResNet 作为条件性例外、将测量仪器的推断质量混同为下游分割性能
 
+**SSA 派生 Batch-16 仪器计划**:
+仅 SSA `Dataset502` / fold_0 的受控 custom-plan 修订——原始 `nnUNetPlans.json` 不变，派生 `nnUNetPlans_SSA_bs16_v1` 的 `3d_fullres_bs16` 配置仅覆写 global batch=16；8 张 DCU 各 local batch=2。它保留原始 split、patch、spacing、网络与 preprocessor，并在 DTK 26.04 的已知 compile 缺陷下固定 `nnUNet_compile=f`。这是 SSA 专属仪器版本，不得称作全默认 nnU-Net，亦不自动推广至其余四个子挑战。
+_Avoid_: 覆盖原始 plans、把 SSA 修订泛化为五子挑战规则、以校准结果反调 batch/plans、启用 torch.compile
+
 **仪器使用协议**:
 把生成影像组成 L2 肿瘤测量仪器四模态输入的固定方式——P2 用同掩码条件的同病例四模态(肿瘤布局由条件强制一致)；P1 用同病例四模态标签独立采样的伪四模态体(跨模态不自洽如实进入测量，不粉饰)；P3 用 4 锚轮——每轮一个真实模态作锚、其余三模态以该锚为 src 生成，四轮覆盖全部 12 个有序模态对。L2 真实参照侧用同批病例的真实四模态喂仪器。
 _Avoid_: 用真实通道补缺生成体(真实通道主导测量)、以生成模型自身评估其仪器(循环)
