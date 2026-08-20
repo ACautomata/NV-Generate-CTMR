@@ -212,13 +212,13 @@ def run_inference(
                 image, _ = noise_scheduler.step(model_output, t, image, next_t)  # type: ignore
 
         inferer = SlidingWindowInferer(
-            roi_size=[80, 80, 80],
+            roi_size=[96, 96, 96],
             sw_batch_size=1,
             progress=True,
             mode="gaussian",
-            overlap=0.4,
+            overlap=0.25,
             sw_device=device,
-            device=device,
+            device=torch.device("cpu"),
         )
         synthetic_images = dynamic_infer(inferer, recon_model, image)
         data = synthetic_images.squeeze().cpu().detach().numpy()
