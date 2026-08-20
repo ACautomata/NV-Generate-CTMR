@@ -53,7 +53,7 @@ predict_one() {  # $1=challenge $2=rep $3=slot_gpu
     python3 "$CALIB_BASE/scripts/l2_calibration_predict_entry.py" \
       -i "$INPUT" -o "$OUT" \
       -d "${DATASET[$CH]}" -c "${CONFIG[$CH]}" -p "${PLANS[$CH]}" \
-      -tr nnUNetTrainer250Epochs -f 0 -nproc 1 \
+      -tr nnUNetTrainer250Epochs -f 0 \
       > "$LOGS/predict-$CH-rep$REP.log" 2>&1
   local RC=$?
   N_OUT=$(ls "$OUT" | grep -c '\.nii\.gz$' || true)
