@@ -55,6 +55,29 @@ This command will:
 
 For more details, see the in-code docstring in [`../scripts/compute_fid_2-5d_ct.py`](../scripts/compute_fid_2-5d_ct.py) or consult our documentation for a deeper dive into function arguments and the underlying implementation.
 
+## BraTS L1 quantitative acceptance
+
+`scripts/brats_l1_quantitative.py` evaluates a **frozen** P1/P2/P3 candidate and writes a controlled `brats-l1-report/1` artifact. It does not download a feature extractor or copy DUA-restricted data into the repository.
+
+```bash
+python -m scripts.brats_l1_quantitative evaluate \
+  --run /controlled/records/runs/p3-example/run.json \
+  --features /controlled/l1/p3-example/features.json \
+  --pairs /controlled/l1/p3-example/pairs.json \
+  --output /controlled/l1/p3-example/l1_report.json \
+  --bootstrap-resamples 1000 \
+  --seed 20260821
+python -m scripts.brats_phase_run_contract attach \
+  --run /controlled/records/runs/p3-example/run.json \
+  --kind l1_report --path /controlled/l1/p3-example/l1_report.json
+```
+
+`features.json` has schema `brats-l1-features/1`; every record names a controlled `.npy` feature matrix emitted by a locally verified RadImageNet extractor after RAS / 1 mm, zero-padding, and MR 0–99.5 percentile `[0,1]` preprocessing. It must preserve `cohort` (`train`, `holdout`, `generated`), `challenge`, `case`, target modality, and `xy`/`yz`/`zx` plane. Its protocol records the extractor name and weights SHA-256. For P3 generated records, `src_modality` is mandatory: all three `src ≠ tgt` sources must appear for each target modality, so `t1n→t1c` remains in the target-`t1c` FID evidence.
+
+P3 also requires a `brats-l1-pairs/1` manifest. Each record binds one same-case `reference`, stage-0 `baseline`, and candidate NIfTI along with `challenge`, `case`, `src_modality`, and `target_modality`. The evaluator rejects shape or affine mismatches, normalizes all three volumes using the fixed MR protocol, computes 3D SSIM (`data_range=1.0`, `win_size=7`) and MAE, then applies paired case-level percentile bootstrap. The 11 information-sufficient directions require MAE reduction ≥10%, SSIM increase ≥0.02, and both CIs toward improvement. `t1n→t1c` is reported with an explicit known-unobservable exception, not a paired hard gate.
+
+The report applies the FID rule per challenge and target modality: the synthetic-vs-holdout mean-FID 95% CI upper bound must be at most 2.5× the real train-vs-holdout **bootstrap median**. The phase contract validates report schema, candidate and manifest hashes, coverage, threshold arithmetic, P3 direction semantics, and controlled-storage placement; a scientifically `fail` report is still valid evidence and may be attached.
+
 ## Results and Evaluation
 
 We retrained several state-of-the-art diffusion model-based methods using our dataset. The results in the table and figure below show that our method outperforms previous methods on an unseen dataset ([autoPET 2023](https://www.nature.com/articles/s41597-022-01718-3)). Our method shows superior performance to previous methods based on all [Frechet Inception Distance (FID)](https://papers.nips.cc/paper/2017/hash/8a1d694707eb0fefe65871369074926d-Abstract.html) scores on different 2D planes. Here we compared the generated images with real images of size 512 x 512 x 512 and spacing 1.0 x 1.0 x 1.0 mm3.
