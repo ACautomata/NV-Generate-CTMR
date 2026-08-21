@@ -594,14 +594,14 @@ class QuantityRegistry:
         self._quantities.append(QuantityFamily(
             "wt_brain_rel", "wt_brain", vol_margin["WT"], relative=True,
             exclusion=lambda real_row, gen_row:
-                None if (MeasurementTable.number(real_row, "wt_brain") or 0) > 0 else "real_wt_brain_zero",
+                None if (MeasurementTable.number(real_row, "wt_brain") or 0) > 0 else "real_ratio_zero",
         ))
         self._quantities.append(QuantityFamily(
             "et_wt_rel", "et_wt",
             lambda envelopes, challenge: envelopes.e_r_vol(challenge, "ET") + envelopes.e_r_vol(challenge, "WT"),
             relative=True,
             exclusion=lambda real_row, gen_row:
-                None if (MeasurementTable.number(real_row, "et_wt") or 0) > 0 else "real_et_wt_undefined",
+                None if (MeasurementTable.number(real_row, "et_wt") or 0) > 0 else "real_ratio_zero",
         ))
 
     def all(self):
@@ -629,7 +629,23 @@ class FailureGate:
                 by_side[row["side"]] = by_side.get(row["side"], 0) + 1
                 for name in failures:
                     breakdown[name] += 1
-        return {"n_failed": n_failed, "breakdown": breakdown, "n_failed_by_side": by_side}
+        n_obs = len(rows)
+        return {
+            "n_failed": n_failed, "breakdown": breakdown, "n_failed_by_side": by_side,
+            # Observed-side Wilson 95% upper, same formula as calibration (ADR-0002):
+            # diagnostic only -- any single failure already forces undecided.
+            "wilson_95_upper": FailureGate.wilson_upper(n_failed, n_obs) if n_obs else None,
+        }
+
+    Z95 = 1.959963984540054
+
+    @staticmethod
+    def wilson_upper(k, n):
+        p = k / n
+        denom = 1 + FailureGate.Z95**2 / n
+        center = (p + FailureGate.Z95**2 / (2 * n)) / denom
+        half = (FailureGate.Z95 / denom) * math.sqrt(p * (1 - p) / n + FailureGate.Z95**2 / (4 * n**2))
+        return min(1.0, center + half)
 
 
 class ChallengeJudge:
