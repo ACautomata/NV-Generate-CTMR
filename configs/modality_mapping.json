@@ -18,5 +18,6 @@
     "mri_t2_skull_stripped":30,
     "mri_flair_skull_stripped":31,
     "mri_swi_skull_stripped":32,
-    "mri_mra_skull_stripped":33
+    "mri_mra_skull_stripped":33,
+    "mri_t1c_skull_stripped":34
 }
