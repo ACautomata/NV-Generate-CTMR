@@ -133,8 +133,8 @@ class FrozenEnvelopes:
 
     TOLERANCE = 5e-5
 
-    def __init__(self, table=None):
-        self._table = table or FROZEN_ENVELOPES
+    def __init__(self):
+        self._table = FROZEN_ENVELOPES
 
     def d_r_low(self, challenge, region):
         return self._table[challenge][region][0]
@@ -580,14 +580,14 @@ class QuantityRegistry:
             vol_field = {"WT": "vol_wt_ml", "TC": "vol_tc_ml", "ET": "vol_et_ml"}[region]
             self._quantities.append(QuantityFamily(
                 f"vol_{region.lower()}_rel", vol_field, vol_margin[region], relative=True,
-                exclusion=lambda real_row, gen_row, region=region:
+                exclusion=lambda real_row, gen_row, vol_field=vol_field:
                     None if (MeasurementTable.number(real_row, vol_field) or 0) > 0 else "real_volume_zero",
             ))
             for axis in ("x", "y", "z"):
                 centroid_field = f"c{axis}_{region.lower()}_mm"
                 self._quantities.append(QuantityFamily(
                     f"centroid_{region.lower()}_{axis}", centroid_field, cent_margin[region], relative=False,
-                    exclusion=lambda real_row, gen_row, region=region:
+                    exclusion=lambda real_row, gen_row, vol_field=vol_field:
                         None if (MeasurementTable.number(real_row, vol_field) or 0) > 0
                         and (MeasurementTable.number(gen_row, vol_field) or 0) > 0 else "empty_mask_side",
                 ))
@@ -611,19 +611,25 @@ class QuantityRegistry:
 # ── judgement chain ─────────────────────────────────────────────────────
 
 class FailureGate:
-    """The undecided gate: any input/run/hierarchy failure on either side (ADR-0004 decision 4)."""
+    """The undecided gate: any input/run/hierarchy failure on either side (ADR-0004 decision 4).
+
+    Counts only: the aggregate report carries no obs_id (and therefore no subject
+    id, protocol §5); per-observation detail lives in the controlled CSV.
+    """
 
     @staticmethod
     def audit(rows):
         breakdown = {"input_fail": 0, "run_fail": 0, "hier_viol": 0}
-        failing = []
+        by_side = {"gen": 0, "real": 0}
+        n_failed = 0
         for row in rows:
             failures = [name for name in breakdown if MeasurementTable.flag(row, name)]
             if failures:
-                failing.append({"obs_id": row["obs_id"], "side": row["side"], "failures": failures})
+                n_failed += 1
+                by_side[row["side"]] = by_side.get(row["side"], 0) + 1
                 for name in failures:
                     breakdown[name] += 1
-        return {"n_failed": len(failing), "breakdown": breakdown, "failing": failing}
+        return {"n_failed": n_failed, "breakdown": breakdown, "n_failed_by_side": by_side}
 
 
 class ChallengeJudge:
@@ -689,10 +695,15 @@ class ChallengeJudge:
             field = f"cond_dice_{region.lower()}"
             floor = self._envelopes.d_r_low(challenge, region)
             per_case = []
+            n_excluded = 0
             for case, gen_rows in sorted(gen_by_case.items()):
                 for gen_row in gen_rows:
                     value = MeasurementTable.number(gen_row, field)
-                    per_case.append([] if value is None else [value])
+                    if value is None:  # undefined dice (both masks empty): excluded and counted, never silent
+                        n_excluded += 1
+                        per_case.append([])
+                    else:
+                        per_case.append([value])
             stats = self._bootstrap.q5_lower_bound(per_case, seed=seed_base + 100 + region_index)
             vacuous = floor == 0.0
             if stats is None:
@@ -703,6 +714,7 @@ class ChallengeJudge:
             results.append({
                 "region": region, "floor": floor, "bound": bound,
                 "n_cases": stats["n_cases"] if stats else 0,
+                "n_excluded": n_excluded,
                 "vacuous_pass": vacuous, "passed": passed,
             })
         return results
@@ -744,8 +756,7 @@ class AcceptanceReport:
         self._freeze_record = freeze_record
         self._provisional = provisional_challenges
 
-    def build(self, challenge_verdicts):
-        order = {"undecided": 0, "fail": 1, "pass": 2}
+    def build(self, challenge_verdicts, challenges_missing):
         overall = "undecided" if any(v["verdict"] == "undecided" for v in challenge_verdicts) else (
             "pass" if all(v["verdict"] == "pass" for v in challenge_verdicts) else "fail"
         )
@@ -764,6 +775,13 @@ class AcceptanceReport:
             "envelopes_source": "ADR-0002 literals (docs/adr/0002-l2-instrument-calibration-envelopes.md)",
             "pass_lines": "ADR-0004 (docs/adr/0004-l2-final-acceptance-pass-lines.md)",
             "provisional_challenges": self._provisional,
+            "challenges_missing": challenges_missing,
+            "complete_coverage": not challenges_missing and not self._provisional,
+            "z_crop_bias_note": (
+                "生成侧 1mm 重采样后为 241×241×174, 居中裁到 240×240×155 砍掉 ~19 个 z 层; 真实侧原生 155 层"
+                "不裁剪 — WT/brain 分母与质心 z 向存在系统性偏差轴(含 DM 训练数据 z 向 pad 对齐方式未单独验证), "
+                "如实注册于协议 §2, 不补偿"
+            ),
             "overall_verdict": overall,
             "per_challenge": {v["challenge"]: v for v in challenge_verdicts},
         }
@@ -783,6 +801,10 @@ class AcceptanceReport:
         md_path.write_text(self._markdown(report))
         return json_path, md_path
 
+    @staticmethod
+    def _fmt(value):
+        return "n/a" if value is None else f"{value:.4f}"
+
     def _markdown(self, report):
         lines = [
             f"# {report['title']}",
@@ -790,7 +812,9 @@ class AcceptanceReport:
             f"**Issue**: [#55](https://github.com/ACautomata/NV-Generate-CTMR/issues/55) · "
             f"**Phase**: {report['phase']} · **Run**: `{report['run_id']}`",
             f"**总体判定**: **{report['overall_verdict'].upper()}**"
-            + (" (provisional: " + ", ".join(sorted(self._provisional)) + " 观测不足冻结配额)" if self._provisional else ""),
+            + (" (provisional: " + ", ".join(sorted(self._provisional)) + " 观测不足冻结配额)" if self._provisional else "")
+            + (" (缺挑战: " + ", ".join(report["challenges_missing"]) + " — 仅子集 AND, 不构成完整 spec 终验)"
+               if report["challenges_missing"] else ""),
             "",
             "| 挑战 | 观测数 | 失败数 | TOST 未过 | 回切未过 | 判定 |",
             "|---|---:|---:|---:|---:|---|",
@@ -807,8 +831,8 @@ class AcceptanceReport:
             for item in verdict["tost"] or []:
                 if not item["passed"]:
                     lines.append(
-                        f"- {challenge}/{item['quantity']}: CI90 [{item['ci90_low']:.4f}, {item['ci90_high']:.4f}] "
-                        f"⊄ ±{item['margin']:.4f} (排除 {item['n_excluded']})"
+                        f"- {challenge}/{item['quantity']}: CI90 [{self._fmt(item['ci90_low'])}, {self._fmt(item['ci90_high'])}] "
+                        f"⊄ ±{self._fmt(item['margin'])} (排除 {item['n_excluded']})"
                     )
         if report["phase"] == "P2":
             lines += ["", "## P2 条件回切", ""]
@@ -816,11 +840,13 @@ class AcceptanceReport:
                 for item in verdict["round_trip"] or []:
                     tag = " (vacuous-pass, floor=0)" if item["vacuous_pass"] else ""
                     lines.append(
-                        f"- {challenge}/{item['region']}: q5 下界 {item['bound']:.4f} vs floor {item['floor']:.4f}{tag}"
+                        f"- {challenge}/{item['region']}: q5 下界 {self._fmt(item['bound'])} vs floor "
+                        f"{self._fmt(item['floor'])} (排除 {item['n_excluded']}){tag}"
                     )
         lines += ["", "## 冻结与合规", "",
                   f"- 冻结审计 verdict: `{report['frozen_audit']['sha256'][:16]}…` (pinned={report['frozen_audit']['pinned']})",
                   "- 仪器权重/plans/推理配置/校准包络未做任何修改; 逐病例测量(含 subject ID)只在受控存储。",
+                  "- " + report["z_crop_bias_note"],
                   "- METS/PED 宽包络按 ADR-0002 原样适用, 未收窄。" + report.get("mets_resolving_power_note", ""),
                   ""]
         return "\n".join(lines)
@@ -830,8 +856,6 @@ class AcceptanceReport:
 
 class SelfTest:
     """Fixture-driven end-to-end check of the judgement chain and guards."""
-
-    WORK_ENVELOPES = FROZEN_ENVELOPES  # the real frozen literals: boundaries must hold against them
 
     def __init__(self, workdir, bootstrap_b=400):
         self._workdir = Path(workdir)
@@ -1078,6 +1102,15 @@ class SelfTest:
         et_wt = next(q for q in verdict["tost"] if q["quantity"] == "et_wt_rel")
         if et_vol["n_excluded"] != 3 or et_wt["n_excluded"] != 3:
             self.failures.append(f"real-side zero ET must exclude and count 3, got {et_vol['n_excluded']}/{et_wt['n_excluded']}")
+        # Late-binding guard: a zero real-side ET must NOT leak into the WT/TC
+        # quantities (their exclusions stay zero -- exclusion is per-quantity).
+        wt_vol = next(q for q in verdict["tost"] if q["quantity"] == "vol_wt_rel")
+        tc_vol = next(q for q in verdict["tost"] if q["quantity"] == "vol_tc_rel")
+        cent_wt = next(q for q in verdict["tost"] if q["quantity"] == "centroid_wt_x")
+        if wt_vol["n_excluded"] or tc_vol["n_excluded"] or cent_wt["n_excluded"]:
+            self.failures.append(
+                f"zero real ET leaked into WT/TC exclusions: wt={wt_vol['n_excluded']} tc={tc_vol['n_excluded']} cent={cent_wt['n_excluded']}"
+            )
         if et_wt["margin"] != envelopes.e_r_vol("GLI", "ET") + envelopes.e_r_vol("GLI", "WT"):
             self.failures.append("et_wt margin must be E_r,vol[ET] + E_r,vol[WT]")
 
@@ -1118,10 +1151,20 @@ class SelfTest:
         if not all(item["vacuous_pass"] and item["passed"] for item in rt.values()):
             self.failures.append("METS floor-0 round-trip must be an explicit vacuous pass")
 
-        # Report is aggregate: no case ids anywhere in JSON or markdown.
+        # Report is aggregate: no case ids anywhere in JSON or markdown --
+        # including a verdict that CARRIES failures (undecided path).
+        def fail_one(index, case, anchor, real, gen):
+            if index == 1:
+                gen.update(run_fail="1")
+
+        failing_rows = self._challenge_rows("METS", [f"FIXMETS-0200-{i:03d}" for i in range(4)], "P2", mutate=fail_one)
+        failing_verdict = ChallengeJudge(envelopes, bootstrap, "P2").judge(
+            failing_rows, "METS", GLOBAL_SEED + CHALLENGE_SEED_OFFSET["METS"])
+        if failing_verdict["verdict"] != "undecided":
+            self.failures.append("run_fail case must judge undecided for the report leak check")
         report = AcceptanceReport("P2", "p2-selftest", self._bootstrap_b,
                                   {"path": "/private/freeze-audit.json", "sha256": "0" * 64, "pinned": True},
-                                  provisional_challenges=["METS"]).build([verdict])
+                                  provisional_challenges=["METS"]).build([verdict, failing_verdict], [])
         blob = json.dumps(report) + "\n".join(AcceptanceReport(
             "P2", "p2-selftest", self._bootstrap_b, report["frozen_audit"], ["METS"])._markdown(report))
         for challenge in CHALLENGES:
@@ -1224,10 +1267,14 @@ def main(argv=None):
                     challenge, GLOBAL_SEED + CHALLENGE_SEED_OFFSET[challenge])
                 for challenge in challenges_present
             ]
-            provisional = [ch for ch in challenges_present
+            # Provisional is judged against ALL five frozen quotas (an absent
+            # challenge is a shortfall too): the overall AND must never read as
+            # full-spec acceptance over a subset (spec Further Notes).
+            provisional = [ch for ch in CHALLENGES
                            if len({row["case"] for row in rows if row["challenge"] == ch}) < HOLDOUT_QUOTAS[ch]]
+            challenges_missing = [ch for ch in CHALLENGES if ch not in challenges_present]
             reporter = AcceptanceReport(args.phase, args.run_id, args.bootstrap_b, freeze_record, provisional)
-            report = reporter.build(verdicts)
+            report = reporter.build(verdicts, challenges_missing)
             json_path, md_path = reporter.write(report, args.output_dir)
             print(f"[OK] overall={report['overall_verdict']} -> {json_path}")
             if report["overall_verdict"] != "pass":

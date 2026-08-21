@@ -45,19 +45,38 @@ from nnunet_l2_final_acceptance import (  # noqa: E402
 
 NNUNET_TARGET_SIZE = (240, 240, 155)
 NNUNET_TARGET_SPACING = (1.0, 1.0, 1.0)
+PREDICTION_SHAPE = tuple(reversed(NNUNET_TARGET_SIZE))  # array layout is zyx
 
 
 class GeneratedVolumeResampler:
-    """Issue #38 InputPreparator geometry, verbatim (protocol §2)."""
+    """Issue #38 InputPreparator geometry (protocol §2), with the axis handling
+    corrected for the zyx array layout (#38 applied xyz slices to a zyx array).
+
+    Generated volumes use B-spline; label volumes (the P2 condition mask) use
+    nearest neighbour so no label values are invented.
+    """
 
     def write(self, source, destination):
         image = sitk.ReadImage(str(source))
-        resampled = self._resample_to_1mm(image)
+        resampled = self._resample_to_1mm(image, sitk.sitkBSpline)
         cropped = self._crop_or_pad(resampled, NNUNET_TARGET_SIZE)
         sitk.WriteImage(cropped, str(destination))
 
+    def label_to_grid(self, source):
+        """Aligns a label volume onto the instrument grid; None when unreadable."""
+        try:
+            image = sitk.ReadImage(str(source))
+            resampled = self._resample_to_1mm(image, sitk.sitkNearestNeighbor)
+            cropped = self._crop_or_pad(resampled, NNUNET_TARGET_SIZE)
+            array = sitk.GetArrayFromImage(cropped).astype(np.uint8, copy=False)
+        except (RuntimeError, OSError):
+            return None
+        if array.shape != PREDICTION_SHAPE:
+            return None
+        return array
+
     @staticmethod
-    def _resample_to_1mm(image):
+    def _resample_to_1mm(image, interpolator):
         original_spacing = image.GetSpacing()
         original_size = image.GetSize()
         new_spacing = [1.0, 1.0, 1.0]
@@ -70,16 +89,16 @@ class GeneratedVolumeResampler:
         resampler.SetOutputOrigin(image.GetOrigin())
         resampler.SetTransform(sitk.Transform())
         resampler.SetDefaultPixelValue(image.GetPixelIDValue())
-        resampler.SetInterpolator(sitk.sitkBSpline)
+        resampler.SetInterpolator(interpolator)
         return resampler.Execute(image)
 
     @staticmethod
     def _crop_or_pad(image, target_size):
         size = image.GetSize()
         array = sitk.GetArrayFromImage(image)  # z, y, x
-        cropped = np.zeros(reversed(target_size), dtype=array.dtype)
+        cropped = np.zeros(tuple(reversed(target_size)), dtype=array.dtype)  # array axes are zyx
         src_slices, dst_slices = [], []
-        for s, t in zip(size, target_size):
+        for s, t in zip(size, target_size):  # slices built in xyz order, applied reversed below
             if s >= t:
                 start = (s - t) // 2
                 src_slices.append(slice(start, start + t))
@@ -152,7 +171,7 @@ class InstrumentFailureChecker:
             array = sitk.GetArrayFromImage(image)
         except (RuntimeError, OSError):
             return None
-        if array.shape != (155, 240, 240):
+        if array.shape != PREDICTION_SHAPE:
             return None
         return array.astype(np.uint8, copy=False)
 
@@ -192,9 +211,12 @@ class MaskMeasurer:
         return float(union.sum()) * 0.001
 
     @staticmethod
-    def condition_dice(pred, condition_path, region):
-        """Round-trip dice of the instrument prediction against the P2 condition mask."""
-        condition = sitk.GetArrayFromImage(sitk.ReadImage(str(condition_path))).astype(np.uint8, copy=False)
+    def condition_dice(pred, condition, region):
+        """Round-trip dice of the instrument prediction against the P2 condition mask.
+
+        ``condition`` is already on the instrument grid (see label_to_grid):
+        a condition mask that cannot be aligned is an input-contract failure of
+        the observation, handled by the runner -- never a silent dice."""
         gt_mask = np.isin(condition, REGION_LABELS[region])
         pred_mask = np.isin(pred, REGION_LABELS[region])
         denom = int(gt_mask.sum()) + int(pred_mask.sum())
@@ -212,11 +234,19 @@ class MeasurementRunner:
         self._pred_root = Path(pred_root)
         self._checker = InstrumentFailureChecker()
         self._measurer = MaskMeasurer()
+        self._resampler = GeneratedVolumeResampler()
 
     def measure_observation(self, observation):
         challenge_dir = self._input_root / observation["challenge"]
         row = {}
         input_fail = self._checker.input_fail(observation, challenge_dir)
+        condition = None
+        if observation.get("condition_mask"):
+            # The P2 condition mask is part of the input contract: align it onto
+            # the instrument grid (nearest neighbour); unalignable -> input_fail.
+            condition = self._resampler.label_to_grid(observation["condition_mask"])
+            if condition is None:
+                input_fail = True
         pred = None if input_fail else self._checker.read_prediction(observation, self._pred_root / observation["challenge"])
         run_fail = pred is None
         row.update(
@@ -238,9 +268,9 @@ class MeasurementRunner:
             values = {f"c{axis}_{region.lower()}_mm": (None if centroid is None else centroid[i])
                       for i, axis in enumerate("xyz")}
             row.update(values)
-        if observation.get("condition_mask"):
+        if condition is not None:
             row.update({f"cond_dice_{region.lower()}":
-                        self._measurer.condition_dice(pred, observation["condition_mask"], region)
+                        self._measurer.condition_dice(pred, condition, region)
                         for region in REGIONS})
         return row
 
