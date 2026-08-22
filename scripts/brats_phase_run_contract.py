@@ -91,6 +91,18 @@ L1_T1N_TO_T1C = ("t1n", "t1c")
 L1_FEATURE_EXTRACTOR = "radimagenet_resnet50"
 L1_MR_PREPROCESSING = "percentile_0_99.5_to_0_1_ras_1mm_zero_pad"
 
+L3_SCHEMA = "brats-l3-report/1"
+L3_MODALITIES = ("t1n", "t1c", "t2w", "t2f")
+L3_DIMENSIONS = (
+    "overall_realism",
+    "anatomical_plausibility",
+    "tumor_authenticity",
+    "artifact_slice_consistency",
+)
+L3_TURING_WINDOW = (0.40, 0.60)
+L3_LIKERT_BOUND = 4.0
+L3_VERDICTS = ("pass", "fail")
+
 
 class ContractViolationError(Exception):
     """Raised when a mutation or verification breaks the phase run contract."""
@@ -654,6 +666,251 @@ class L1ReportValidator:
         return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
+class L3ReportValidator:
+    """Validates the versioned L3 evidence schema and its frozen-candidate binding."""
+
+    def validate(self, record, path):
+        report_path = Path(path)
+        if not report_path.is_file():
+            return [f"L3 report not found: {report_path}"]
+        try:
+            report = json.loads(report_path.read_text())
+        except json.JSONDecodeError as error:
+            return [f"L3 report is not valid JSON: {report_path} ({error})"]
+        if not isinstance(report, dict):
+            return ["L3 report root must be a JSON object"]
+        failures = []
+        self._binding(record, report, failures)
+        challenges = self._challenges(record, failures)
+        protocol = self._protocol(report, failures)
+        self._coverage(challenges, report, protocol, failures)
+        self._visual_turing(report, protocol, failures)
+        self._likert(report, protocol, failures)
+        self._verdict(report, failures)
+        return failures
+
+    def _binding(self, record, report, failures):
+        binding = report.get("binding")
+        expected = {
+            "run_id": record.get("run_id"),
+            "phase": record.get("phase"),
+            "manifest_sha256": record.get("manifest", {}).get("sha256"),
+            "candidate_checkpoint_sha256": record.get("selection", {}).get("checkpoint", {}).get("sha256"),
+            "samples_sha256": record.get("samples", {}).get("sha256"),
+        }
+        if report.get("schema") != L3_SCHEMA:
+            failures.append(f"L3 report schema != {L3_SCHEMA}")
+        if not isinstance(binding, dict):
+            failures.append("L3 report binding must be an object")
+            return
+        for key, value in expected.items():
+            if binding.get(key) != value:
+                failures.append(f"L3 report binding {key} does not match frozen run")
+
+    def _challenges(self, record, failures):
+        try:
+            manifest = json.loads(Path(record["manifest"]["path"]).read_text())
+            return tuple(sorted(manifest["challenges"]))
+        except (KeyError, TypeError, OSError, json.JSONDecodeError) as error:
+            failures.append(f"cannot read pinned manifest for L3 coverage: {error}")
+            return ()
+
+    def _protocol(self, report, failures):
+        protocol = report.get("protocol")
+        if not isinstance(protocol, dict):
+            failures.append("L3 report protocol must be an object")
+            return None
+        reviewers = protocol.get("reviewers")
+        if not isinstance(reviewers, int) or reviewers < 2:
+            failures.append("L3 report must record at least two independent reviewers")
+        dimensions = protocol.get("dimensions")
+        if not isinstance(dimensions, list) or tuple(dimensions) != L3_DIMENSIONS:
+            failures.append(f"L3 report dimensions must be {L3_DIMENSIONS}")
+        modalities = protocol.get("target_modalities")
+        if not isinstance(modalities, list) or tuple(modalities) != L3_MODALITIES:
+            failures.append(f"L3 report target modalities must be {L3_MODALITIES}")
+        window = protocol.get("visual_turing_ci_window")
+        if not isinstance(window, list) or len(window) != 2 or window != list(L3_TURING_WINDOW):
+            failures.append(f"L3 report visual-Turing CI window must be {list(L3_TURING_WINDOW)}")
+        if protocol.get("likert_minimum") != L3_LIKERT_BOUND:
+            failures.append(f"L3 report Likert bound must be {L3_LIKERT_BOUND}")
+        if protocol.get("confidence_level") != 0.95:
+            failures.append("L3 report must record 95% confidence")
+        bootstrap = protocol.get("bootstrap")
+        if not isinstance(bootstrap, dict) or not bootstrap.get("method") or not isinstance(bootstrap.get("resamples"), int):
+            failures.append("L3 report bootstrap must record a method and integer resamples")
+        elif not isinstance(bootstrap.get("seed"), int):
+            failures.append("L3 report bootstrap must record an integer seed")
+        if not isinstance(protocol.get("per_cell"), int) or protocol.get("per_cell", 0) < 1:
+            failures.append("L3 report per_cell must be a positive integer")
+        if not isinstance(protocol.get("total_entries"), int):
+            failures.append("L3 report total_entries must be an integer")
+        return protocol
+
+    def _coverage(self, challenges, report, protocol, failures):
+        coverage = report.get("coverage")
+        if not isinstance(coverage, list):
+            failures.append("L3 report coverage must be a list")
+            return
+        per_cell = (protocol or {}).get("per_cell")
+        expected = {(challenge, modality) for challenge in challenges for modality in L3_MODALITIES}
+        actual = {(row.get("challenge"), row.get("target_modality")) for row in coverage if isinstance(row, dict)}
+        if not expected or len(coverage) != len(expected) or actual != expected:
+            failures.append("L3 report must cover each pinned challenge and all four target modalities exactly once")
+            return
+        if per_cell is None:
+            return
+        total = 0
+        for row in coverage:
+            if isinstance(row, dict):
+                real_count, synth_count = row.get("real"), row.get("synth")
+                if real_count != per_cell or synth_count != per_cell:
+                    failures.append(f"L3 coverage {row.get('challenge')}/{row.get('target_modality')} must be {per_cell} real + {per_cell} synth")
+                if isinstance(real_count, int) and isinstance(synth_count, int):
+                    total += real_count + synth_count
+        if protocol.get("total_entries") != total:
+            failures.append("L3 report total_entries must equal the sum of the per-cell coverage")
+
+    def _visual_turing(self, report, protocol, failures):
+        vt = report.get("visual_turing")
+        if not isinstance(vt, dict):
+            failures.append("L3 report visual_turing must be an object")
+            return
+        expected_reviewers = (protocol or {}).get("reviewers")
+        per_reviewer = vt.get("per_reviewer")
+        if not isinstance(per_reviewer, list) or len(per_reviewer) != expected_reviewers:
+            failures.append("L3 report visual_turing per_reviewer must match the recorded reviewer count")
+            return
+        for result in per_reviewer:
+            if isinstance(result, dict):
+                self._vt_result(result, failures)
+        pooled = vt.get("pooled")
+        if isinstance(pooled, dict):
+            self._vt_result(pooled, failures, pooled=True)
+        else:
+            failures.append("L3 report must record the pooled visual-Turing result")
+        if isinstance(pooled, dict):
+            recorded = vt.get("verdict")
+            expected = "pass" if all(isinstance(item, dict) and item.get("verdict") == "pass" for item in per_reviewer + [pooled]) else "fail"
+            if recorded != expected:
+                failures.append("L3 report visual_turing verdict disagrees with its per-reviewer/pooled CI window gates")
+
+    def _vt_result(self, result, failures, pooled=False):
+        verdict = result.get("verdict")
+        if verdict not in L3_VERDICTS:
+            failures.append("L3 visual-Turing verdict must be pass or fail")
+            return
+        if not self._number(result.get("balanced_accuracy")):
+            failures.append("L3 visual-Turing balanced accuracy must be finite")
+            return
+        ci = result.get("ci95")
+        if not isinstance(ci, list) or len(ci) != 2 or not all(self._number(value) for value in ci) or ci[0] > ci[1]:
+            failures.append("L3 visual-Turing CI must be an ordered finite 95% CI")
+            return
+        if not (ci[0] <= result["balanced_accuracy"] <= ci[1]):
+            failures.append("L3 visual-Turing CI must contain its balanced-accuracy point estimate")
+        expected = "pass" if ci[0] >= L3_TURING_WINDOW[0] and ci[1] <= L3_TURING_WINDOW[1] else "fail"
+        if verdict != expected:
+            failures.append("L3 visual-Turing verdict disagrees with its CI window gate")
+        if pooled:
+            return
+        confusion = result.get("confusion")
+        if not isinstance(confusion, dict):
+            failures.append("L3 per-reviewer visual-Turing must record a confusion matrix")
+            return
+        try:
+            real_total = confusion.get("real_said_real", 0) + confusion.get("real_said_synth", 0)
+            synth_total = confusion.get("synth_said_real", 0) + confusion.get("synth_said_synth", 0)
+            if real_total <= 0 or synth_total <= 0:
+                failures.append("L3 per-reviewer visual-Turing confusion must have both real and synth entries")
+                return
+            if result.get("n") != real_total + synth_total:
+                failures.append("L3 per-reviewer visual-Turing n must equal the confusion total")
+            rederived = 0.5 * (confusion["real_said_real"] / real_total + confusion["synth_said_synth"] / synth_total)
+        except (KeyError, TypeError):
+            failures.append("L3 per-reviewer visual-Turing confusion must carry integer counts")
+            return
+        if not math.isclose(rederived, result["balanced_accuracy"], rel_tol=1e-9, abs_tol=1e-12):
+            failures.append("L3 per-reviewer visual-Turing balanced accuracy disagrees with its confusion matrix")
+
+    def _likert(self, report, protocol, failures):
+        likert = report.get("likert")
+        if not isinstance(likert, list):
+            failures.append("L3 report likert must be a list")
+            return
+        dimensions = {item.get("dimension") for item in likert if isinstance(item, dict)}
+        if len(likert) != len(L3_DIMENSIONS) or dimensions != set(L3_DIMENSIONS):
+            failures.append(f"L3 report likert must cover each of {L3_DIMENSIONS} exactly once")
+            return
+        for item in likert:
+            if isinstance(item, dict):
+                self._likert_item(item, failures)
+
+    def _likert_item(self, item, failures):
+        dimension = item.get("dimension")
+        phase = item.get("phase")
+        self._likert_bundle(phase, f"L3 Likert {dimension} phase", failures)
+        per_modality = item.get("per_modality")
+        if not isinstance(per_modality, dict) or set(per_modality) != set(L3_MODALITIES):
+            failures.append(f"L3 Likert {dimension} per_modality must cover all four target modalities")
+            return
+        for modality in L3_MODALITIES:
+            self._likert_bundle(per_modality.get(modality), f"L3 Likert {dimension} {modality}", failures)
+        if not (item.get("fleiss_kappa") is None or self._number(item["fleiss_kappa"])):
+            failures.append(f"L3 Likert {dimension} Fleiss' kappa must be finite or null")
+
+    def _likert_bundle(self, bundle, label, failures):
+        if not isinstance(bundle, dict):
+            failures.append(f"{label} must be an object")
+            return
+        point = bundle.get("point")
+        lower = bundle.get("ci95_lower")
+        if not self._number(point) or not self._number(lower) or lower > point:
+            failures.append(f"{label} must record a finite point and a one-sided lower CI not above the mean")
+            return
+        if not isinstance(bundle.get("n"), int) or bundle["n"] < 1:
+            failures.append(f"{label} must record a positive integer n")
+            return
+        if not isinstance(bundle.get("na"), int) or bundle["na"] < 0:
+            failures.append(f"{label} must record a non-negative integer NA count")
+            return
+        verdict = bundle.get("verdict")
+        if verdict not in L3_VERDICTS:
+            failures.append(f"{label} verdict must be pass or fail")
+            return
+        expected = "pass" if lower >= L3_LIKERT_BOUND else "fail"
+        if verdict != expected:
+            failures.append(f"{label} verdict disagrees with its {L3_LIKERT_BOUND} lower-bound gate")
+
+    def _verdict(self, report, failures):
+        verdict = report.get("verdict")
+        if not isinstance(verdict, dict):
+            failures.append("L3 report verdict must be an object")
+            return
+        for key in ("visual_turing", "likert", "overall"):
+            if verdict.get(key) not in L3_VERDICTS:
+                failures.append(f"L3 report verdict {key} must be pass or fail")
+        likert = report.get("likert") or []
+        likert_expected = (
+            "pass"
+            if all(
+                isinstance(item, dict)
+                and (item.get("phase") or {}).get("verdict") == "pass"
+                and all(isinstance(modality, dict) and modality.get("verdict") == "pass" for modality in (item.get("per_modality") or {}).values())
+                for item in likert
+            )
+            else "fail"
+        )
+        overall_expected = "pass" if (report.get("visual_turing") or {}).get("verdict") == "pass" and likert_expected == "pass" else "fail"
+        if verdict.get("likert") != likert_expected:
+            failures.append("L3 report verdict likert disagrees with its dimension lower-bound gates")
+        if verdict.get("overall") != overall_expected:
+            failures.append("L3 report verdict overall must be the non-compensatory AND of visual-Turing and Likert")
+
+    def _number(self, value):
+        return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
 class ReportAttacher:
     """Attaches post-freeze L1/L2/L3/env reports (the only mutation allowed after freezing)."""
 
@@ -661,10 +918,10 @@ class ReportAttacher:
         self._store = store
         self._fingerprinter = fingerprinter
 
-    def _assert_controlled_l1_report(self, path):
+    def _assert_controlled_report(self, path, kind):
         for parent in Path(path).resolve().parents:
             if (parent / ".git").exists():
-                raise ContractViolationError(f"l1_report lives inside a git work tree ({parent}); controlled reports must stay outside the repo")
+                raise ContractViolationError(f"{kind} lives inside a git work tree ({parent}); controlled reports must stay outside the repo")
 
     def attach(self, run_path, kind, path):
         record = self._store.load_by_path(run_path)
@@ -675,12 +932,19 @@ class ReportAttacher:
         if kind not in ATTACH_KINDS:
             raise ContractViolationError(f"attachment kind must be one of {ATTACH_KINDS}: {kind!r}")
         if kind == "l1_report":
-            self._assert_controlled_l1_report(path)
+            self._assert_controlled_report(path, "l1_report")
             if any(attachment["kind"] == "l1_report" for attachment in record["attachments"]):
                 raise ContractViolationError(f"run {record['run_id']} already has a formal l1_report attachment")
             failures = L1ReportValidator().validate(record, path)
             if failures:
                 raise ContractViolationError("invalid l1_report: " + "; ".join(failures))
+        if kind == "l3_report":
+            self._assert_controlled_report(path, "l3_report")
+            if any(attachment["kind"] == "l3_report" for attachment in record["attachments"]):
+                raise ContractViolationError(f"run {record['run_id']} already has a formal l3_report attachment")
+            failures = L3ReportValidator().validate(record, path)
+            if failures:
+                raise ContractViolationError("invalid l3_report: " + "; ".join(failures))
         entry = {**self._fingerprinter.must_fingerprint(path, f"{kind} attachment"), "kind": kind}
         entry["attached_utc"] = self._store.now_utc()
         record["attachments"].append(entry)
@@ -735,6 +999,17 @@ class RunVerifier:
                 self.failures.append(f"l1 report lives inside a git work tree ({public_root}); controlled reports must stay outside the repo")
             for failure in L1ReportValidator().validate(record, attachment["path"]):
                 self.failures.append(f"l1 report: {failure}")
+
+    def verify_l3_reports(self, record):
+        attachments = [attachment for attachment in record.get("attachments", []) if attachment.get("kind") == "l3_report"]
+        if len(attachments) > 1:
+            self.failures.append("run has more than one formal l3_report attachment")
+        for attachment in attachments:
+            public_root = self.work_tree_ancestor(attachment["path"])
+            if public_root is not None:
+                self.failures.append(f"l3 report lives inside a git work tree ({public_root}); controlled reports must stay outside the repo")
+            for failure in L3ReportValidator().validate(record, attachment["path"]):
+                self.failures.append(f"l3 report: {failure}")
 
     def verify_phase_shape(self, record):
         phase, status = record["phase"], record["status"]
@@ -812,6 +1087,7 @@ class RunVerifier:
         self.verify_phase_shape(record)
         self.verify_hashes(record)
         self.verify_l1_reports(record)
+        self.verify_l3_reports(record)
         self.verify_guard(record)
         self.verify_storage(record_path or Path(record.get("run_id", ".")))
         if chain_depth == 0:
@@ -931,6 +1207,69 @@ class ContractSelfTest:
         }
         Path(path).write_text(json.dumps(report, indent=2) + "\n")
 
+    def write_l3_report(self, path, record):
+        challenges = tuple(sorted(self.QUOTAS))
+        per_cell = 5
+        coverage = []
+        for challenge in challenges:
+            for modality in L3_MODALITIES:
+                coverage.append({"challenge": challenge, "target_modality": modality, "real": per_cell, "synth": per_cell})
+        real_total = per_cell * len(challenges) * len(L3_MODALITIES)  # 5 * 2 * 4 = 40
+        per_reviewer = []
+        for reviewer in ("R1", "R2"):
+            per_reviewer.append(
+                {
+                    "reviewer": reviewer,
+                    "n": real_total + real_total,
+                    "balanced_accuracy": 0.5,
+                    "confusion": {
+                        "real_said_real": real_total // 2,
+                        "real_said_synth": real_total // 2,
+                        "synth_said_real": real_total // 2,
+                        "synth_said_synth": real_total // 2,
+                    },
+                    "ci95": [0.42, 0.58],
+                    "verdict": "pass",
+                }
+            )
+        pooled = {"reviewers": 2, "n": per_reviewer[0]["n"] * 2, "balanced_accuracy": 0.5, "ci95": [0.44, 0.56], "verdict": "pass"}
+        likert = []
+        for dimension in L3_DIMENSIONS:
+            phase = {"point": 4.2, "ci95_lower": 4.1, "n": per_reviewer[0]["n"] * 2, "na": 0, "verdict": "pass"}
+            per_modality = {
+                modality: {"point": 4.2, "ci95_lower": 4.1, "n": per_cell * 2 * len(challenges), "na": 0, "verdict": "pass"}
+                for modality in L3_MODALITIES
+            }
+            likert.append({"dimension": dimension, "phase": phase, "per_modality": per_modality, "fleiss_kappa": 0.4})
+        report = {
+            "schema": L3_SCHEMA,
+            "binding": {
+                "run_id": record["run_id"],
+                "phase": record["phase"],
+                "manifest_sha256": record["manifest"]["sha256"],
+                "candidate_checkpoint_sha256": record["selection"]["checkpoint"]["sha256"],
+                "samples_sha256": record["samples"]["sha256"],
+            },
+            "protocol": {
+                "reviewers": 2,
+                "dimensions": list(L3_DIMENSIONS),
+                "target_modalities": list(L3_MODALITIES),
+                "visual_turing_ci_window": [0.40, 0.60],
+                "likert_minimum": 4.0,
+                "likert_scale": {"min": 1, "max": 5},
+                "confidence_level": 0.95,
+                "bootstrap": {"method": "entry_level_stratified_percentile_mt19937", "resamples": 100, "seed": 20260821},
+                "per_cell": per_cell,
+                "total_entries": per_cell * 2 * len(challenges) * len(L3_MODALITIES),
+            },
+            "coverage": coverage,
+            "provenance": {"catalog_sha256": "c" * 64, "blind_map_sha256": "b" * 64},
+            "visual_turing": {"per_reviewer": per_reviewer, "pooled": pooled, "verdict": "pass", "fleiss_kappa": 0.35},
+            "likert": likert,
+            "verdict": {"visual_turing": "pass", "likert": "pass", "overall": "pass"},
+        }
+        Path(path).write_text(json.dumps(report, indent=2) + "\n")
+
     def expect_reject(self, action, label):
         try:
             action()
@@ -1003,6 +1342,24 @@ class ContractSelfTest:
             "L1 report in public work tree",
         )
         ReportAttacher(store, fingerprinter).attach(p1_path, "l1_report", fixture / "l1_report.json")
+        self.write_l3_report(fixture / "l3_report.json", store.load_by_path(p1_path))
+        invalid_l3 = json.loads((fixture / "l3_report.json").read_text())
+        invalid_l3["visual_turing"]["verdict"] = "fail"
+        invalid_l3["verdict"] = {"visual_turing": "fail", "likert": "pass", "overall": "pass"}
+        (fixture / "invalid_l3_verdict.json").write_text(json.dumps(invalid_l3))
+        self.expect_reject(
+            lambda: ReportAttacher(store, fingerprinter).attach(p1_path, "l3_report", fixture / "invalid_l3_verdict.json"),
+            "L3 non-compensatory AND mismatch",
+        )
+        malformed_l3 = json.loads((fixture / "l3_report.json").read_text())
+        del malformed_l3["protocol"]["bootstrap"]
+        malformed_l3["visual_turing"]["pooled"] = None
+        (fixture / "malformed_l3_report.json").write_text(json.dumps(malformed_l3))
+        self.expect_reject(
+            lambda: ReportAttacher(store, fingerprinter).attach(p1_path, "l3_report", fixture / "malformed_l3_report.json"),
+            "malformed L3 report rejected (no crash)",
+        )
+        ReportAttacher(store, fingerprinter).attach(p1_path, "l3_report", fixture / "l3_report.json")
         verifier = RunVerifier(fingerprinter)
         verifier.verify(store.load_by_path(p1_path), record_path=p1_path)
         self.failures += [f"p1 positive path: {f}" for f in verifier.failures]

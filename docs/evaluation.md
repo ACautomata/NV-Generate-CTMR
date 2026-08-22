@@ -78,6 +78,34 @@ P3 also requires a `brats-l1-pairs/1` manifest. Each record binds one same-case 
 
 The report applies the FID rule per challenge and target modality: the synthetic-vs-holdout mean-FID 95% CI upper bound must be at most 2.5× the real train-vs-holdout **bootstrap median**. The phase contract validates report schema, candidate and manifest hashes, coverage, threshold arithmetic, P3 direction semantics, and controlled-storage placement; a scientifically `fail` report is still valid evidence and may be attached.
 
+## BraTS L3 blind evaluation
+
+`scripts/brats_l3_blind_eval.py` turns a **frozen** P1/P2/P3 candidate into a neuroradiology-review blinding package and aggregates the blinded judgments to a controlled `brats-l3-report/1` conclusion. It never copies DUA-restricted data into the repository.
+
+```bash
+python -m scripts.brats_l3_blind_eval build-package \
+  --run /controlled/records/runs/p1-example/run.json \
+  --catalog /controlled/l3/p1/catalog.json \
+  --output /controlled/l3/p1 \
+  --seed 20260821 --per-cell 5
+python -m scripts.brats_l3_blind_eval aggregate \
+  --run /controlled/records/runs/p1-example/run.json \
+  --responses /controlled/l3/p1/R1.json --responses /controlled/l3/p1/R2.json \
+  --blind-map /controlled/l3/p1/blind_map.json \
+  --catalog /controlled/l3/p1/catalog.json \
+  --output /controlled/l3/p1/l3_report.json \
+  --resamples 1000 --seed 20260821
+python -m scripts.brats_phase_run_contract attach \
+  --run /controlled/records/runs/p1-example/run.json \
+  --kind l3_report --path /controlled/l3/p1/l3_report.json
+```
+
+`catalog.json` (`brats-l3-catalog/1`) lists every available candidate image by `challenge`, `case`, `target_modality`, `source` (`real`|`synth`), path, SHA-256 and, for P3 synthetic entries, `src_modality`. `build-package` draws `per-cell` real + `per-cell` synthetic images per challenge × target modality — 5 × 5 over the five sub-challenges × four modalities giving 200 entries — into opaque entry ids (`L3-0001`…`L3-0200`) in a seeded presentation order. A cell with fewer than `per-cell` available images of either source refuses to build (no silent partial sub-sampling). It emits a **blinded reviewer package** (`brats-l3-package/1`, no source or subject id) and a **controlled blind map** (`brats-l3-blind-map/1`, the auditable unblinded source/case per entry). The seed, per-cell quota and hashes make sampling and blinding reproducible.
+
+`aggregate` combines ≥2 independent reviewers' blinded judgments (`brats-l3-responses/1`) with the blind map. It recomputes per-reviewer **visual-Turing balanced accuracy** with a class-stratified 95% percentile bootstrap CI, plus a pooled CI; the four Likert dimensions with their **phase-total and per-target-modality one-sided lower 95% bounds**; and **Fleiss' κ** (report-only). A `tumor_authenticity` rating may be `NA` (no tumor); `NA` entries are excluded from that dimension's bound and their count recorded.
+
+The verdict is a **non-compensatory AND**: it passes only when every reviewer's visual-Turing CI lies entirely inside `[0.40, 0.60]` and every Likert lower bound is at least `4.0/5.0`. The phase contract validates the L3 schema, candidate and manifest binding, per-cell coverage (5 real + 5 synth per pinned challenge × modality), the CI window and lower-bound gates, the non-compensatory AND, and controlled-storage placement (the blind map and any subject id stay outside the repository).
+
 ## Results and Evaluation
 
 We retrained several state-of-the-art diffusion model-based methods using our dataset. The results in the table and figure below show that our method outperforms previous methods on an unseen dataset ([autoPET 2023](https://www.nature.com/articles/s41597-022-01718-3)). Our method shows superior performance to previous methods based on all [Frechet Inception Distance (FID)](https://papers.nips.cc/paper/2017/hash/8a1d694707eb0fefe65871369074926d-Abstract.html) scores on different 2D planes. Here we compared the generated images with real images of size 512 x 512 x 512 and spacing 1.0 x 1.0 x 1.0 mm3.
