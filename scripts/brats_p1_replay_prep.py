@@ -57,6 +57,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import shutil
 import sys
 import zipfile
@@ -72,6 +73,11 @@ SHAPE_MIN = 32
 SHAPE_MAX = 320
 
 REPLAY_SUB = "MRRATE"
+
+# Read-ahead window for ranged zip reads: zipfile reads members in small
+# blocks; one HTTP Range request per read would pay the proxy RTT dozens of
+# times per study. A 16 MiB window keeps it to a handful of requests.
+READ_AHEAD_BYTES = 16 * 1024 * 1024
 
 
 class ReplayMetadataReader:
@@ -186,8 +192,73 @@ class ReplaySelector:
         }
 
 
+class HttpRangeFile:
+    """Seekable read-only file over HTTP Range requests against a resolved LFS URL.
+
+    Uses the 0-0 probe GET to follow the resolve redirect once (Content-Range
+    carries the total size); subsequent reads hit the signed CDN URL directly.
+    """
+
+    def __init__(self, url, token=None, timeout=120):
+        import requests  # deferred: execution side only (gauss system python)
+
+        self._session = requests.Session()
+        if token:
+            self._session.headers["Authorization"] = f"Bearer {token}"
+        self._timeout = timeout
+        probe = self._session.get(url, headers={"Range": "bytes=0-0"}, allow_redirects=True, timeout=timeout)
+        probe.raise_for_status()
+        content_range = probe.headers.get("Content-Range")
+        if content_range is None:
+            raise ValueError(f"server did not honour Range (no Content-Range): {url}")
+        self._url = probe.url
+        self._size = int(content_range.rsplit("/", 1)[1])
+        self._pos = 0
+        self._cache_start = -1
+        self._cache = b""
+
+    def _fetch(self, start, end):
+        response = self._session.get(
+            self._url, headers={"Range": f"bytes={start}-{end}"}, timeout=self._timeout
+        )
+        response.raise_for_status()
+        return response.content
+
+    def seek(self, offset, whence=0):
+        if whence == 0:
+            self._pos = offset
+        elif whence == 1:
+            self._pos += offset
+        elif whence == 2:
+            self._pos = self._size + offset
+        return self._pos
+
+    def tell(self):
+        return self._pos
+
+    def seekable(self):
+        return True
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            size = self._size - self._pos
+        if size == 0 or self._pos >= self._size:
+            return b""
+        cached_end = self._cache_start + len(self._cache)
+        if 0 <= self._cache_start <= self._pos and self._pos + size <= cached_end:
+            data = self._cache[self._pos - self._cache_start : self._pos - self._cache_start + size]
+            self._pos += size
+            return data
+        fetch_end = min(self._pos + max(size, READ_AHEAD_BYTES), self._size) - 1
+        self._cache_start = self._pos
+        self._cache = self._fetch(self._pos, fetch_end)
+        data = self._cache[:size]
+        self._pos += len(data)
+        return data
+
+
 class ReplayDownloader:
-    """Downloads the selected study zips from HF and extracts the chosen img members."""
+    """Fetches only the chosen members via ranged zip reads (whole-zip download avoided)."""
 
     def __init__(self, selection, raw_root, token=None):
         self._selection = selection
@@ -197,30 +268,38 @@ class ReplayDownloader:
     def target_path(self, entry):
         return self._raw_root / "MR-RATE" / entry["batch"] / entry["study"] / f"{entry['study']}_{entry['series']}.nii.gz"
 
-    def run(self, repo_id="Forithmus/MR-RATE"):
-        from huggingface_hub import hf_hub_download  # deferred: execution side only
+    @staticmethod
+    def resolve_url(repo_id, entry):
+        # HF_ENDPOINT covers mirror deployments (sugon: https://hf-mirror.com);
+        # requests picks up http_proxy/https_proxy from the environment.
+        base = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+        return f"{base}/datasets/{repo_id}/resolve/main/mri/{entry['batch']}/{entry['study']}.zip"
 
+    def run(self, repo_id="Forithmus/MR-RATE", shard=None):
+        """shard: optional (index, total) — only entries with pos % total == index."""
+        shard_index, shard_total = shard if shard else (0, 1)
         failures = []
-        for index, entry in enumerate(self._selection["entries"]):
+        todo = [
+            (index, entry)
+            for index, entry in enumerate(self._selection["entries"])
+            if index % shard_total == shard_index
+        ]
+        for done, (index, entry) in enumerate(todo):
             target = self.target_path(entry)
             if target.is_file() and target.stat().st_size > 0:
                 continue
+            member = f"{entry['study']}/img/{entry['study']}_{entry['series']}.nii.gz"
             try:
-                zip_path = hf_hub_download(
-                    repo_id=repo_id,
-                    filename=f"mri/{entry['batch']}/{entry['study']}.zip",
-                    token=self._token,
-                )
-                member = f"{entry['study']}/img/{entry['study']}_{entry['series']}.nii.gz"
+                remote = HttpRangeFile(self.resolve_url(repo_id, entry), token=self._token)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(zip_path) as archive:
+                with zipfile.ZipFile(remote) as archive:
                     with archive.open(member) as source, open(target, "wb") as sink:
                         shutil.copyfileobj(source, sink)
             except Exception as error:  # noqa: BLE001 - one bad study must not kill the cohort
                 failures.append({"study": entry["study"], "series": entry["series"], "error": str(error)})
                 continue
-            if (index + 1) % 100 == 0:
-                print(f"[download] {index + 1}/{len(self._selection['entries'])} series extracted", flush=True)
+            if (done + 1) % 100 == 0:
+                print(f"[download shard {shard_index}/{shard_total}] {done + 1}/{len(todo)} series extracted", flush=True)
         return failures
 
 
@@ -464,11 +543,12 @@ def main(argv=None):
     p.add_argument("--target-count", type=int, default=7404, help="1:1 against the 7404-entry BraTS p1 train list")
     p.add_argument("--out", required=True)
 
-    p = sub.add_parser("download", help="download selected study zips and extract the chosen series (gauss)")
+    p = sub.add_parser("download", help="fetch the chosen series via ranged zip member reads (gauss)")
     p.add_argument("--selection", required=True)
     p.add_argument("--raw-root", required=True)
     p.add_argument("--failures-out", default=None, help="where to write the per-study failure list")
     p.add_argument("--hf-token-file", default=None, help="file holding the gated-dataset HF token")
+    p.add_argument("--shard", default=None, help="i/N — only entries with pos %% N == i (parallel shards)")
 
     p = sub.add_parser("encode-list", help="emit the upstream encode inputs + env config")
     p.add_argument("--selection", required=True)
@@ -527,7 +607,11 @@ def main(argv=None):
 
     if args.command == "download":
         token = Path(args.hf_token_file).read_text().strip() if args.hf_token_file else None
-        failures = ReplayDownloader(selection, args.raw_root, token=token).run()
+        shard = None
+        if args.shard:
+            index_text, _, total_text = args.shard.partition("/")
+            shard = (int(index_text), int(total_text))
+        failures = ReplayDownloader(selection, args.raw_root, token=token).run(shard=shard)
         if args.failures_out:
             Path(args.failures_out).parent.mkdir(parents=True, exist_ok=True)
             Path(args.failures_out).write_text(json.dumps(failures, indent=1) + "\n")

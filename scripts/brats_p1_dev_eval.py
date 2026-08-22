@@ -310,7 +310,7 @@ class RealReferenceBank:
             return torch.load(bank_path, weights_only=True)
         bank = {modality: {plane: [] for plane in PLANES} for modality in TARGET_MODALITIES}
         for entry in self._entries:
-            modality = {v: k for k, v in {"mri_t1_skull_stripped": "t1n", "mri_t2_skull_stripped": "t2w", "mri_flair_skull_stripped": "t2f", "mri_t1c_skull_stripped": "t1c"}.items()}[entry["modality"]]
+            modality = {"mri_t1_skull_stripped": "t1n", "mri_t2_skull_stripped": "t2w", "mri_flair_skull_stripped": "t2f", "mri_t1c_skull_stripped": "t1c"}[entry["modality"]]
             path = self._raw_root / entry["image"]
             planes = self._features.volume_features(path)
             for plane, matrix in planes.items():
