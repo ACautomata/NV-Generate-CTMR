@@ -80,7 +80,9 @@ SCHEMA = "brats-phase-run/1"
 PHASES = ("P1", "P2", "P3")
 STATUS_OPEN = "open"
 STATUS_FROZEN = "frozen"
-LIST_SIDES = ("train", "dev")  # holdout is never a data-list side
+LIST_SIDES = ("train", "dev", "replay")  # holdout is never a data-list side; replay is the
+# P1-only external MR-RATE cohort (spec #51 decision 6): its entries carry the
+# replay study identity and must NOT collide with the BraTS split manifest.
 ATTACH_KINDS = ("l1_report", "l2_report", "l3_report", "env")
 UPSTREAM_PHASE = "P1"  # P2 and P3 both hang off the same frozen P1-DM
 L1_SCHEMA = "brats-l1-report/1"
@@ -146,6 +148,9 @@ class ManifestSides:
     def side_of(self, challenge, case):
         return self._side_of.get((challenge, case))
 
+    def all_case_keys(self):
+        return {case for (_challenge, case) in self._side_of}
+
     def holdout_keys(self):
         return {key for key, side in self._side_of.items() if side == "holdout"}
 
@@ -170,7 +175,12 @@ class HoldoutGuard:
         return pairs
 
     def guard_data_list(self, list_entry):
-        """A labelled list must exist, carry cases, and match its side label with no holdout."""
+        """A labelled list must exist, carry cases, and match its side label with no holdout.
+
+        A ``replay`` list (P1 only, spec #51 decision 6) inverts the membership
+        check: every entry must be an external replay-cohort study that is NOT
+        in the pinned BraTS manifest — by pair identity or by bare case id, so
+        a BraTS case cannot re-enter training under the replay label."""
         path = Path(list_entry["path"])
         if not path.is_file():
             raise ContractViolationError(f"data list not found: {path}")
@@ -178,8 +188,16 @@ class HoldoutGuard:
         if not pairs:
             raise ContractViolationError(f"data list carries no (sub, case) entries: {path}")
         label = list_entry["side"]
+        manifest_cases = self._sides.all_case_keys() if label == "replay" else None
         for challenge, case in pairs:
             side = self._sides.side_of(challenge, case)
+            if label == "replay":
+                if side is not None or case in manifest_cases:
+                    raise ContractViolationError(
+                        f"{path}: replay list carries manifest case ({challenge}, {case}); "
+                        "the replay cohort is external to the BraTS split and must not shadow a split case"
+                    )
+                continue
             if side is None:
                 raise ContractViolationError(f"{path}: ({challenge}, {case}) is not in the pinned manifest")
             if side == "holdout":
@@ -343,6 +361,11 @@ class RunInitializer:
         for side, path in data_lists:
             if side not in LIST_SIDES:
                 raise ContractViolationError(f"data list side must be one of {LIST_SIDES}: {side!r}")
+            if side == "replay" and phase != "P1":
+                raise ContractViolationError(
+                    "replay data lists are P1-only (spec #51 decision 6: MR-RATE replay mixes into "
+                    "the full-parameter DM continuation; ControlNet-only P2/P3 take no replay)"
+                )
             list_entries.append({**self._fingerprinter.must_fingerprint(path, f"{side} data list"), "side": side})
         if not list_entries:
             raise ContractViolationError("at least one --data-list SIDE=PATH is required")
@@ -1122,10 +1145,14 @@ class ContractSelfTest:
         dev_list = {"training": [{"sub": "GLI", "case": "FIXGLI-0100-000"}]}
         holdout_list = {"training": [{"sub": "GLI", "case": "FIXGLI-0200-000"}]}
         mislabelled_list = {"training": [{"sub": "GLI", "case": "FIXGLI-0100-000"}]}
+        replay_list = {"training": [{"sub": "MRRATE", "case": "AB12CD34EF"}, {"sub": "MRRATE", "case": "FG56HI78JK"}]}
+        replay_collision_list = {"training": [{"sub": "MRRATE", "case": "FIXGLI-0000-000"}]}
         (lists_dir / "train.json").write_text(json.dumps(train_list))
         (lists_dir / "dev.json").write_text(json.dumps(dev_list))
         (lists_dir / "holdout.json").write_text(json.dumps(holdout_list))
         (lists_dir / "mislabelled.json").write_text(json.dumps(mislabelled_list))
+        (lists_dir / "replay.json").write_text(json.dumps(replay_list))
+        (lists_dir / "replay_collision.json").write_text(json.dumps(replay_collision_list))
 
         (root / "env_config.json").write_text('{"lr": 2e-06, "n_epochs": 100}\n')
         (root / "model_config.json").write_text('{"batch_size": 1}\n')
@@ -1368,6 +1395,7 @@ class ContractSelfTest:
         for label, data_lists in (
             ("holdout data list", [("train", fixture / "lists/holdout.json")]),
             ("mislabelled side list", [("train", fixture / "lists/mislabelled.json")]),
+            ("replay collision list", [("train", fixture / "lists/train.json"), ("replay", fixture / "lists/replay_collision.json")]),
         ):
             fresh = self.store_at(self._workdir / "records_reject")
             self.expect_reject(
@@ -1385,6 +1413,24 @@ class ContractSelfTest:
                 ),
                 label,
             )
+
+        # P1 replay positive path: train + external replay list opens and verifies.
+        replay_store = self.store_at(self._workdir / "records_replay")
+        replay_path = RunInitializer(
+            replay_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")
+        ).init(
+            "P1",
+            "p1-replay-fixture",
+            fixture / "phase_manifest.json",
+            [("env", fixture / "env_config.json")],
+            [("train", fixture / "lists/train.json"), ("replay", fixture / "lists/replay.json")],
+            fixture / "base_ckpt.pt",
+            None,
+            None,
+        )
+        replay_verifier = RunVerifier(fingerprinter)
+        replay_verifier.verify(replay_store.load_by_path(replay_path), record_path=replay_path)
+        self.failures += [f"p1 replay positive path: {f}" for f in replay_verifier.failures]
 
         frozen_run = store.load_by_path(p1_path)
         if frozen_run["status"] != "frozen" or frozen_run.get("samples") is None:
@@ -1430,6 +1476,19 @@ class ContractSelfTest:
         )
 
         # --- phase chain: P2 needs a frozen P1; P3 must not pin a P2 run
+        self.expect_reject(
+            lambda: RunInitializer(open_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
+                "P2",
+                "p2-replay",
+                fixture / "phase_manifest.json",
+                [("env", fixture / "env_config.json")],
+                [("train", fixture / "lists/train.json"), ("replay", fixture / "lists/replay.json")],
+                None,
+                p1_path,
+                None,
+            ),
+            "P2 with a replay list",
+        )
         self.expect_reject(
             lambda: RunInitializer(open_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
                 "P2",
