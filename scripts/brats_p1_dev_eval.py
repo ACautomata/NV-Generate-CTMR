@@ -439,7 +439,7 @@ class L2TrendRunner:
         rows = []
         for item in cohort:
             case = item["case"]
-            pred = Path(output_dir) / item["sub"] / f"{case}.nii.gz"
+            pred = Path(output_dir) / f"{case}.nii.gz"
             row = {"sub": item["sub"], "case": case, "run_fail": not pred.is_file()}
             if row["run_fail"]:
                 rows.append(row)
