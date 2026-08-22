@@ -262,7 +262,10 @@ class MrTrendFeatures:
     def network(self):
         if self._network is None:
             self._network = torch.hub.load(
-                "Warvito/radimagenet-models", model="radimagenet_resnet50", trust_repo=True, verbose=False
+                # Explicit ":main" ref: torch.hub probes github.com for the default
+                # branch when no ref is given; on the sugon the probe dies with
+                # RemoteDisconnected (not URLError) before the cache fallback.
+                "Warvito/radimagenet-models:main", model="radimagenet_resnet50", trust_repo=True, verbose=False
             ).to(self._device).eval()
         return self._network
 
@@ -703,26 +706,33 @@ def main(argv=None):
             epoch_dir = eval_root / f"epoch_{epoch}"
             try:
                 samples = sampler.generate_cohort(path, cohort, spacings, epoch_dir / "samples")
+                plane_cache = {sample["path"]: features.volume_features(sample["path"]) for sample in samples}
+                generated = {modality: {plane: [] for plane in PLANES} for modality in TARGET_MODALITIES}
+                for sample in samples:
+                    for plane in PLANES:
+                        matrix = plane_cache[sample["path"]][plane]
+                        if matrix is not None:
+                            generated[sample["modality"]][plane].append(matrix.mean(axis=0))
+                report, mean_fid = fid.score(generated)
             except Exception as error:
-                # A partially written checkpoint (or a transient load failure) must
-                # not kill the sidecar: without it nobody writes .early_stop.
+                # A broken checkpoint, a transient network/model failure, or any
+                # single-epoch hiccup must not kill the sidecar: without it
+                # nobody writes .early_stop. Skip and retry on the next poll.
                 print(f"[eval] epoch {epoch} skipped: {error}", file=sys.stderr, flush=True)
                 continue
-            plane_cache = {sample["path"]: features.volume_features(sample["path"]) for sample in samples}
-            generated = {modality: {plane: [] for plane in PLANES} for modality in TARGET_MODALITIES}
-            for sample in samples:
-                for plane in PLANES:
-                    matrix = plane_cache[sample["path"]][plane]
-                    if matrix is not None:
-                        generated[sample["modality"]][plane].append(matrix.mean(axis=0))
-            report, mean_fid = fid.score(generated)
+            l2_trend = None
+            if not args.skip_l2:
+                try:
+                    l2_trend = l2.run(samples, cohort, epoch_dir)
+                except Exception as error:
+                    print(f"[eval] epoch {epoch} l2 skipped: {error}", file=sys.stderr, flush=True)
             record = {
                 "eval_utc": datetime.now(UTC).isoformat(),
                 "epoch": epoch,
                 "checkpoint": str(path),
                 "fid": report,
                 "m": mean_fid,
-                "l2_trend": (l2.run(samples, cohort, epoch_dir) if not args.skip_l2 else None),
+                "l2_trend": l2_trend,
                 "cohort_file": str(cohort_path),
             }
             ledger.append(record)
