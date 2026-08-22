@@ -174,6 +174,9 @@ class P1FinetuneJob:
         unet = torch.nn.SyncBatchNorm.convert_sync_batchnorm(unet)
         if dist.is_initialized():
             unet = DistributedDataParallel(unet, device_ids=[self._device], find_unused_parameters=True)
+        # The base checkpoint pickles MONAI meta-tensor globals alongside the
+        # weights; allowlist them so weights_only stays enabled (trusted source).
+        torch.serialization.add_safe_globals([monai.data.meta_tensor.MetaTensor, monai.utils.enums.TraceKeys])
         checkpoint = torch.load(args.existing_ckpt_filepath, map_location=self._device, weights_only=True)
         target = unet.module if dist.is_initialized() else unet
         state = target.load_state_dict(checkpoint["unet_state_dict"], strict=False)

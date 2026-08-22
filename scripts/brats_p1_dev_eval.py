@@ -63,6 +63,12 @@ from .utils import define_instance, dynamic_infer
 from .utils_infer import ReconModel
 
 MODALITY_TOKENS = {"t1n": 29, "t1c": 34, "t2w": 30, "t2f": 31}
+
+# The run-local reference bank payload holds numpy arrays; weights_only rejects
+# them by default, so allowlist numpy reconstruction (bank is a local artifact).
+torch.serialization.add_safe_globals(
+    [np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.Float64DType]
+)
 TARGET_MODALITIES = ("t1n", "t1c", "t2w", "t2f")
 PLANES = ("xy", "yz", "zx")
 COHORT_QUOTAS = {"GLI": 4, "SSA": 2, "MEN": 4, "METS": 3, "PED": 3}
