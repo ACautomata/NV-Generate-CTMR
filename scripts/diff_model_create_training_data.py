@@ -243,19 +243,24 @@ def diff_model_create_training_data(env_config_path: str, model_config_path: str
         filepath = files_raw[_iter]["image"]
         modality = files_raw[_iter]["modality"]
 
-        # Compute rounded target dims (multiples of 128) from the original image metadata.
-        new_dim = tuple(
-            round_number(int(plain_transforms({"image": os.path.join(args.data_base_dir, filepath)})["image"].meta["dim"][_i])) for _i in range(1, 4)
-        )
+        # One bad volume (truncated gzip, unreadable header) must not kill the
+        # whole shard: log and continue; the caller reconciles failures after.
+        try:
+            # Compute rounded target dims (multiples of 128) from the original image metadata.
+            new_dim = tuple(
+                round_number(int(plain_transforms({"image": os.path.join(args.data_base_dir, filepath)})["image"].meta["dim"][_i])) for _i in range(1, 4)
+            )
 
-        # Build the transform pipeline that includes resizing to new_dim.
-        # NOTE: 'modality' is referenced here but not defined in this scope; caller must ensure it's available
-        # (or this line will raise a NameError). Left unchanged by request.
-        logger.info(f"Generate embddings assuming the data is {modality}")
-        new_transforms = create_transforms(new_dim, modality)
+            # Build the transform pipeline that includes resizing to new_dim.
+            # NOTE: 'modality' is referenced here but not defined in this scope; caller must ensure it's available
+            # (or this line will raise a NameError). Left unchanged by request.
+            logger.info(f"Generate embddings assuming the data is {modality}")
+            new_transforms = create_transforms(new_dim, modality)
 
-        # Run the per-file preprocessing + autoencoder encoding + NIfTI saving.
-        process_file(filepath, args, autoencoder, device, plain_transforms, new_transforms, logger)
+            # Run the per-file preprocessing + autoencoder encoding + NIfTI saving.
+            process_file(filepath, args, autoencoder, device, plain_transforms, new_transforms, logger)
+        except Exception as error:
+            logger.error(f"Error processing {filepath}: {error}")
 
     # Tear down distributed state if it was initialized.
     if dist.is_initialized():

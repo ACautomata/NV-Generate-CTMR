@@ -223,7 +223,13 @@ class HttpRangeFile:
             self._url, headers={"Range": f"bytes={start}-{end}"}, timeout=self._timeout
         )
         response.raise_for_status()
-        return response.content
+        data = response.content
+        wanted = end - start + 1
+        if len(data) != wanted:
+            # A proxy that truncates a Range response yields a partial file that
+            # zipfile cannot distinguish from a short read at member EOF.
+            raise IOError(f"short ranged read: requested {wanted} bytes, got {len(data)}")
+        return data
 
     def seek(self, offset, whence=0):
         if whence == 0:
@@ -290,19 +296,25 @@ class ReplayDownloader:
             if target.is_file() and target.stat().st_size > 0:
                 continue
             member = f"{entry['study']}/img/{entry['study']}_{entry['series']}.nii.gz"
-            try:
-                remote = HttpRangeFile(self.resolve_url(repo_id, entry), token=self._token)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                # write to .part and atomically publish: a failed/interrupted
-                # download must never leave a truncated file at the final path
-                # (the resumability check above would treat it as complete).
-                part = target.with_name(target.name + ".part")
-                with zipfile.ZipFile(remote) as archive:
-                    with archive.open(member) as source, open(part, "wb") as sink:
-                        shutil.copyfileobj(source, sink)
-                part.replace(target)
-            except Exception as error:  # noqa: BLE001 - one bad study must not kill the cohort
-                failures.append({"study": entry["study"], "series": entry["series"], "error": str(error)})
+            last_error = None
+            for attempt in range(3):
+                try:
+                    remote = HttpRangeFile(self.resolve_url(repo_id, entry), token=self._token)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    # write to .part and atomically publish: a failed/interrupted
+                    # download must never leave a truncated file at the final path
+                    # (the resumability check above would treat it as complete).
+                    part = target.with_name(target.name + ".part")
+                    with zipfile.ZipFile(remote) as archive:
+                        with archive.open(member) as source, open(part, "wb") as sink:
+                            shutil.copyfileobj(source, sink)
+                    part.replace(target)
+                    last_error = None
+                    break
+                except Exception as error:  # noqa: BLE001 - one bad study must not kill the cohort
+                    last_error = error
+            if last_error is not None:
+                failures.append({"study": entry["study"], "series": entry["series"], "error": str(last_error)})
                 continue
             if (done + 1) % 100 == 0:
                 print(f"[download shard {shard_index}/{shard_total}] {done + 1}/{len(todo)} series extracted", flush=True)
@@ -424,10 +436,12 @@ class ReplayVerifier:
             if not raw.is_file():
                 problems.append(f"raw volume missing: {raw}")
                 continue
-            with open(raw, "rb") as handle:
-                magic = handle.read(2)
-            if magic != b"\x1f\x8b":
-                problems.append(f"raw volume is not gzip: {raw}")
+            try:
+                with gzip.open(raw, "rb") as handle:
+                    while handle.read(1 << 20):
+                        pass
+            except Exception:
+                problems.append(f"raw volume is truncated/invalid gzip: {raw}")
             emb = CompanionWriter(self._selection, self._emb_root).emb_path(entry)
             if not emb.is_file():
                 problems.append(f"embedding missing: {emb}")
