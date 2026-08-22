@@ -228,7 +228,7 @@ class CandidateSampler:
         return np.clip(data, 0, None).astype(np.int16)
 
     def generate_cohort(self, checkpoint_path, cohort, spacings, out_dir):
-        unet, _ae, _scale, recon = self.load_models(checkpoint_path)
+        unet, recon = self.load_models(checkpoint_path)
         samples = []
         for item in cohort:
             for modality in TARGET_MODALITIES:
@@ -236,7 +236,7 @@ class CandidateSampler:
                 out = Path(out_dir) / item["sub"] / f"{item['case']}_{modality}_seed{seed}.nii.gz"
                 if not out.is_file():
                     out.parent.mkdir(parents=True, exist_ok=True)
-                    data = self.sample_one(unet, recon, MODALITY_TOKENS[modality], spacings[item["case"]], seed)
+                    data = self.sample_one(unet, recon, MODALITY_TOKENS[modality], spacings.spacing_of(item["case"]), seed)
                     image = nib.Nifti1Image(data, affine=np.diag([1.0, 1.0, 1.0, 1.0]))
                     nib.save(image, out)
                 samples.append({"sub": item["sub"], "case": item["case"], "modality": modality, "path": str(out)})
