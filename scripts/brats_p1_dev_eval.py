@@ -130,11 +130,13 @@ class CohortSpacingSource:
 class CheckpointWatcher:
     """Polls the trainer's epoch checkpoints; yields un-evaluated eval points."""
 
-    def __init__(self, ckpt_dir, eval_every, max_epoch):
+    def __init__(self, ckpt_dir, eval_every, max_epoch, done_epochs=()):
         self._ckpt_dir = Path(ckpt_dir)
         self._eval_every = eval_every
         self._max_epoch = max_epoch
-        self._done = set()
+        # Seed from the ledger so a sidecar restart does not re-evaluate history
+        # (re-appended trend points would corrupt the early-stop patience count).
+        self._done = set(done_epochs)
 
     def pending(self):
         found = []
@@ -666,7 +668,9 @@ def main(argv=None):
     sampler = CandidateSampler(merged, device, None)
     instrument_results = dict(item.split("=", 1) for item in args.instrument_results)
     l2 = L2TrendRunner(instrument_results, args.instrument_entry, args.nnunet_raw, args.nnunet_preprocessed)
-    watcher = CheckpointWatcher(args.ckpt_dir, args.eval_every, args.max_epoch)
+    watcher = CheckpointWatcher(
+        args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()}
+    )
     idle_since = None
 
     while True:
@@ -680,8 +684,17 @@ def main(argv=None):
             continue
         idle_since = None
         for epoch, path in pending:
+            if any(r["epoch"] == epoch for r in ledger.read()):
+                watcher.mark_done(epoch)
+                continue
             epoch_dir = eval_root / f"epoch_{epoch}"
-            samples = sampler.generate_cohort(path, cohort, spacings, epoch_dir / "samples")
+            try:
+                samples = sampler.generate_cohort(path, cohort, spacings, epoch_dir / "samples")
+            except Exception as error:
+                # A partially written checkpoint (or a transient load failure) must
+                # not kill the sidecar: without it nobody writes .early_stop.
+                print(f"[eval] epoch {epoch} skipped: {error}", file=sys.stderr, flush=True)
+                continue
             plane_cache = {sample["path"]: features.volume_features(sample["path"]) for sample in samples}
             generated = {modality: {plane: [] for plane in PLANES} for modality in TARGET_MODALITIES}
             for sample in samples:

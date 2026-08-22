@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import hashlib
 import json
 import os
@@ -292,9 +293,14 @@ class ReplayDownloader:
             try:
                 remote = HttpRangeFile(self.resolve_url(repo_id, entry), token=self._token)
                 target.parent.mkdir(parents=True, exist_ok=True)
+                # write to .part and atomically publish: a failed/interrupted
+                # download must never leave a truncated file at the final path
+                # (the resumability check above would treat it as complete).
+                part = target.with_name(target.name + ".part")
                 with zipfile.ZipFile(remote) as archive:
-                    with archive.open(member) as source, open(target, "wb") as sink:
+                    with archive.open(member) as source, open(part, "wb") as sink:
                         shutil.copyfileobj(source, sink)
+                part.replace(target)
             except Exception as error:  # noqa: BLE001 - one bad study must not kill the cohort
                 failures.append({"study": entry["study"], "series": entry["series"], "error": str(error)})
                 continue
@@ -417,6 +423,11 @@ class ReplayVerifier:
             raw = ReplayDownloader(self._selection, self._raw_root).target_path(entry)
             if not raw.is_file():
                 problems.append(f"raw volume missing: {raw}")
+                continue
+            with open(raw, "rb") as handle:
+                magic = handle.read(2)
+            if magic != b"\x1f\x8b":
+                problems.append(f"raw volume is not gzip: {raw}")
             emb = CompanionWriter(self._selection, self._emb_root).emb_path(entry)
             if not emb.is_file():
                 problems.append(f"embedding missing: {emb}")
@@ -510,7 +521,8 @@ class ReplayPrepSelfTest:
         for entry in selection["entries"]:
             raw = ReplayDownloader(selection, raw_root).target_path(entry)
             raw.parent.mkdir(parents=True, exist_ok=True)
-            raw.write_bytes(b"fixture-volume")
+            with gzip.open(raw, "wb") as handle:
+                handle.write(b"fixture-volume")
             emb = CompanionWriter(selection, emb_root).emb_path(entry)
             emb.parent.mkdir(parents=True, exist_ok=True)
             emb.write_bytes(b"fixture-emb")

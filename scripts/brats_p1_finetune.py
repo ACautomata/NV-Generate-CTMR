@@ -70,10 +70,17 @@ class P1TrainDataCatalog:
 
     def load_entries(self):
         entries = []
+        counts = []
         for label, path in (("brats train list", self._args.json_data_list), * (("replay list", p) for p in self._args.replay_list)):
             payload = json.loads(Path(path).read_text())["training"]
             self._logger.info(f"[data] {label}: {len(payload)} entries from {path}")
+            counts.append(len(payload))
             entries += payload
+        if counts and len(counts) > 1 and counts[0] != counts[1]:
+            raise ValueError(
+                f"1:1 replay mix violated: brats train {counts[0]} vs replay {counts[1]} "
+                "(spec #51 decision 6 requires strict 1:1 mixing)"
+            )
         return entries
 
     def file_records(self):
@@ -169,7 +176,13 @@ class P1FinetuneJob:
             unet = DistributedDataParallel(unet, device_ids=[self._device], find_unused_parameters=True)
         checkpoint = torch.load(args.existing_ckpt_filepath, map_location=self._device, weights_only=True)
         target = unet.module if dist.is_initialized() else unet
-        target.load_state_dict(checkpoint["unet_state_dict"], strict=False)
+        state = target.load_state_dict(checkpoint["unet_state_dict"], strict=False)
+        if state.missing_keys:
+            raise ValueError(
+                f"base checkpoint missing keys for full-parameter continuation: {state.missing_keys}"
+            )
+        if state.unexpected_keys:
+            self._logger.warning(f"base checkpoint unexpected keys (ignored): {state.unexpected_keys}")
         self._logger.info(f"base checkpoint loaded (full-param continuation): {args.existing_ckpt_filepath}")
         return unet, ScaleFactorPolicy(checkpoint["scale_factor"], self._logger)
 
@@ -219,6 +232,9 @@ class P1FinetuneJob:
         loss_totals = torch.zeros(2, dtype=torch.float, device=self._device)
         unet.train()
         for train_data in loader:
+            if self._stop_requested():
+                self._logger.info(f"early-stop file present; halting mid-epoch {epoch + 1}")
+                return
             iteration += 1
             images = train_data["image"].to(self._device) * scale_factor
             modality_tensor = augment_modality_label(train_data["modality"].to(self._device)).to(self._device)
@@ -258,6 +274,9 @@ class P1FinetuneJob:
     def _save_checkpoint(self, epoch, unet, loss_totals, scale_factor):
         unet_module = unet.module if isinstance(unet, DistributedDataParallel) else unet
         path = Path(self._args.model_dir) / f"epoch_{epoch + 1}.pt"
+        tmp = path.with_name(path.name + ".tmp")
+        # Atomically publish the checkpoint: the dev sidecar polls epoch_*.pt and
+        # must never observe a partial write.
         torch.save(
             {
                 "epoch": epoch + 1,
@@ -266,8 +285,9 @@ class P1FinetuneJob:
                 "scale_factor": scale_factor,
                 "unet_state_dict": unet_module.state_dict(),
             },
-            path,
+            tmp,
         )
+        tmp.replace(path)
         (Path(self._args.model_dir) / "latest.json").write_text(
             json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n"
         )
@@ -331,6 +351,12 @@ def main(argv=None):
     parser.add_argument("--no_amp", dest="amp", action="store_false")
     parser.add_argument("--amp_dtype", default="bf16", choices=["fp16", "bf16"], help="bf16 default (DCU)")
     args = parser.parse_args(argv)
+
+    # torchrun sets WORLD_SIZE when launched via torchrun; -g must agree or
+    # every worker would silently run as a world_size=1 replica on cuda:0.
+    torchrun_world = int(os.environ["WORLD_SIZE"]) if os.environ.get("WORLD_SIZE") else None
+    if torchrun_world is not None and torchrun_world != args.num_gpus:
+        raise ValueError(f"--num_gpus {args.num_gpus} disagrees with torchrun WORLD_SIZE {torchrun_world}")
 
     merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.replay_list = args.replay_list

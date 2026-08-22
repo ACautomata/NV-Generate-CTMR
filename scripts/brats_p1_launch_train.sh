@@ -77,6 +77,7 @@ nohup torchrun --nproc_per_node="${#GPUS[@]}" -m scripts.brats_p1_finetune \
     -e "$RUN_ROOT/environment_brats_p1_train.json" \
     -c "$REPO/configs/config_brats_p1_train.json" \
     -t "$REPO/configs/config_network_rflow.json" \
+    -g "${#GPUS[@]}" \
     --replay-list "$RUN_ROOT/lists/p1_mrrate_replay.json" \
     --amp_dtype bf16 \
     > "$TRAIN_LOG" 2>&1 &
