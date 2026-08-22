@@ -182,9 +182,15 @@ class CandidateSampler:
         unet.load_state_dict(ckpt["unet_state_dict"], strict=False)
         autoencoder.eval()
         unet.eval()
+        # Upstream inference convention is fp16 on the DCU (float16 latents);
+        # a half-precision model keeps the conv input/weight/bias set consistent
+        # (the HIP bf16 SDPA flash path emits fp16 and breaks the mixed chain).
+        autoencoder = autoencoder.half()
+        unet = unet.half()
         scale = float(ckpt["scale_factor"])
-        return unet, ReconModel(autoencoder=autoencoder, scale_factor=scale).to(self._device)
+        return unet, ReconModel(autoencoder=autoencoder, scale_factor=scale).to(self._device).half()
 
+    @torch.inference_mode()
     def sample_one(self, unet, recon_model, modality_token, spacing, seed, output_size=(256, 256, 128)):
         from monai.inferers import SlidingWindowInferer
         from monai.networks.schedulers import RFlowScheduler
@@ -202,7 +208,7 @@ class CandidateSampler:
         all_timesteps = noise_scheduler.timesteps
         all_next = torch.cat((all_timesteps[1:], torch.tensor([0], dtype=all_timesteps.dtype)))
         cfg = self._args.cfg_guidance_scale
-        with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
+        with torch.amp.autocast("cuda", enabled=True, dtype=torch.float16):
             for t, next_t in zip(all_timesteps, all_next):
                 unet_inputs = {
                     "x": image,
@@ -223,7 +229,8 @@ class CandidateSampler:
         inferer = SlidingWindowInferer(
             roi_size=[96, 96, 96], sw_batch_size=1, overlap=0.25, sw_device=self._device, device=torch.device("cpu")
         )
-        synthetic = dynamic_infer(inferer, recon_model, image).squeeze().cpu().numpy()
+        with torch.amp.autocast("cuda", enabled=True, dtype=torch.float16):
+            synthetic = dynamic_infer(inferer, recon_model, image).squeeze().float().cpu().numpy()
         data = synthetic * 1000.0  # [0,1] -> MR 0..1000 scale, upstream int16 convention
         return np.clip(data, 0, None).astype(np.int16)
 
