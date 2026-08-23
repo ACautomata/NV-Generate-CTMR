@@ -37,6 +37,10 @@ _Avoid_: 模态组合、模态配对(易与 seg 配对混淆)
 同一 P1-DM 挂载的两个独立旁路,推理按任务选挂;P3 旁路从 DM encoder 重新初始化,不沿用 P2 权重(条件嵌入形状与语义不同)。
 _Avoid_: 「the ControlNet」不加限定地单称
 
+**DM source(唯一 DM 来源)**:
+通过完整终验(L1∧L2∧L3 全 pass)后被 `dm_source.json` 账本冻结的 P1-DM——记录其 checkpoint 身份、配置与 provenance,是 P2/P3 旁路唯一允许挂接的对象;后续 P1 候选通过终验即取代之,被取代后挂旧 DM 的旁路 verify 显式失配。
+_Avoid_: 把任何 frozen 但未过终验的 P1 称作 DM source、旁路失配后继续引用旧链作当前结论
+
 **产物链**:
 P1-DM(全参续训后)+ 旁路(P2 或 P3 ControlNet)构成的推理组合;DM 一旦再训,既有旁路即失配。
 
@@ -81,6 +85,10 @@ _Avoid_: 依赖下载顺序的随机切分、逐项四舍五入取整名额、�
 **undecided(终验判定态)**:
 终验判定的第三态——当 L2 肿瘤测量仪器在待测生成样本上的失败率或层级违反率超出真实校准包络时，该子挑战 L2 记 undecided(仪器不可用)而非 fail(生成不合格)；undecided 同样阻塞完整 spec 终验，修复方向是仪器或重跑，而非生成候选。
 _Avoid_: 把仪器失效混同为生成质量失败、以 pass/fail 二态强判 undecided 情形
+
+**完整终验裁决(final acceptance verdict)**:
+对 frozen 候选三层正式报告(l1/l2/l3 各恰好一份且校验通过)的非补偿性 AND 判定——三层读数(L1 `summary.verdict`、L2 `overall_verdict`、L3 `verdict.overall`)全 pass 才 pass,任一 fail 或 L2 undecided 即 blocked,并逐条列出可追溯阻塞原因,不被其他层高分抵消;缺失或非法附件拒绝裁决(证据补齐后仍可 conclude),裁决记录一经写出不可变。正式 L2 证据必须五挑战齐全且达冻结持出配额,provisional 运行不构成终验证据。
+_Avoid_: 把单层结论或 provisional smoke 称作完整终验通过、以加权平均分代替 AND 抵消某层失败
 
 **L2 肿瘤测量仪器**:
 为受控研究自行训练、并在校准集(10% 开发集 ∪ 仪器 fold 内部验证集)真实 BraTS 上校准误差包络前冻结的 **MONAI nnU-Net** BraTS 肿瘤分割网络及其权重——五子挑战各持一个专属仪器，仅用于从生成影像推断 WT/TC/ET mask，以测量肿瘤体积、位置与强化比例分布。它不是下游分割效用验证，不以 Dice/HD95 作为生成候选的通过线。

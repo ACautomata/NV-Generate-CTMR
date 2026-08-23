@@ -49,6 +49,19 @@ Contract rules enforced at every mutation:
   run and derive its DM checkpoint from that run's selection — P3 can never
   pin a P2 ControlNet through this contract. Retraining the DM means a new
   P1 run; existing records keep their pinned DM identity.
+- Final acceptance (issue #58): ``conclude`` judges a frozen run's three
+  formal layer reports (l1/l2/l3, each exactly one, each revalidated) with a
+  non-compensatory AND — every layer must read ``pass``; any L1/L3 fail or any
+  L2 fail/undecided writes an immutable blocked verdict with traceable
+  per-layer reasons that no other layer's score can offset. Missing or invalid
+  layer attachments refuse the judgement (no verdict record) so the run stays
+  conclusible once its evidence is completed. Formal L2 evidence must bind the
+  run and cover all five challenges at their frozen quotas (provisional runs
+  are smoke, never acceptance).
+- DM source (issue #58): only a P1 run whose final acceptance passed is
+  registered (``dm_source.json``) as the single DM source P2/P3 bypasses may
+  hang off; a later passing P1 supersedes it, and every bypass pinned to the
+  superseded DM then fails verification with an explicit mismatch.
 - P1 records its full-param continuation base checkpoint; P2/P3 take none
   (ControlNet initializes from the frozen DM encoder, not a checkpoint file).
 - Records live in controlled storage: a record root inside a git work tree
@@ -62,6 +75,7 @@ Usage (each subcommand standalone, init first):
         --checkpoint ckpt.pt --rule "dev FID trend + early stop p=10" --evidence dev_metrics.json
     python -m scripts.brats_phase_run_contract freeze --run runs/<id>/run.json --samples samples.json
     python -m scripts.brats_phase_run_contract attach --run runs/<id>/run.json --kind l1_report --path l1.json
+    python -m scripts.brats_phase_run_contract conclude --run runs/<id>/run.json
     python -m scripts.brats_phase_run_contract verify --record-root DIR
     python -m scripts.brats_phase_run_contract selftest --workdir TMP
 """
@@ -104,6 +118,13 @@ L3_DIMENSIONS = (
 L3_TURING_WINDOW = (0.40, 0.60)
 L3_LIKERT_BOUND = 4.0
 L3_VERDICTS = ("pass", "fail")
+
+L2_SCHEMA = "l2-final-acceptance-report/1"  # mirrors scripts/nnunet_l2_final_acceptance.REPORT_SCHEMA
+L2_CHALLENGES = ("GLI", "SSA", "MEN", "METS", "PED")  # the frozen five; formal L2 evidence covers all
+L2_VERDICTS = ("pass", "fail", "undecided")
+
+FINAL_ACCEPTANCE_SCHEMA = "brats-final-acceptance/1"
+DM_SOURCE_SCHEMA = "brats-dm-source/1"
 
 
 class ContractViolationError(Exception):
@@ -260,6 +281,9 @@ class RunRecordStore:
     def runs_dir(self):
         return self._root / "runs"
 
+    def root(self):
+        return self._root
+
     def write(self, record):
         path = self.record_path(record["run_id"])
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -334,6 +358,7 @@ class RunInitializer:
         on_disk = self._fingerprinter.must_fingerprint(checkpoint["path"], "upstream candidate checkpoint")
         if on_disk["sha256"] != checkpoint["sha256"]:
             raise ContractViolationError(f"upstream checkpoint changed on disk: {checkpoint['path']}")
+        DmSourceLedger(self._store).check_upstream(upstream["run_id"], checkpoint["sha256"])
         return {
             "run_id": upstream["run_id"],
             "run_record": str(Path(upstream_run_path).resolve()),
@@ -934,6 +959,124 @@ class L3ReportValidator:
         return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
+class L2ReportValidator:
+    """Validates the versioned L2 evidence schema and its frozen-candidate binding.
+
+    Formal L2 evidence (``l2-final-acceptance-report/1``, issue #55) attaches
+    only as a complete five-challenge report: ``challenges_missing`` empty, no
+    provisional challenge, ``complete_coverage`` true (spec Further Notes --
+    a run over a subset of the five challenges is provisional smoke, never
+    full-spec acceptance evidence). Verdict consistency mirrors the issue #55
+    judgement chain: any failure-audit count > 0 forces that challenge
+    ``undecided``; otherwise all TOST (and, for P2, round-trip) checks passing
+    forces ``pass``; the overall verdict is undecided > fail > pass.
+    """
+
+    def validate(self, record, path):
+        report_path = Path(path)
+        if not report_path.is_file():
+            return [f"L2 report not found: {report_path}"]
+        try:
+            report = json.loads(report_path.read_text())
+        except json.JSONDecodeError as error:
+            return [f"L2 report is not valid JSON: {report_path} ({error})"]
+        if not isinstance(report, dict):
+            return ["L2 report root must be a JSON object"]
+        failures = []
+        self._binding(record, report, failures)
+        self._coverage(report, failures)
+        self._per_challenge(record, report, failures)
+        self._overall(report, failures)
+        return failures
+
+    def _binding(self, record, report, failures):
+        binding = report.get("binding")
+        expected = {
+            "run_id": record.get("run_id"),
+            "phase": record.get("phase"),
+            "manifest_sha256": record.get("manifest", {}).get("sha256"),
+            "candidate_checkpoint_sha256": record.get("selection", {}).get("checkpoint", {}).get("sha256"),
+            "samples_sha256": record.get("samples", {}).get("sha256"),
+        }
+        if report.get("schema") != L2_SCHEMA:
+            failures.append(f"L2 report schema != {L2_SCHEMA}")
+        if not isinstance(binding, dict):
+            failures.append("L2 report binding must be an object (evaluate with --run to bind the frozen candidate)")
+            return
+        for key, value in expected.items():
+            if binding.get(key) != value:
+                failures.append(f"L2 report binding {key} does not match frozen run")
+
+    def _coverage(self, report, failures):
+        if report.get("challenges_missing") != []:
+            failures.append("formal L2 evidence must cover all five challenges (challenges_missing must be empty)")
+        if report.get("provisional_challenges") != []:
+            failures.append("formal L2 evidence must meet every frozen holdout quota (no provisional challenge)")
+        if report.get("complete_coverage") is not True:
+            failures.append("formal L2 evidence must record complete_coverage true")
+
+    def _per_challenge(self, record, report, failures):
+        per_challenge = report.get("per_challenge")
+        if not isinstance(per_challenge, dict):
+            failures.append("L2 report per_challenge must be an object")
+            return
+        if set(per_challenge) != set(L2_CHALLENGES):
+            failures.append(f"L2 report per_challenge must cover exactly {L2_CHALLENGES}")
+            return
+        for challenge, verdict in per_challenge.items():
+            if not isinstance(verdict, dict):
+                failures.append(f"L2 per_challenge {challenge} must be an object")
+            else:
+                self._challenge_verdict(challenge, verdict, record.get("phase"), failures)
+
+    def _challenge_verdict(self, challenge, verdict, phase, failures):
+        recorded = verdict.get("verdict")
+        if recorded not in L2_VERDICTS:
+            failures.append(f"L2 {challenge} verdict must be pass, fail, or undecided")
+            return
+        audit = verdict.get("failure_audit")
+        n_failed = audit.get("n_failed") if isinstance(audit, dict) else None
+        if not isinstance(n_failed, int) or n_failed < 0:
+            failures.append(f"L2 {challenge} failure_audit must record a non-negative integer n_failed")
+            return
+        checks = [item.get("passed") for item in verdict.get("tost") or []]
+        if verdict.get("round_trip") is not None:
+            if phase != "P2":
+                failures.append(f"L2 {challenge} round_trip evidence is P2-only; {phase} must not carry it")
+                return
+            checks += [item.get("passed") for item in verdict["round_trip"] or []]
+        elif phase == "P2":
+            failures.append(f"L2 {challenge} P2 evidence must carry the condition round-trip results")
+            return
+        if not checks:
+            failures.append(f"L2 {challenge} carries no TOST checks")
+            return
+        if n_failed:
+            expected = "undecided"
+        elif all(checks):
+            expected = "pass"
+        else:
+            expected = "fail"
+        if recorded != expected:
+            failures.append(f"L2 {challenge} verdict {recorded!r} disagrees with its failure gate/TOST/round-trip evidence")
+
+    def _overall(self, report, failures):
+        overall = report.get("overall_verdict")
+        if overall not in L2_VERDICTS:
+            failures.append("L2 report overall_verdict must be pass, fail, or undecided")
+            return
+        per_challenge = report.get("per_challenge")
+        verdicts = (
+            [verdict.get("verdict") for verdict in per_challenge.values() if isinstance(verdict, dict)]
+            if isinstance(per_challenge, dict) else []
+        )
+        if len(verdicts) != len(L2_CHALLENGES) or any(v not in L2_VERDICTS for v in verdicts):
+            return  # already reported by _per_challenge
+        expected = "undecided" if "undecided" in verdicts else "pass" if all(v == "pass" for v in verdicts) else "fail"
+        if overall != expected:
+            failures.append("L2 report overall_verdict disagrees with its per-challenge verdicts")
+
+
 class ReportAttacher:
     """Attaches post-freeze L1/L2/L3/env reports (the only mutation allowed after freezing)."""
 
@@ -961,6 +1104,13 @@ class ReportAttacher:
             failures = L1ReportValidator().validate(record, path)
             if failures:
                 raise ContractViolationError("invalid l1_report: " + "; ".join(failures))
+        if kind == "l2_report":
+            self._assert_controlled_report(path, "l2_report")
+            if any(attachment["kind"] == "l2_report" for attachment in record["attachments"]):
+                raise ContractViolationError(f"run {record['run_id']} already has a formal l2_report attachment")
+            failures = L2ReportValidator().validate(record, path)
+            if failures:
+                raise ContractViolationError("invalid l2_report: " + "; ".join(failures))
         if kind == "l3_report":
             self._assert_controlled_report(path, "l3_report")
             if any(attachment["kind"] == "l3_report" for attachment in record["attachments"]):
@@ -972,6 +1122,254 @@ class ReportAttacher:
         entry["attached_utc"] = self._store.now_utc()
         record["attachments"].append(entry)
         return self._store.write(record)
+
+
+class DmSourceLedger:
+    """The single registered P1-DM source that P2/P3 bypasses may hang off (issue #58).
+
+    Registering is the freeze of a final-acceptance-passing P1 candidate's DM
+    identity, configs and provenance. Replacement is explicit: a later P1
+    candidate that passes final acceptance supersedes the previous source, and
+    every bypass pinned to the superseded DM fails verification with a
+    mismatch -- a retrained DM never silently keeps old bypasses comparable
+    (spec #51 user story 22 / CONTEXT.md 产物链).
+    """
+
+    def __init__(self, store):
+        self._store = store
+
+    def path(self):
+        return self._store.root() / "dm_source.json"
+
+    def current(self):
+        ledger_path = self.path()
+        if not ledger_path.is_file():
+            return None
+        ledger = json.loads(ledger_path.read_text())
+        if ledger.get("schema") != DM_SOURCE_SCHEMA:
+            raise ContractViolationError(f"dm_source ledger {ledger_path} has schema {ledger.get('schema')!r} != {DM_SOURCE_SCHEMA!r}")
+        return ledger
+
+    def register(self, record, run_record_path):
+        """Freezes the passing P1 candidate as the current DM source (superseding any previous)."""
+        if record["phase"] != "P1":
+            raise ContractViolationError("only a P1 candidate can be registered as the DM source (P2/P3 are bypasses, not sources)")
+        current = self.current()
+        if current is not None and current["run_id"] == record["run_id"]:
+            return current  # idempotent re-register of the same candidate
+        entry = {
+            "schema": DM_SOURCE_SCHEMA,
+            "run_id": record["run_id"],
+            "run_record": str(Path(run_record_path).resolve()),
+            "run_record_sha256": ArtifactFingerprinter().file_sha256(run_record_path),
+            "checkpoint": record["selection"]["checkpoint"],
+            "configs": record["configs"],
+            "manifest": record["manifest"],
+            "base_ckpt": record.get("base_ckpt"),
+            "code_version": record.get("code_version"),
+            "registered_utc": self._store.now_utc(),
+            "superseded_run_id": None,
+        }
+        if current is not None:
+            entry["superseded_run_id"] = current["run_id"]
+        self.path().write_text(json.dumps(entry, indent=2, sort_keys=True) + "\n")
+        return entry
+
+    def check_upstream(self, upstream_run_id, checkpoint_sha256):
+        """Init-time gate: a P2/P3 bypass may only pin the registered DM source."""
+        current = self.current()
+        if current is None:
+            raise ContractViolationError(
+                "no P1 candidate has passed final acceptance yet; P2/P3 must hang off the "
+                "registered DM source (conclude a passing P1 run first)"
+            )
+        if upstream_run_id != current["run_id"] or checkpoint_sha256 != current["checkpoint"]["sha256"]:
+            raise ContractViolationError(
+                f"upstream run {upstream_run_id} is not the registered DM source {current['run_id']}; "
+                "P2/P3 may only hang off the final-acceptance-passing P1-DM"
+            )
+
+    def check_record(self, record):
+        """Verify-time mismatch detection against the current DM source."""
+        current = self.current()
+        if current is None:
+            return []
+        if record.get("phase") == "P1":
+            if record["run_id"] == current["run_id"] and record.get("selection", {}).get("checkpoint", {}).get("sha256") != current["checkpoint"]["sha256"]:
+                return ["registered DM source checkpoint no longer matches its P1 run record"]
+            return []
+        upstream = record.get("upstream")
+        if upstream and (upstream["checkpoint"]["sha256"] != current["checkpoint"]["sha256"] or upstream["run_id"] != current["run_id"]):
+            return [
+                f"DM was retrained: this bypass is pinned to superseded DM {upstream['run_id']} "
+                f"while the registered DM source is {current['run_id']}"
+            ]
+        return []
+
+
+class FinalAcceptanceJudge:
+    """Non-compensatory L1 ∧ L2 ∧ L3 final acceptance over a frozen candidate (issue #58).
+
+    The verdict is an AND with no compensation: a pass requires every layer's
+    own verdict to be ``pass``; any L1/L3 fail, any L2 fail or undecided, or
+    any missing layer blocks the conclusion with a traceable per-layer reason
+    list (spec #51 decision 15 / CONTEXT.md 数据划分角色). Only a P1 pass
+    registers the DM source for P2/P3 (issue #58 acceptance criterion 3).
+    """
+
+    LAYER_KINDS = {"L1": "l1_report", "L2": "l2_report", "L3": "l3_report"}
+
+    def __init__(self, store, fingerprinter):
+        self._store = store
+        self._fingerprinter = fingerprinter
+
+    @staticmethod
+    def verdict_path_for(record_path):
+        # parents: [0]=<id>, [1]=runs|final_acceptance, [2]=<root>
+        return Path(record_path).parents[2] / "final_acceptance" / f"{Path(record_path).parent.name}.json"
+
+    def conclude(self, run_path):
+        record = self._store.load_by_path(run_path)
+        if record["status"] != STATUS_FROZEN:
+            raise ContractViolationError(
+                f"run {record['run_id']} is {record['status']}; final acceptance concludes only frozen candidates "
+                "(holdout evidence attaches after the freeze)"
+            )
+        verdict_path = self.verdict_path_for(run_path)
+        if verdict_path.is_file():
+            raise ContractViolationError(
+                f"final acceptance for {record['run_id']} is already concluded at {verdict_path}; the verdict is immutable"
+            )
+        layers, problems = self._collect_layers(record)
+        if problems:
+            raise ContractViolationError("final acceptance blocked before judgement: " + "; ".join(problems))
+        blocked_reasons = []
+        for layer_name in self.LAYER_KINDS:
+            blocked_reasons += self._layer_reasons(layer_name, layers[layer_name])
+        verdict = "pass" if not blocked_reasons else "blocked"
+        entry = {
+            "schema": FINAL_ACCEPTANCE_SCHEMA,
+            "run_id": record["run_id"],
+            "phase": record["phase"],
+            "decided_utc": self._store.now_utc(),
+            "layers": {name: {"attachment": layer["attachment"], "verdict": layer["verdict"]} for name, layer in layers.items()},
+            "verdict": verdict,
+            "blocked_reasons": blocked_reasons,
+            "dm_source_registered": False,
+        }
+        if verdict == "pass" and record["phase"] == "P1":
+            entry["dm_source_registered"] = True
+            DmSourceLedger(self._store).register(record, run_path)
+        verdict_path.parent.mkdir(parents=True, exist_ok=True)
+        verdict_path.write_text(json.dumps(entry, indent=2, sort_keys=True) + "\n")
+        return entry, verdict_path
+
+    def _collect_layers(self, record):
+        """One formal attachment per layer, each revalidated against the frozen run."""
+        validators = {
+            "l1_report": L1ReportValidator(),
+            "l2_report": L2ReportValidator(),
+            "l3_report": L3ReportValidator(),
+        }
+        layers = {}
+        problems = []
+        for layer_name, kind in self.LAYER_KINDS.items():
+            attachments = [a for a in record.get("attachments", []) if a.get("kind") == kind]
+            if len(attachments) > 1:
+                problems.append(f"run has more than one formal {kind} attachment")
+                continue
+            if not attachments:
+                problems.append(f"final acceptance requires a formal {kind} attachment (candidate freeze is not enough)")
+                continue
+            failures = validators[kind].validate(record, attachments[0]["path"])
+            if failures:
+                problems.append(f"invalid {kind}: " + "; ".join(failures))
+                continue
+            report = json.loads(Path(attachments[0]["path"]).read_text())
+            layers[layer_name] = {
+                "attachment": {"path": attachments[0]["path"], "sha256": attachments[0]["sha256"]},
+                "verdict": self._layer_verdict(kind, report),
+                "report": report,
+            }
+        return layers, problems
+
+    @staticmethod
+    def _layer_verdict(kind, report):
+        if kind == "l1_report":
+            return report.get("summary", {}).get("verdict")
+        if kind == "l2_report":
+            return report.get("overall_verdict")
+        return (report.get("verdict") or {}).get("overall")
+
+    def _layer_reasons(self, layer_name, layer):
+        """Traceable blockers: layer + failing criterion, never offset by other layers' scores."""
+        if layer["verdict"] == "pass":
+            return []
+        report = layer["report"]
+        reasons = []
+        if layer_name == "L1":
+            for result in report.get("fid_results", []):
+                if result.get("verdict") != "pass":
+                    reasons.append(f"L1 FID {result.get('challenge')}/{result.get('target_modality')}: {result.get('verdict')}")
+            for result in report.get("p3_paired_results", []):
+                if result.get("gate_applicable") and result.get("verdict") != "pass":
+                    reasons.append(
+                        f"L1 P3 paired {result.get('challenge')}/{result.get('src_modality')}->{result.get('target_modality')}: {result.get('verdict')}"
+                    )
+        elif layer_name == "L2":
+            for challenge, verdict in (report.get("per_challenge") or {}).items():
+                if verdict.get("verdict") != "pass":
+                    reason = verdict.get("reason") or self._l2_challenge_reason(verdict)
+                    reasons.append(f"L2 {challenge}: {verdict.get('verdict')} ({reason})")
+        elif layer_name == "L3":
+            if (report.get("visual_turing") or {}).get("verdict") != "pass":
+                reasons.append("L3 visual-Turing: CI window gate not met")
+            for item in report.get("likert") or []:
+                failing = [m for m, b in (item.get("per_modality") or {}).items() if b.get("verdict") != "pass"]
+                if (item.get("phase") or {}).get("verdict") != "pass" or failing:
+                    detail = f"; per-modality fail: {', '.join(sorted(failing))}" if failing else ""
+                    reasons.append(f"L3 Likert {item.get('dimension')}: lower-bound gate not met{detail}")
+        if not reasons:
+            reasons.append(f"{layer_name} verdict is {layer['verdict']}")
+        return reasons
+
+    @staticmethod
+    def _l2_challenge_reason(verdict):
+        if verdict.get("verdict") == "undecided":
+            return "instrument failure gate; fix direction is the instrument or a re-run"
+        tost_failed = sum(0 if verdict.get("tost") is None else (not item.get("passed")) for item in (verdict.get("tost") or []))
+        rt_failed = sum(0 if verdict.get("round_trip") is None else (not item.get("passed")) for item in (verdict.get("round_trip") or []))
+        return f"{tost_failed} TOST and {rt_failed} round-trip checks failed"
+
+    def revalidate_verdict(self, record, verdict_path):
+        """Verify-time reconciliation of an existing verdict record against the run."""
+        verdict_record = json.loads(Path(verdict_path).read_text())
+        problems = []
+        if verdict_record.get("schema") != FINAL_ACCEPTANCE_SCHEMA:
+            return [f"verdict record schema != {FINAL_ACCEPTANCE_SCHEMA}"]
+        if verdict_record.get("run_id") != record.get("run_id") or verdict_record.get("phase") != record.get("phase"):
+            problems.append("verdict record does not bind this run")
+        layers = verdict_record.get("layers")
+        if not isinstance(layers, dict) or set(layers) != set(self.LAYER_KINDS):
+            problems.append("verdict record must carry exactly the L1/L2/L3 layer entries")
+            return problems
+        for layer_name, layer in layers.items():
+            attachment = layer.get("attachment") or {}
+            current = [a for a in record.get("attachments", []) if a.get("kind") == self.LAYER_KINDS[layer_name]]
+            if len(current) != 1 or current[0]["sha256"] != attachment.get("sha256"):
+                problems.append(f"verdict record {layer_name} attachment no longer matches the run record")
+        # Re-derive the AND: the recorded verdict must follow from its layer verdicts
+        # (an edited/flipped verdict file fails verification even with intact attachments).
+        layer_verdicts = [layers[name].get("verdict") for name in self.LAYER_KINDS]
+        if all(verdict == "pass" for verdict in layer_verdicts):
+            expected = "pass" if verdict_record.get("blocked_reasons") == [] else "blocked"
+        else:
+            expected = "blocked"
+        if verdict_record.get("verdict") != expected:
+            problems.append("verdict record disagrees with the non-compensatory AND of its layer verdicts")
+        if (verdict_record.get("verdict") == "blocked") != bool(verdict_record.get("blocked_reasons")):
+            problems.append("verdict record blocked state and blocked_reasons are inconsistent")
+        return problems
 
 
 class RunVerifier:
@@ -1033,6 +1431,26 @@ class RunVerifier:
                 self.failures.append(f"l3 report lives inside a git work tree ({public_root}); controlled reports must stay outside the repo")
             for failure in L3ReportValidator().validate(record, attachment["path"]):
                 self.failures.append(f"l3 report: {failure}")
+
+    def verify_l2_reports(self, record):
+        attachments = [attachment for attachment in record.get("attachments", []) if attachment.get("kind") == "l2_report"]
+        if len(attachments) > 1:
+            self.failures.append("run has more than one formal l2_report attachment")
+        for attachment in attachments:
+            public_root = self.work_tree_ancestor(attachment["path"])
+            if public_root is not None:
+                self.failures.append(f"l2 report lives inside a git work tree ({public_root}); controlled reports must stay outside the repo")
+            for failure in L2ReportValidator().validate(record, attachment["path"]):
+                self.failures.append(f"l2 report: {failure}")
+
+    def verify_final_acceptance(self, record, record_path):
+        """A concluded verdict record, when present, must still match the run's attachments."""
+        verdict_path = FinalAcceptanceJudge.verdict_path_for(record_path)
+        if not verdict_path.is_file():
+            return
+        judge = FinalAcceptanceJudge(RunRecordStore.for_run(record_path), ArtifactFingerprinter())
+        for failure in judge.revalidate_verdict(record, verdict_path):
+            self.failures.append(f"final acceptance: {failure}")
 
     def verify_phase_shape(self, record):
         phase, status = record["phase"], record["status"]
@@ -1110,9 +1528,14 @@ class RunVerifier:
         self.verify_phase_shape(record)
         self.verify_hashes(record)
         self.verify_l1_reports(record)
+        self.verify_l2_reports(record)
         self.verify_l3_reports(record)
         self.verify_guard(record)
-        self.verify_storage(record_path or Path(record.get("run_id", ".")))
+        resolved_path = record_path or Path(record.get("run_id", "."))
+        self.verify_storage(resolved_path)
+        for failure in DmSourceLedger(RunRecordStore.for_run(resolved_path)).check_record(record):
+            self.failures.append(f"dm source: {failure}")
+        self.verify_final_acceptance(record, resolved_path)
         if chain_depth == 0:
             self.verify_chain(record)
         return self.failures
@@ -1171,10 +1594,10 @@ class ContractSelfTest:
         (root / "platform.json").write_text('{"world_size": 1, "amp_dtype": "bf16"}\n')
         return root
 
-    def write_l1_report(self, path, record):
+    def write_l1_report(self, path, record, passing=False):
         interval = {"point": 0.4, "ci95": [0.3, 0.5]}
         baseline = {"planes": {plane: interval for plane in L1_PLANES}, "mean": interval, "mean_bootstrap_median": 0.4}
-        generated_interval = {"point": 0.8, "ci95": [0.7, 1.1]}
+        generated_interval = {"point": 0.8, "ci95": [0.7, 0.9 if passing else 1.1]}
         generated = {"planes": {plane: generated_interval for plane in L1_PLANES}, "mean": generated_interval}
         fid_results = []
         for challenge in self.QUOTAS:
@@ -1187,7 +1610,7 @@ class ContractSelfTest:
                         "generated_vs_holdout": generated,
                         "train_vs_holdout_baseline": baseline,
                         "threshold": 1.0,
-                        "verdict": "fail",
+                        "verdict": "pass" if passing else "fail",
                     }
                 )
         p3_results = []
@@ -1230,7 +1653,7 @@ class ContractSelfTest:
             },
             "fid_results": fid_results,
             "p3_paired_results": p3_results,
-            "summary": {"verdict": "fail"},
+            "summary": {"verdict": "pass" if passing else "fail"},
         }
         Path(path).write_text(json.dumps(report, indent=2) + "\n")
 
@@ -1297,6 +1720,71 @@ class ContractSelfTest:
         }
         Path(path).write_text(json.dumps(report, indent=2) + "\n")
 
+    def write_l2_report(self, path, record, failing_challenges=(), undecided_challenges=()):
+        """A five-challenge L2 fixture; failing/undecided challenge names override their verdicts."""
+        per_challenge = {}
+        for challenge in L2_CHALLENGES:
+            n_failed = 1 if challenge in undecided_challenges else 0
+            passed = challenge not in failing_challenges and challenge not in undecided_challenges
+            if challenge in undecided_challenges:
+                verdict = "undecided"
+            elif challenge in failing_challenges:
+                verdict = "fail"
+            else:
+                verdict = "pass"
+            tost = [{
+                "quantity": "vol_wt_rel", "margin": 0.2802, "ci90_low": -0.02, "ci90_high": 0.02,
+                "n_cases": 6, "n_excluded": 0, "exclusion_reasons": {},
+                "passed": passed if challenge not in undecided_challenges else True,
+            }]
+            round_trip = None
+            if record["phase"] == "P2":
+                round_trip = [{
+                    "region": region, "floor": 0.0, "bound": 0.9, "n_cases": 6, "n_excluded": 0,
+                    "vacuous_pass": False, "passed": passed,
+                } for region in ("WT", "TC", "ET")]
+            per_challenge[challenge] = {
+                "challenge": challenge,
+                "n_observations": 12,
+                "failure_audit": {
+                    "n_failed": n_failed,
+                    "breakdown": {"input_fail": 0, "run_fail": n_failed, "hier_viol": 0},
+                    "n_failed_by_side": {"gen": n_failed, "real": 0},
+                    "wilson_95_upper": 0.08 if n_failed else 0.0,
+                },
+                "r_fail_point": 0.0,
+                "tost": tost,
+                "round_trip": round_trip,
+                "verdict": verdict,
+            }
+            if verdict == "undecided":
+                per_challenge[challenge]["reason"] = (
+                    "instrument failure on tested samples (input/run/hierarchy); blocks final acceptance -- "
+                    "fix direction is the instrument or a re-run, not the candidate"
+                )
+        verdicts = [info["verdict"] for info in per_challenge.values()]
+        overall = "undecided" if "undecided" in verdicts else "pass" if all(v == "pass" for v in verdicts) else "fail"
+        report = {
+            "schema": L2_SCHEMA,
+            "title": "L2 冻结仪器最终验收报告",
+            "phase": record["phase"],
+            "run_id": record["run_id"],
+            "binding": {
+                "run_id": record["run_id"],
+                "phase": record["phase"],
+                "manifest_sha256": record["manifest"]["sha256"],
+                "candidate_checkpoint_sha256": record["selection"]["checkpoint"]["sha256"],
+                "samples_sha256": record["samples"]["sha256"],
+            },
+            "provisional_challenges": [],
+            "challenges_missing": [],
+            "complete_coverage": True,
+            "overall_verdict": overall,
+            "per_challenge": per_challenge,
+        }
+        Path(path).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+        return report
+
     def expect_reject(self, action, label):
         try:
             action()
@@ -1306,6 +1794,24 @@ class ContractSelfTest:
 
     def store_at(self, path):
         return RunRecordStore(path)
+
+    def _open_passing_candidate(self, store, fingerprinter, fixture, run_id, checkpoint=None):
+        """A frozen P1 candidate shell (init -> select -> freeze) ready for report attachments."""
+        run_path = RunInitializer(store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
+            "P1",
+            run_id,
+            fixture / "phase_manifest.json",
+            [("env", fixture / "env_config.json")],
+            [("train", fixture / "lists/train.json")],
+            fixture / "base_ckpt.pt",
+            None,
+            None,
+        )
+        SelectionRecorder(store, fingerprinter).select(
+            run_path, checkpoint or fixture / "candidate.pt", "dev FID trend, early stop patience 10", [fixture / "dev_metrics.json"], epoch=7
+        )
+        CandidateFreezer(store, fingerprinter).freeze(run_path, fixture / "samples.json")
+        return run_path
 
     def run(self):
         self._workdir.mkdir(parents=True, exist_ok=True)
@@ -1475,7 +1981,102 @@ class ContractSelfTest:
             "freeze without selection",
         )
 
-        # --- phase chain: P2 needs a frozen P1; P3 must not pin a P2 run
+        # --- L2 attachment (issue #58): binding, coverage, verdict consistency
+        p1_record = store.load_by_path(p1_path)
+        self.write_l2_report(fixture / "l2_report.json", p1_record)
+        l2_mutations = (
+            ("unbound L2 report", lambda r: r["binding"].update(run_id="wrong-run")),
+            ("provisional L2 coverage", lambda r: (r.update(provisional_challenges=["GLI"], complete_coverage=False), r.update(challenges_missing=["PED"]))[0]),
+            (
+                "L2 overall-verdict mismatch",
+                lambda r: (
+                    r["per_challenge"]["SSA"].update(
+                        verdict="fail", tost=[dict(r["per_challenge"]["SSA"]["tost"][0], passed=False)]
+                    ),
+                    r,
+                )[1],
+            ),
+            ("L2 P1 carrying round-trip evidence", lambda r: r["per_challenge"]["GLI"].update(round_trip=[{"region": "WT", "passed": True}])),
+            ("L2 challenge verdict disagreeing with its evidence", lambda r: r["per_challenge"]["MEN"].update(verdict="pass", tost=[dict(r["per_challenge"]["MEN"]["tost"][0], passed=False)])),
+        )
+        for label, mutate in l2_mutations:
+            report = json.loads((fixture / "l2_report.json").read_text())
+            mutate(report)
+            bad_path = fixture / f"bad_l2_{label.replace(' ', '_')}.json"
+            bad_path.write_text(json.dumps(report))
+            self.expect_reject(
+                lambda bad_path=bad_path: ReportAttacher(store, fingerprinter).attach(p1_path, "l2_report", bad_path),
+                label,
+            )
+        malformed_l2 = json.loads((fixture / "l2_report.json").read_text())
+        malformed_l2["per_challenge"]["GLI"] = "not-an-object"
+        (fixture / "malformed_l2_report.json").write_text(json.dumps(malformed_l2))
+        self.expect_reject(
+            lambda: ReportAttacher(store, fingerprinter).attach(p1_path, "l2_report", fixture / "malformed_l2_report.json"),
+            "malformed L2 report rejected (no crash)",
+        )
+        ReportAttacher(store, fingerprinter).attach(p1_path, "l2_report", fixture / "l2_report.json")
+
+        # --- final acceptance: non-compensatory AND, traceable blockers, DM-source freeze
+        judge = FinalAcceptanceJudge(store, fingerprinter)
+        blocked_entry, _blocked_path = judge.conclude(p1_path)  # L1 fail + L2/L3 pass -> blocked
+        if blocked_entry["verdict"] != "blocked" or not blocked_entry["blocked_reasons"]:
+            self.failures.append("L1-failing run must conclude blocked with traceable reasons")
+        if not any(reason.startswith("L1 FID") for reason in blocked_entry["blocked_reasons"]):
+            self.failures.append("blocked reasons must cite the failing L1 criteria (no offset by passing layers)")
+        if DmSourceLedger(store).current() is not None:
+            self.failures.append("a blocked conclusion must not register a DM source")
+        self.expect_reject(lambda: judge.conclude(p1_path), "double conclude (immutable verdict)")
+        flipped_path = FinalAcceptanceJudge.verdict_path_for(p1_path)
+        flipped = json.loads(flipped_path.read_text())
+        flipped["verdict"] = "pass"  # a hand-edited flip must not survive verification
+        flipped["blocked_reasons"] = []
+        flipped_path.write_text(json.dumps(flipped))
+        flip_verifier = RunVerifier(fingerprinter)
+        flip_verifier.verify(store.load_by_path(p1_path), record_path=p1_path)
+        if not any("non-compensatory AND" in failure for failure in flip_verifier.failures):
+            self.failures.append(f"flipped verdict record must fail verification, got {flip_verifier.failures}")
+
+        p1_undecided_path = self._open_passing_candidate(store, fingerprinter, fixture, "p1-undecided")
+        self.write_l1_report(fixture / "l1_pass_undecided_run.json", store.load_by_path(p1_undecided_path), passing=True)
+        ReportAttacher(store, fingerprinter).attach(p1_undecided_path, "l1_report", fixture / "l1_pass_undecided_run.json")
+        self.write_l2_report(fixture / "l2_undecided_report.json", store.load_by_path(p1_undecided_path), undecided_challenges=("SSA",))
+        ReportAttacher(store, fingerprinter).attach(p1_undecided_path, "l2_report", fixture / "l2_undecided_report.json")
+        self.write_l3_report(fixture / "l3_undecided_run_report.json", store.load_by_path(p1_undecided_path))
+        ReportAttacher(store, fingerprinter).attach(p1_undecided_path, "l3_report", fixture / "l3_undecided_run_report.json")
+        undecided_entry, _ = FinalAcceptanceJudge(store, fingerprinter).conclude(p1_undecided_path)
+        if undecided_entry["verdict"] != "blocked" or not any("L2 SSA: undecided" in r for r in undecided_entry["blocked_reasons"]):
+            self.failures.append(f"L2 undecided must block final acceptance traceably, got {undecided_entry['blocked_reasons']}")
+        if DmSourceLedger(store).current() is not None:
+            self.failures.append("an L2-undecided conclusion must not register a DM source")
+
+        p1_final_path = self._open_passing_candidate(store, fingerprinter, fixture, "p1-final")
+        p1_final_record = store.load_by_path(p1_final_path)
+        self.write_l1_report(fixture / "l1_pass_report.json", p1_final_record, passing=True)
+        ReportAttacher(store, fingerprinter).attach(p1_final_path, "l1_report", fixture / "l1_pass_report.json")
+        self.write_l2_report(fixture / "l2_pass_report.json", p1_final_record)
+        ReportAttacher(store, fingerprinter).attach(p1_final_path, "l2_report", fixture / "l2_pass_report.json")
+        self.write_l3_report(fixture / "l3_pass_report.json", p1_final_record)
+        ReportAttacher(store, fingerprinter).attach(p1_final_path, "l3_report", fixture / "l3_pass_report.json")
+        pass_entry, _ = FinalAcceptanceJudge(store, fingerprinter).conclude(p1_final_path)
+        if pass_entry["verdict"] != "pass" or pass_entry["blocked_reasons"] != []:
+            self.failures.append("all-pass run must conclude pass with no blockers")
+        if pass_entry["dm_source_registered"] is not True:
+            self.failures.append("a passing P1 conclusion must register the DM source")
+        source = DmSourceLedger(store).current()
+        if source is None or source["run_id"] != "p1-final":
+            self.failures.append("dm source ledger does not point at the passing candidate")
+        elif source["checkpoint"]["sha256"] != p1_final_record["selection"]["checkpoint"]["sha256"]:
+            self.failures.append("dm source froze the wrong DM checkpoint")
+        self.expect_reject(
+            lambda: FinalAcceptanceJudge(store, fingerprinter).conclude(p1_final_path),
+            "double conclude after registration",
+        )
+        p1_final_verifier = RunVerifier(fingerprinter)
+        p1_final_verifier.verify(store.load_by_path(p1_final_path), record_path=p1_final_path)
+        self.failures += [f"p1-final verify: {f}" for f in p1_final_verifier.failures]
+
+        # --- phase chain: P2 needs the frozen *registered* P1-DM; P3 must not pin a P2 run
         self.expect_reject(
             lambda: RunInitializer(open_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
                 "P2",
@@ -1502,22 +2103,35 @@ class ContractSelfTest:
             ),
             "P2 pinned to an open P1",
         )
-        p2_path = RunInitializer(open_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
+        self.expect_reject(
+            lambda: RunInitializer(store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
+                "P2",
+                "p2-offsource",
+                fixture / "phase_manifest.json",
+                [("env", fixture / "env_config.json")],
+                [("train", fixture / "lists/train.json")],
+                None,
+                p1_path,
+                None,
+            ),
+            "P2 pinned to a frozen P1 that is not the registered DM source",
+        )
+        p2_path = RunInitializer(store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
             "P2",
             "p2-fixture",
             fixture / "phase_manifest.json",
             [("env", fixture / "env_config.json")],
             [("train", fixture / "lists/train.json")],
             None,
-            p1_path,
+            p1_final_path,
             None,
         )
-        SelectionRecorder(open_store, fingerprinter).select(
+        SelectionRecorder(store, fingerprinter).select(
             p2_path, fixture / "candidate.pt", "dev light acceptance", [fixture / "dev_metrics.json"], None
         )
-        CandidateFreezer(open_store, fingerprinter).freeze(p2_path, fixture / "samples.json")
+        CandidateFreezer(store, fingerprinter).freeze(p2_path, fixture / "samples.json")
         self.expect_reject(
-            lambda: RunInitializer(open_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
+            lambda: RunInitializer(store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
                 "P3",
                 "p3-warm",
                 fixture / "phase_manifest.json",
@@ -1542,30 +2156,55 @@ class ContractSelfTest:
             ),
             "P1 with an upstream run",
         )
-        # P3 positive path: pins the same frozen P1-DM (independent init), full record verifies.
-        p3_path = RunInitializer(open_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
+        # P3 positive path: pins the same registered P1-DM (independent init), full record verifies.
+        p3_path = RunInitializer(store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
             "P3",
             "p3-fixture",
             fixture / "phase_manifest.json",
             [("env", fixture / "env_config.json")],
             [("train", fixture / "lists/train.json")],
             None,
-            p1_path,
+            p1_final_path,
             None,
         )
-        SelectionRecorder(open_store, fingerprinter).select(
+        SelectionRecorder(store, fingerprinter).select(
             p3_path, fixture / "candidate.pt", "dev light acceptance", [fixture / "dev_metrics.json"], None
         )
-        CandidateFreezer(open_store, fingerprinter).freeze(p3_path, fixture / "samples.json")
-        self.write_l1_report(fixture / "p3_l1_report.json", open_store.load_by_path(p3_path))
-        ReportAttacher(open_store, fingerprinter).attach(p3_path, "l1_report", fixture / "p3_l1_report.json")
+        CandidateFreezer(store, fingerprinter).freeze(p3_path, fixture / "samples.json")
+        self.write_l1_report(fixture / "p3_l1_report.json", store.load_by_path(p3_path))
+        ReportAttacher(store, fingerprinter).attach(p3_path, "l1_report", fixture / "p3_l1_report.json")
 
         chain_verifier = RunVerifier(fingerprinter)
-        chain_verifier.verify(open_store.load_by_path(p2_path), record_path=p2_path)
+        chain_verifier.verify(store.load_by_path(p2_path), record_path=p2_path)
         self.failures += [f"p2 chain: {f}" for f in chain_verifier.failures]
         p3_verifier = RunVerifier(fingerprinter)
-        p3_verifier.verify(open_store.load_by_path(p3_path), record_path=p3_path)
+        p3_verifier.verify(store.load_by_path(p3_path), record_path=p3_path)
         self.failures += [f"p3 chain: {f}" for f in p3_verifier.failures]
+
+        # --- DM retrain (issue #58): a later passing P1 supersedes the source; old bypasses mismatch explicitly
+        retrained_ckpt = fixture / "candidate_retrained.pt"
+        retrained_ckpt.write_bytes(b"candidate-retrained-fixture")
+        p1_retrained_path = self._open_passing_candidate(store, fingerprinter, fixture, "p1-retrained", checkpoint=retrained_ckpt)
+        retrained_record = store.load_by_path(p1_retrained_path)
+        self.write_l1_report(fixture / "l1_retrained_report.json", retrained_record, passing=True)
+        ReportAttacher(store, fingerprinter).attach(p1_retrained_path, "l1_report", fixture / "l1_retrained_report.json")
+        self.write_l2_report(fixture / "l2_retrained_report.json", retrained_record)
+        ReportAttacher(store, fingerprinter).attach(p1_retrained_path, "l2_report", fixture / "l2_retrained_report.json")
+        self.write_l3_report(fixture / "l3_retrained_report.json", retrained_record)
+        ReportAttacher(store, fingerprinter).attach(p1_retrained_path, "l3_report", fixture / "l3_retrained_report.json")
+        retrained_entry, _ = FinalAcceptanceJudge(store, fingerprinter).conclude(p1_retrained_path)
+        if retrained_entry["verdict"] != "pass":
+            self.failures.append("retrained P1 fixture must conclude pass")
+        superseded = DmSourceLedger(store).current()
+        if superseded["run_id"] != "p1-retrained" or superseded["superseded_run_id"] != "p1-final":
+            self.failures.append(f"dm source supersession not recorded: {superseded.get('run_id')} <- {superseded.get('superseded_run_id')}")
+        stale_verifier = RunVerifier(fingerprinter)
+        stale_verifier.verify(store.load_by_path(p2_path), record_path=p2_path)
+        if not any("DM was retrained" in failure for failure in stale_verifier.failures):
+            self.failures.append(f"retrained DM must explicitly mismatch the old bypass, got {stale_verifier.failures}")
+        retrained_verifier = RunVerifier(fingerprinter)
+        retrained_verifier.verify(store.load_by_path(p1_retrained_path), record_path=p1_retrained_path)
+        self.failures += [f"p1-retrained verify: {f}" for f in retrained_verifier.failures]
 
         # --- tamper detection: a changed candidate checkpoint must fail verify
         tampered = fixture / "candidate.pt"
@@ -1636,6 +2275,10 @@ def main(argv=None):
     p.add_argument("--path", required=True)
     p.set_defaults(handler="attach")
 
+    p = sub.add_parser("conclude", help="non-compensatory L1∧L2∧L3 final acceptance over a frozen run (issue #58)")
+    p.add_argument("--run", required=True, help="path to run.json (must be frozen with all three layer reports attached)")
+    p.set_defaults(handler="conclude")
+
     p = sub.add_parser("verify", help="verify one run record or every record under a record root")
     p.add_argument("--run", help="path to run.json")
     p.add_argument("--record-root", help="verify every runs/*/run.json under this root")
@@ -1677,6 +2320,13 @@ def main(argv=None):
             path = ReportAttacher(RunRecordStore.for_run(args.run), fingerprinter).attach(args.run, args.kind, args.path)
             print(f"{args.kind} attached -> {path}")
             return 0
+        if args.handler == "conclude":
+            entry, verdict_path = FinalAcceptanceJudge(RunRecordStore.for_run(args.run), fingerprinter).conclude(args.run)
+            layers = ", ".join(f"{name}={layer['verdict']}" for name, layer in entry["layers"].items())
+            print(f"FINAL ACCEPTANCE {entry['verdict'].upper()} ({layers}) -> {verdict_path}")
+            for reason in entry["blocked_reasons"]:
+                print(f"  blocked: {reason}", file=sys.stderr)
+            return 0 if entry["verdict"] == "pass" else 1
         if args.handler == "verify":
             paths = [Path(args.run)] if args.run else RunRecordStore(args.record_root).all_record_paths()
             failures = []
