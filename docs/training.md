@@ -157,3 +157,37 @@ REPO=/root/nv-phase-57 bash scripts/brats_p1_launch_train.sh   # 7-GPU DDP + 1-G
 ```
 
 Prerequisites (controlled storage only): the #52 phase lists/embeddings, the replay cohort (`brats_p1_replay_prep.py download/encode-list/companions/lists/verify` on gauss + rsync), the v1 base checkpoint, and the dev real feature bank (`brats_p1_dev_eval reference`).
+
+## BraTS2023 P2 Mask→Image Candidate (ControlNet-only bypass)
+
+The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-CTMR/issues/51) decision 7, execution decisions in [ADR-0007](../adr/0007-p2-mask-conditioned-candidate-training-execution.md)) trains a mask-conditioned ControlNet bypass hung off the **frozen P1-DM** (`dm_source.json` registered candidate, ADR-0006). It does not use the upstream `train_controlnet.py` loop; the pinned deltas live in `scripts/brats_p2_finetune.py`:
+
+- **ControlNet-only** — DM and VAE untouched; the ControlNet is initialized from the frozen P1-DM encoder/mid (`copy_model_state`); only `controlnet.requires_grad=True`;
+- **Hyperparameters are frozen** in `configs/config_brats_p2_train.json`: `lr=1e-5`, `batch=1`, `cache_rate=0`, `n_epochs<=100`, L1 loss, Rectified Flow uniform timestep sampling (scale 1.4), PolynomialLR power 2.0, `weighted_loss=100` on `[129,130,131]`, `use_region_contrasive_loss=off` (ADR-0007 guard raises on any deviation);
+- **No MR-RATE replay** — pure BraTS; the #52 `p2_mask_cond.json` list (train fold=1, dev fold=0, one entry per (case, modality)) is split by `fold=0` so the trainer trains on the train side and the val split is *discarded* — never used to pick a checkpoint (spec §decision 7 forbids the old select-by-train-loss behaviour);
+- **Condition vocabulary** — the `combined` mask (brain=22 union ∪ 1/2/3→129/130/131) is binarized to the 8-bit ControlNet condition; `weighted_loss_label=[129,130,131]` weights the tumor subregions;
+- **bf16 autocast by default** (DCU), fp32 fallback via `--no_amp`, DDP via `torchrun` (RCCL);
+- **Per-epoch checkpoints** `epoch_<N>.pt` (`controlnet_state_dict` + `scale_factor`) feed the dev-eval sidecar and the phase-run contract selection.
+
+### Dev light acceptance, round-trip Dice and early stopping
+
+`scripts/brats_p2_dev_eval.py` runs beside the trainer on a reserved GPU. Every 5 epochs it generates the fixed 16-case dev cohort (4 modalities × fixed seed, cfg=10, 30 steps) **from the case's combined condition mask**, records the per-modality 2.5D RadImageNet FID trend against the dev real bank, runs the frozen L2 instruments on the generated four-modality volumes (WT/TC/ET volume medians + failure counts; trend only), and computes the **P2 condition round-trip Dice trend** (instrument-predicted mask vs the combined condition, nearest-neighbour aligned + remapped 0/1/2/3). The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100) halts the trainer through `<ckpt_dir>/.early_stop`; the candidate is the `argmin` mean-FID epoch. See ADR-0007 for the rule text and the round-trip Dice semantics.
+
+### Launch (sugon DCU)
+
+```bash
+REPO=/root/nv-phase-59 \
+DM_SOURCE_CKPT=/root/private_data/brats2023_rflow_p1/ckpt/epoch_20.pt \
+bash scripts/brats_p2_launch_train.sh   # 7-GPU DDP + 1-GPU sidecar, nohup
+```
+
+`DM_SOURCE_CKPT` must be the frozen P1-DM checkpoint from `dm_source.json` (#58), not the v1 base. Prerequisites: the #52 phase lists/embeddings/labels, the frozen P1-DM candidate checkpoint, the v1 autoencoder, and the dev real feature bank (`brats_p2_dev_eval reference`).
+
+### Run-contract wiring (P2)
+
+The phase-run contract (`scripts/brats_phase_run_contract.py`) already carries P2 init/select/attach/verify/conclude and the `undecided` handling. Two prerequisites gate a P2 run on the cluster:
+
+1. **DM source registered (hard gate)** — P2 `init` requires `--upstream-run` pointing at a *frozen and registered* P1 candidate (`DmSourceLedger.check_upstream` matches run_id + checkpoint sha256). Until the P1 run has its L1/L2/L3 reports attached and passes `conclude` (#58), `dm_source.json` does not exist and P2 `init` is rejected with `"no P1 candidate has passed final acceptance yet; ... conclude a passing P1 run first"`. This is not P2 code; it is the #58 conclusion execution that must complete first.
+2. **Init invocation** — `init --phase P2 --record-root DIR --manifest phase_manifest.json --config train=configs/config_brats_p2_train.json --config network=configs/config_network_rflow.json --data-list train=lists/p2_mask_cond.json --upstream-run records/runs/<p1-run-id>/run.json --platform-json run/environment_brats_p2_train.json` (no `--base-ckpt`; a replay list is rejected). Note `environment_brats_p2_train.json` (paths) embeds as `platform`; `p2_mask_cond.json` is the single train+dev list, split internally by `fold=1/fold=0` (the contract's holdout guard passes since #52 includes no holdout entries).
+
+`select` (dev-only evidence), `attach` (l1/l2/l3; L2 report must carry P2 round-trip + `undecided` allowed), then `conclude` (non-compensatory L1∧L2∧L3) follow the frozen-candidate protocol identically to P1.
