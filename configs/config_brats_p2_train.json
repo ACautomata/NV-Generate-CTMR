@@ -1,0 +1,16 @@
+{
+    "controlnet_train": {
+        "batch_size": 1,
+        "cache_rate": 0,
+        "lr": 1e-05,
+        "n_epochs": 100,
+        "weighted_loss": 100,
+        "weighted_loss_label": [129, 130, 131],
+        "use_region_contrasive_loss": false,
+        "fold": 0
+    },
+    "diffusion_unet_inference": {
+        "num_inference_steps": 30,
+        "cfg_guidance_scale": 10
+    }
+}
