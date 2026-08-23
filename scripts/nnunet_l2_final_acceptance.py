@@ -53,9 +53,13 @@ Usage:
         --output-dir DIR
     python -m scripts.nnunet_l2_final_acceptance evaluate --phase P2 \
         --table measurements.csv --freeze-audit freeze-audit.json \
-        --run-id p2-... --output-dir DIR
+        --run-id p2-... --run runs/p2-.../run.json --output-dir DIR
     python -m scripts.nnunet_l2_final_acceptance verify-frozen --freeze-audit freeze-audit.json
     python -m scripts.nnunet_l2_final_acceptance selftest --workdir TMP
+
+``--run`` (issue #58) binds the report to the frozen candidate of the #53 run
+contract; the bound report then passes ``brats_phase_run_contract attach
+--kind l2_report`` and feeds ``conclude`` (non-compensatory L1∧L2∧L3).
 """
 
 import argparse
@@ -174,6 +178,41 @@ class FrozenEnvelopes:
         if problems:
             raise AcceptanceError("frozen-envelope verification failed:\n  " + "\n  ".join(problems))
         return True
+
+
+# ── run-record binding ──────────────────────────────────────────────────
+
+class L2RunBinding:
+    """Freezes the #53 run-record identity of the candidate this L2 report judges.
+
+    ``evaluate --run`` binds the report to the frozen candidate (run id, phase,
+    manifest / candidate-checkpoint / samples SHA-256) exactly the way L1/L3
+    reports bind; the run contract's l2_report attachment (issue #58) then
+    refuses any report whose binding does not match the run it is attached to.
+    """
+
+    def __init__(self, run_record_path):
+        path = Path(run_record_path)
+        if not path.is_file():
+            raise AcceptanceError(f"run record not found: {path}")
+        record = json.loads(path.read_text())
+        if record.get("status") != "frozen":
+            raise AcceptanceError(f"run {record.get('run_id')} is {record.get('status')!r}; L2 final acceptance binds frozen candidates only")
+        selection = record.get("selection") or {}
+        self.run_id = record.get("run_id")
+        self.phase = record.get("phase")
+        self.manifest_sha256 = (record.get("manifest") or {}).get("sha256")
+        self.candidate_checkpoint_sha256 = (selection.get("checkpoint") or {}).get("sha256")
+        self.samples_sha256 = (record.get("samples") or {}).get("sha256")
+
+    def as_dict(self):
+        return {
+            "run_id": self.run_id,
+            "phase": self.phase,
+            "manifest_sha256": self.manifest_sha256,
+            "candidate_checkpoint_sha256": self.candidate_checkpoint_sha256,
+            "samples_sha256": self.samples_sha256,
+        }
 
 
 # ── freeze guard ────────────────────────────────────────────────────────
@@ -765,12 +804,13 @@ class ChallengeJudge:
 class AcceptanceReport:
     """Aggregate, subject-id-free JSON + markdown report (protocol §5)."""
 
-    def __init__(self, phase, run_id, bootstrap_b, freeze_record, provisional_challenges):
+    def __init__(self, phase, run_id, bootstrap_b, freeze_record, provisional_challenges, binding=None):
         self._phase = phase
         self._run_id = run_id
         self._bootstrap_b = bootstrap_b
         self._freeze_record = freeze_record
         self._provisional = provisional_challenges
+        self._binding = binding
 
     def build(self, challenge_verdicts, challenges_missing):
         overall = "undecided" if any(v["verdict"] == "undecided" for v in challenge_verdicts) else (
@@ -782,6 +822,7 @@ class AcceptanceReport:
             "issue": 55,
             "phase": self._phase,
             "run_id": self._run_id,
+            "binding": self._binding.as_dict() if self._binding is not None else None,
             "generated_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "bootstrap": {
                 "B": self._bootstrap_b, "method": "病例级 cluster bootstrap, percentile CI90, linear 插值 (protocol §4)",
@@ -904,6 +945,7 @@ class SelfTest:
         self._workdir.mkdir(parents=True, exist_ok=True)
         self._test_envelope_verification()
         self._test_freeze_guard()
+        self._test_run_binding()
         self._test_assembly_plans()
         self._test_verdict_chain()
         return self.failures
@@ -953,6 +995,31 @@ class SelfTest:
         record = guard.verify(good, expect_sha256=None)
         if record["pinned"] is not False:
             self.failures.append("freeze guard pinned flag misreported")
+
+    def _test_run_binding(self):
+        """evaluate --run binds the report to the frozen candidate (issue #58 attachment gate)."""
+        run_record = {
+            "schema": "brats-phase-run/1",
+            "run_id": "p1-bindtest", "phase": "P1", "status": "frozen",
+            "manifest": {"path": "/private/m.json", "sha256": "a" * 64},
+            "selection": {"checkpoint": {"path": "/private/ckpt.pt", "sha256": "b" * 64, "epoch": 7}},
+            "samples": {"path": "/private/samples.json", "sha256": "c" * 64},
+        }
+        path = self._workdir / "run_bindtest.json"
+        path.write_text(json.dumps(run_record))
+        binding = L2RunBinding(path).as_dict()
+        expected = {
+            "run_id": "p1-bindtest", "phase": "P1", "manifest_sha256": "a" * 64,
+            "candidate_checkpoint_sha256": "b" * 64, "samples_sha256": "c" * 64,
+        }
+        if binding != expected:
+            self.failures.append(f"run binding extraction mismatch: {binding}")
+        open_record = dict(run_record, status="open")
+        open_path = self._workdir / "run_open.json"
+        open_path.write_text(json.dumps(open_record))
+        self.expect_reject(lambda: L2RunBinding(open_path), "binding an open run record")
+        missing = self._workdir / "run_absent.json"
+        self.expect_reject(lambda: L2RunBinding(missing), "binding a missing run record")
 
     def _fixture_entry(self, challenge, case, phase):
         real_paths = {m: f"/private/real/{challenge}/{case}/{case}-{m}.nii.gz" for m in MODALITIES}
@@ -1221,6 +1288,8 @@ def main(argv=None):
     p.add_argument("--calibration-summary", default=None,
                    help="controlled calibration summary_<CH>.json directory; verified against ADR-0002 literals")
     p.add_argument("--run-id", default=None)
+    p.add_argument("--run", default=None,
+                   help="run.json of the frozen candidate (#53 contract); binds the report for attach --kind l2_report (issue #58)")
     p.add_argument("--bootstrap-b", type=int, default=BOOTSTRAP_B,
                    help=f"bootstrap resamples (default {BOOTSTRAP_B}; selftest may lower it)")
     p.add_argument("--output-dir", required=True)
@@ -1289,7 +1358,19 @@ def main(argv=None):
             provisional = [ch for ch in CHALLENGES
                            if len({row["case"] for row in rows if row["challenge"] == ch}) < HOLDOUT_QUOTAS[ch]]
             challenges_missing = [ch for ch in CHALLENGES if ch not in challenges_present]
-            reporter = AcceptanceReport(args.phase, args.run_id, args.bootstrap_b, freeze_record, provisional)
+            binding = None
+            if args.run:
+                binding = L2RunBinding(args.run)
+                bound = binding.as_dict()
+                if args.run_id and args.run_id != bound["run_id"]:
+                    raise AcceptanceError(f"--run-id {args.run_id} contradicts the run record {bound['run_id']}")
+                if bound["phase"] != args.phase:
+                    raise AcceptanceError(
+                        f"run record phase {bound['phase']!r} != --phase {args.phase!r}; the L2 protocol differs per phase"
+                    )
+                if not args.run_id:
+                    args.run_id = bound["run_id"]
+            reporter = AcceptanceReport(args.phase, args.run_id, args.bootstrap_b, freeze_record, provisional, binding=binding)
             report = reporter.build(verdicts, challenges_missing)
             json_path, md_path = reporter.write(report, args.output_dir)
             print(f"[OK] overall={report['overall_verdict']} -> {json_path}")
