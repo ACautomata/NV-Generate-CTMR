@@ -32,6 +32,9 @@ cd "$REPO"
 mkdir -p "$RUN_ROOT"/{ckpt,logs,records,tblogs}
 
 # ── 环境配置（实例路径，契约 init 指纹的就是这份；P2 无回放、无 base-ckpt） ──
+# 幂等：契约 init 已指纹化本文件（--platform-json）。若已存在则不覆盖，
+# 避免重写内容（路径/格式差异）导致运行记录的平台 sha 与文件不一致。
+if [ ! -f "$RUN_ROOT/environment_brats_p2_train.json" ]; then
 cat > "$RUN_ROOT/environment_brats_p2_train.json" <<EOF
 {
     "data_base_dir": "$PHASE_ROOT",
@@ -44,6 +47,7 @@ cat > "$RUN_ROOT/environment_brats_p2_train.json" <<EOF
     "modality_mapping_path": "$REPO/configs/modality_mapping.json"
 }
 EOF
+fi
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 TRAIN_LOG="$RUN_ROOT/logs/train_$STAMP.log"
