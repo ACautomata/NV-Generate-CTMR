@@ -224,7 +224,8 @@ class P2CandidateSampler:
         )
         spacing_tensor = torch.tensor([[s * 1e2 for s in spacing]], device=self._device)
         modality_tensor = torch.tensor([modality_token], device=self._device)
-        synthetic = ldm_conditional_sample_one_image_from_mask(
+        # Returns (synthetic_image, combine_label); only the image is used here.
+        synthetic, _returned_label = ldm_conditional_sample_one_image_from_mask(
             autoencoder=autoencoder,
             diffusion_unet=unet,
             controlnet=controlnet,
