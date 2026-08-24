@@ -195,13 +195,19 @@ class HoldoutGuard:
                 pairs += self.scan_case_pairs(item)
         return pairs
 
-    def guard_data_list(self, list_entry):
+    def guard_data_list(self, list_entry, phase=None):
         """A labelled list must exist, carry cases, and match its side label with no holdout.
 
         A ``replay`` list (P1 only, spec #51 decision 6) inverts the membership
         check: every entry must be an external replay-cohort study that is NOT
         in the pinned BraTS manifest — by pair identity or by bare case id, so
-        a BraTS case cannot re-enter training under the replay label."""
+        a BraTS case cannot re-enter training under the replay label.
+
+        A P2/P3 ControlNet run (spec #51 decision 8) uses a single fold-split
+        list labelled ``train`` that carries both train (fold=1) and dev
+        (fold=0) entries — dev is a legitimate light-acceptance run input, not
+        holdout — so a ``train`` list in those phases may hold train or dev
+        cases. P1 (full-param continuation) keeps the strict side match."""
         path = Path(list_entry["path"])
         if not path.is_file():
             raise ContractViolationError(f"data list not found: {path}")
@@ -210,6 +216,9 @@ class HoldoutGuard:
             raise ContractViolationError(f"data list carries no (sub, case) entries: {path}")
         label = list_entry["side"]
         manifest_cases = self._sides.all_case_keys() if label == "replay" else None
+        allowed_sides = {label}
+        if phase in {"P2", "P3"} and label == "train":
+            allowed_sides = {"train", "dev"}
         for challenge, case in pairs:
             side = self._sides.side_of(challenge, case)
             if label == "replay":
@@ -225,7 +234,7 @@ class HoldoutGuard:
                 raise ContractViolationError(
                     f"{path}: final-holdout case ({challenge}, {case}) must not enter a run input (holdout runs only after candidate freeze)"
                 )
-            if side != label:
+            if side not in allowed_sides:
                 raise ContractViolationError(f"{path}: ({challenge}, {case}) is {side}-side but the list is labelled {label}")
 
     def guard_evidence(self, path):
@@ -425,7 +434,7 @@ class RunInitializer:
         pinned_sides = ManifestSides.from_path(manifest_entry["path"])
         guard = HoldoutGuard(pinned_sides)
         for entry in list_entries:
-            guard.guard_data_list(entry)
+            guard.guard_data_list(entry, phase)
         for entry in config_entries:
             guard.guard_config(entry["path"])
 
@@ -1472,7 +1481,7 @@ class RunVerifier:
         guard = HoldoutGuard(ManifestSides.from_path(record["manifest"]["path"]))
         for entry in record["data_lists"]:
             try:
-                guard.guard_data_list(entry)
+                guard.guard_data_list(entry, record["phase"])
             except ContractViolationError as violation:
                 self.failures.append(f"data list guard: {violation}")
         for entry in record["configs"]:
@@ -1568,12 +1577,14 @@ class ContractSelfTest:
         dev_list = {"training": [{"sub": "GLI", "case": "FIXGLI-0100-000"}]}
         holdout_list = {"training": [{"sub": "GLI", "case": "FIXGLI-0200-000"}]}
         mislabelled_list = {"training": [{"sub": "GLI", "case": "FIXGLI-0100-000"}]}
+        combined_sided_list = {"training": [{"sub": "GLI", "case": "FIXGLI-0000-000"}, {"sub": "GLI", "case": "FIXGLI-0100-000"}]}
         replay_list = {"training": [{"sub": "MRRATE", "case": "AB12CD34EF"}, {"sub": "MRRATE", "case": "FG56HI78JK"}]}
         replay_collision_list = {"training": [{"sub": "MRRATE", "case": "FIXGLI-0000-000"}]}
         (lists_dir / "train.json").write_text(json.dumps(train_list))
         (lists_dir / "dev.json").write_text(json.dumps(dev_list))
         (lists_dir / "holdout.json").write_text(json.dumps(holdout_list))
         (lists_dir / "mislabelled.json").write_text(json.dumps(mislabelled_list))
+        (lists_dir / "combined_sided.json").write_text(json.dumps(combined_sided_list))
         (lists_dir / "replay.json").write_text(json.dumps(replay_list))
         (lists_dir / "replay_collision.json").write_text(json.dumps(replay_collision_list))
 
@@ -2125,6 +2136,40 @@ class ContractSelfTest:
             None,
             p1_final_path,
             None,
+        )
+        # P2 fold-split combined list (train+dev under one train label) opens and
+        # verifies; P1 must reject the same list (no dev leak into a full-param
+        # continuation train list). spec #51 decision 8.
+        p2_combined_path = RunInitializer(
+            store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")
+        ).init(
+            "P2",
+            "p2-combined-split",
+            fixture / "phase_manifest.json",
+            [("env", fixture / "env_config.json")],
+            [("train", fixture / "lists/combined_sided.json")],
+            None,
+            p1_final_path,
+            None,
+        )
+        comb_verifier = RunVerifier(fingerprinter)
+        comb_verifier.verify(store.load_by_path(p2_combined_path), record_path=p2_combined_path)
+        self.failures += [f"p2 combined-split list: {f}" for f in comb_verifier.failures]
+        comb_reject_store = self.store_at(self._workdir / "records_comb_reject")
+        self.expect_reject(
+            lambda: RunInitializer(
+                comb_reject_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")
+            ).init(
+                "P1",
+                "p1-combined-split",
+                fixture / "phase_manifest.json",
+                [("env", fixture / "env_config.json")],
+                [("train", fixture / "lists/combined_sided.json")],
+                fixture / "base_ckpt.pt",
+                None,
+                None,
+            ),
+            "P1 rejects a fold-split combined train+dev list",
         )
         SelectionRecorder(store, fingerprinter).select(
             p2_path, fixture / "candidate.pt", "dev light acceptance", [fixture / "dev_metrics.json"], None

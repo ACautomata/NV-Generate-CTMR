@@ -221,7 +221,7 @@ class P2ControlNetJob:
             return None
         weights = torch.ones_like(images)
         roi = torch.zeros([images.shape[0], 1] + list(images.shape[2:]), device=self._device)
-        interpolate_label = F.interpolate(labels, size=images.shape[2:], mode="nearest")
+        interpolate_label = F.interpolate(labels.float(), size=images.shape[2:], mode="nearest").long()
         for label in args.controlnet_train["weighted_loss_label"]:
             roi[interpolate_label == label] = 1
         weights[roi.repeat(1, images.shape[1], 1, 1, 1) == 1] = args.controlnet_train["weighted_loss"]
