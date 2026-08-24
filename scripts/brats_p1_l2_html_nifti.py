@@ -38,6 +38,12 @@ from nnunet_l2_final_acceptance import MODALITIES  # noqa: E402
 REAL_CANDIDATE_ROOTS = ("raw/ASNR-MICCAI-BraTS2023", "ASNR-MICCAI-BraTS2023", ".")
 VIEW_AXIS = {"axial": 0, "coronal": 1, "sagittal": 2}  # sitk array layout is zyx
 
+# Synthetic grid (x, y, z) the holdout generator samples onto: matches the
+# `GRID` used by brats_p1_holdout_generate (spacing_i = zooms_i * shape_i / GRID_i).
+# The generated NIfTI is written with an IDENTITY_AFFINE, so it carries a wrong
+# geometry -- the report side reconstructs the true one from the raw t1n instead.
+GRID = (256, 256, 128)
+
 DEFAULT_NOTE = (
     "P1 is an unconditional image-only generation (per-modality sampling, no tumour "
     "conditioning); L2 TOST tests generated-vs-real tumour-volume equivalence, so "
@@ -107,6 +113,32 @@ class SliceScene:
         matches = list(case_dir.glob(f"{case}_{modality}_seed*.nii.gz"))
         return matches[0] if matches else None
 
+    def _synthetic_grid(self, case):
+        """Return the true synthetic grid (GRID size, derived spacing, raw affine).
+
+        The generated NIfTI was written with an IDENTITY_AFFINE, so its on-disk
+        geometry is wrong (origin 0, identity direction, spacing 1).  The report
+        reconstructs the geometry the generator actually sampled onto: the raw
+        t1n origin/direction with the post-resize spacing ``zoom * shape / GRID``.
+        Every other image is resampled onto this grid so generated, real and the
+        instrument predictions align.
+        """
+        info = self._case_index.get(case)
+        if info is None:
+            return None
+        raw_path = Path(info["dir"]) / f"{case}-t1n.nii.gz"
+        if not raw_path.is_file():
+            return None
+        raw = sitk.ReadImage(str(raw_path))
+        raw_size = raw.GetSize()
+        raw_spacing = raw.GetSpacing()
+        derived = [raw_spacing[i] * raw_size[i] / GRID[i] for i in range(3)]
+        grid = sitk.Image(GRID, sitk.sitkFloat32)
+        grid.SetSpacing(derived)
+        grid.SetOrigin(raw.GetOrigin())
+        grid.SetDirection(raw.GetDirection())
+        return grid
+
     def _load_generated(self, challenge, case, modalities):
         reference = None
         volumes = {}
@@ -158,7 +190,10 @@ class SliceScene:
         The caller attaches measurements.  ``modality_slices`` keeps raw 2D numpy
         arrays (windowed by the renderer) and ``overlays`` keeps raw label arrays.
         """
-        reference, gen_volumes = self._load_generated(challenge, case, MODALITIES)
+        _, gen_volumes = self._load_generated(challenge, case, MODALITIES)
+        if all(vol is None for vol in gen_volumes.values()):
+            return None
+        reference = self._synthetic_grid(case)
         if reference is None:
             return None
         _, real_volumes = self._load_real(case, MODALITIES)
