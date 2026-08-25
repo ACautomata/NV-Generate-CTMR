@@ -69,7 +69,7 @@ from .brats_p3_stage0_manifest import (
     Stage0SamplePlanBuilder,
 )
 from .diff_model_infer import load_models, prepare_tensors
-from .diff_model_setting import load_config
+from .diff_model_setting import load_config, setup_logging
 from .img2img_infer import load_anchor_latent, run_img2img
 
 GRID = (256, 256, 128)
@@ -180,6 +180,7 @@ class Stage0SampleWriter:
         self._out_root = Path(out_root)
         self._logger = logger
 
+    @torch.inference_mode()
     def write(self, cohort, layout):
         autoencoder, unet, scale_factor = load_models(self._merged, self._device, self._logger)
         top_ri, bottom_ri, _spacing, _modality = prepare_tensors(self._merged, self._device)
@@ -229,10 +230,10 @@ class Stage0SampleWriter:
                             )
                             out.parent.mkdir(parents=True, exist_ok=True)
                             nib.save(nib.Nifti1Image(data, affine=np.diag([*spacing, 1.0])), out)
-                            self._logger(f"[gen] {challenge}/{case}/{anchor}->{tgt} seed={seed}")
+                            self._logger.info(f"[gen] {challenge}/{case}/{anchor}->{tgt} seed={seed}")
                         except Exception as error:  # one failed job must not kill the shard
                             failures.append(f"{challenge}/{case}/{anchor}->{tgt}: {error}")
-                            self._logger(f"[fail] {challenge}/{case}/{anchor}->{tgt}: {error}")
+                            self._logger.info(f"[fail] {challenge}/{case}/{anchor}->{tgt}: {error}")
                 # L1-side reference: the real target on the generation grid (shared geometry)
                 for tgt in MODALITIES:
                     references.write(challenge, case, tgt, layout.real_of(challenge, case, tgt), spacing)
@@ -293,7 +294,8 @@ def main(argv=None):
         return 1
     layout = RawCaseLayout(args.raw_root, manifest)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    writer = Stage0SampleWriter(merged, run_record, args.side, config, device, args.out_root, print)
+    logger = setup_logging("stage0")
+    writer = Stage0SampleWriter(merged, run_record, args.side, config, device, args.out_root, logger)
     entries, pairs = writer.write(cohort, layout)
 
     suffix = f"_shard_{args.shard}" if args.num_shards > 1 else ""
