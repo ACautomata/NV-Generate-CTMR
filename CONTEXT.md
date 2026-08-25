@@ -106,5 +106,9 @@ _Avoid_: 用真实通道补缺生成体(真实通道主导测量)、以生成模
 把体数据重采样到 1mm 各向同性并居中 crop/pad 到目标网格的纯几何变换——连续体用 B-spline、label 用最近邻、背景填体数据默认像素值；仪器网格 240×240×155@1mm 为其标准实例。它是 L2 仪器输入与终验测量网格的唯一几何来源,其仪器口径经 ADR-0002/0004 冻结、不得偏离;B-spline 为冻结标准而非刻意最优。
 _Avoid_: 以线性插值喂仪器(已统一收敛为 B-spline)、非居中裁剪、把 xyz 轴序作用于 zyx 数组、在各脚本中散落重写此几何
 
+**冻结仪器调用(FrozenInstrumentCommand)**:
+以冻结配置(fold 0、`nnUNetTrainer250Epochs`、镜像 TTA on;SSA 用 `3d_fullres_bs16`+`nnUNetPlans_SSA_bs16_v1`)驱动 L2 肿瘤测量仪器 nnU-Net 预测的唯一构造点——`src/ctmr/instrument/` 的 `FrozenInstrumentCommand.build(输入, 输出) -> argv` 纯方法 + 唯一 canonical 执行入口 `python -m ctmr.instrument.predict`。TTA on 为冻结不变量(无 TTA 形参、永不产出 `--disable_tta`);weights_only 白名单 scoped 收敛于 `nnunet_safe_globals()`。口径经 ADR-0009 钉板,与 ADR-0002/0004 冻结读数一致;代码不动,执行期另行落地。
+_Avoid_: 在各脚本散落手写 `nnUNetv2_predict` 命令、用非标准入口名 `nnUNetv2_predict_from_raw_data`、写 `--disable_tta False` token、import 时 `add_safe_globals` 改全局状态
+
 **weighted_loss(肿瘤区加权)**:
 以 label 构造的图像体素损失加权(作用于肿瘤亚区),与条件模态无关——label 进 loss 与验收,不进 P3 条件。
