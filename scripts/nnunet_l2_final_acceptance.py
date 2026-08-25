@@ -131,11 +131,15 @@ class FrozenEnvelopes:
 
     Every pass line reads its numbers from here. When a controlled calibration
     summary is supplied, each value must equal the published literal to within
-    5e-5 (the 4-dp publishing grid): drift in either direction -- including a
-    narrowed margin or a raised floor -- rejects the evaluation.
+    its own column's publishing grid: D_r,low and E_r,vol are frozen on the
+    4-dp grid (tolerance 5e-5), while E_r,centroid is frozen on the 2-dp grid
+    (tolerance 5e-3) -- ADR-0002 publishes centroid to two decimals. Drift in
+    either direction -- including a narrowed margin or a raised floor --
+    rejects the evaluation.
     """
 
-    TOLERANCE = 5e-5
+    TOLERANCE = 5e-5            # 4-dp publishing grid: D_r,low, E_r,vol
+    CENTROID_TOLERANCE = 5e-3   # 2-dp publishing grid: E_r,centroid
 
     def __init__(self):
         self._table = FROZEN_ENVELOPES
@@ -165,12 +169,12 @@ class FrozenEnvelopes:
             for region in REGIONS:
                 loaded = summary["per_region"][region]
                 pairs = (
-                    ("D_r_low", loaded["D_r_low"], self.d_r_low(challenge, region)),
-                    ("E_r_vol", loaded["E_r_vol"], self.e_r_vol(challenge, region)),
-                    ("E_r_centroid", loaded["E_r_centroid"], self.e_r_centroid(challenge, region)),
+                    ("D_r_low", loaded["D_r_low"], self.d_r_low(challenge, region), self.TOLERANCE),
+                    ("E_r_vol", loaded["E_r_vol"], self.e_r_vol(challenge, region), self.TOLERANCE),
+                    ("E_r_centroid", loaded["E_r_centroid"], self.e_r_centroid(challenge, region), self.CENTROID_TOLERANCE),
                 )
-                for name, live, frozen in pairs:
-                    if live is None or math.isnan(live) or abs(live - frozen) > self.TOLERANCE:
+                for name, live, frozen, tol in pairs:
+                    if live is None or math.isnan(live) or abs(live - frozen) > tol:
                         problems.append(
                             f"{challenge}/{region} {name}: controlled summary {live} != ADR-0002 literal {frozen} "
                             "(envelope drift and narrowing both reject; re-run only via a new ADR)"

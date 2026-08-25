@@ -47,6 +47,21 @@ NNUNET_TARGET_SIZE = (240, 240, 155)
 NNUNET_TARGET_SPACING = (1.0, 1.0, 1.0)
 PREDICTION_SHAPE = tuple(reversed(NNUNET_TARGET_SIZE))  # array layout is zyx
 
+# P2 condition combined mask -> instrument label space (mirrors the dev sidecar
+# COMBINED_TO_INSTRUMENT in scripts/brats_p2_dev_eval.py). The combined mask is
+# stored in the BraTS 2023 label ids (22/129/130/131); the instrument predicts
+# 0/1/2/3, so the round-trip Dice must remap first -- comparing raw ids against
+# REGION_LABELS (1/2/3) matches nothing and yields a spurious exact 0.
+COMBINED_TO_INSTRUMENT = {22: 0, 129: 1, 130: 2, 131: 3}
+
+# The DM emits generated volumes (and the #52 condition masks) on the RAS grid,
+# while the real BraTS side is passed through in its native LPS orientation.
+# RAS<->LPS flips the x and y axes and preserves z, so the generated volume and
+# the condition mask are x/y-flipped onto the instrument grid to align with the
+# real reference (array layout is zyx: flip the last two axes). Without this the
+# gen/real pair lands ~240mm apart and the TOST centroid test fails spuriously.
+DM_GRID_TO_LPS_AXIS_FLIP = (1, 2)  # zyx array axes to reverse (y=1, x=2)
+
 
 class GeneratedVolumeResampler:
     """Issue #38 InputPreparator geometry (protocol §2), with the axis handling
@@ -108,6 +123,8 @@ class GeneratedVolumeResampler:
                 src_slices.append(slice(0, s))
                 dst_slices.append(slice(start, start + s))
         cropped[tuple(reversed(dst_slices))] = array[tuple(reversed(src_slices))]
+        for axis in DM_GRID_TO_LPS_AXIS_FLIP:  # RAS(DM grid) -> LPS(instrument grid)
+            cropped = np.flip(cropped, axis=axis)
         result = sitk.GetImageFromArray(cropped)
         result.SetSpacing(NNUNET_TARGET_SPACING)
         result.SetOrigin(image.GetOrigin())
@@ -211,6 +228,14 @@ class MaskMeasurer:
         return float(union.sum()) * 0.001
 
     @staticmethod
+    def remap_condition(combined):
+        """P2 combined mask ids (22/129/130/131) -> instrument labels (0/1/2/3)."""
+        out = np.zeros_like(combined)
+        for src, dst in COMBINED_TO_INSTRUMENT.items():
+            out[combined == src] = dst
+        return out
+
+    @staticmethod
     def condition_dice(pred, condition, region):
         """Round-trip dice of the instrument prediction against the P2 condition mask.
 
@@ -247,6 +272,8 @@ class MeasurementRunner:
             condition = self._resampler.label_to_grid(observation["condition_mask"])
             if condition is None:
                 input_fail = True
+            else:
+                condition = self._measurer.remap_condition(condition)
         pred = None if input_fail else self._checker.read_prediction(observation, self._pred_root / observation["challenge"])
         run_fail = pred is None
         row.update(
