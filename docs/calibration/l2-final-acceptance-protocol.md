@@ -38,7 +38,7 @@
 - **排除规则（预注册，绝不静默）**：某病例某量的**相对差分母在真实侧不可用** → 该病例该量排除并计入 `n_excluded`（分原因；TOST 与 P2 回切都计数）。体积类量的分母是真实侧区域体积（为 0 → 排除）；`WT/brain`、`ET/WT` 相对差的分母是**真实侧比值本身**（真实 WT=0 使比值恰为 0，相对差未定义 → 排除计数；真实 ET=0 而 WT>0 时比值为 0 同样使相对差分母为 0）。生成侧空 pred 从不触发排除（体积相对差为 −1.0 全额进入）。METS 在 ±1.0–1.65 体积 margin 下 TC/ET 全漏仍可过等价是 ADR-0002 已声明的区分力极限，报告必须携带该声明。
 - **P2 回切**：逐病例逐区域回切 Dice 分布的单侧 5th percentile bootstrap 95% 下界 ≥ floor（floor = `D_r,low[区域]`，与校准同构统计量）；METS floor=0 恒真 → 显式标 vacuous-pass。
 - **undecided 判定链**：`undecided`（任一观测任一侧 input/run/hier 失败）优先于一切；无失败时 TOST ∧（P2 回切）全过 = `pass`，否则 `fail`。五子挑战非补偿 AND 聚合；`undecided` 同样阻塞。Wilson 95% 上界对照真实 R_fail 包络仅诊断报告。
-- **包络等值校验（防漂移、防收窄）**：提供受控校准 `summary_<CH>.json` 时，逐值与 ADR-0002 内置 4dp 字面量比对（容差 5e-5，先于判定执行）；任何 floor > `D_r,low` 或 margin < 冻结值 → 拒绝评估。
+- **包络等值校验（防漂移、防收窄）**：提供受控校准 `summary_<CH>.json` 时，逐值与 ADR-0002 内置字面量按**各列自身发布网格**比对（先于判定执行）：`D_r,low`/`E_r,vol` 为 4dp 网格（容差 5e-5），`E_r,centroid` 为 2dp 网格（容差 5e-3——ADR-0002 该列只发布到两位小数）；任何 floor > `D_r,low` 或 margin < 冻结值 → 拒绝评估。
 
 ## 5. 报告与合规
 
