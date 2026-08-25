@@ -85,6 +85,18 @@ construction; its `samples.json` feeds `nnunet_l2_final_acceptance assemble --ph
 baseline run never attaches formal L1/L2/L3 reports or concludes final acceptance — it is only the
 comparison floor.
 
+The candidate side comes from `scripts/brats_p3_controlnet_generate.py` (issue #61), the trained
+counterpart of that img2img baseline: a P3 run opened with `--variant controlnet-candidate` pins the
+frozen P1-DM plus the run's trained image-conditioned ControlNet, conditions the DM on the anchor's 4
+channel src latent (target modality label riding `class_labels` into both DM and ControlNet), and
+denoises from pure noise with CFG OFF (`cfg_guidance_scale == 0`, zero latent unconditional branch) —
+not an interpolated img2img start. It reuses the stage-0 `reference_grid/` geometry and merges the
+stage-0 records (baseline + reference) with its candidate volume per case/pair, emitting the
+`brats-l1-pairs/1` triplets the evaluator reads above, plus an `samples.json` with
+`variant=controlnet-candidate` for L2 `assemble --phase P3`. The candidate is a real trained candidate
+and may attach formal L1/L2/L3 reports and conclude final acceptance; its expected direction is at_least
+matching (never undercutting) the stage-0 baseline.
+
 The report applies the FID rule per challenge and target modality: the synthetic-vs-holdout mean-FID 95% CI upper bound must be at most 2.5× the real train-vs-holdout **bootstrap median**. The phase contract validates report schema, candidate and manifest hashes, coverage, threshold arithmetic, P3 direction semantics, and controlled-storage placement; a scientifically `fail` report is still valid evidence and may be attached.
 
 ## BraTS L3 blind evaluation

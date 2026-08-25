@@ -1,0 +1,16 @@
+{
+  "schema": "brats-p3-controlnet-infer/1",
+  "description": "P3 image-conditioned ControlNet candidate inference config (issue #61, spec #51 decision 4/6/8): frozen P1-DM + trained P3 ControlNet, 4ch src-latent condition, target modality label drives denoising from pure noise with CFG OFF (default, zero latent unconditional branch)",
+  "scheduler": "RFlowScheduler",
+  "num_inference_steps": 30,
+  "cfg_guidance_scale": 0.0,
+  "grid": [256, 256, 128],
+  "modality_tokens": {
+    "t1n": 29,
+    "t2w": 30,
+    "t2f": 31,
+    "t1c": 34
+  },
+  "seed_rule": "int(sha256(f'{case}|{src}->{tgt}')[:8], 16) % (2**31 - 1)",
+  "int16_scale": 1000.0
+}

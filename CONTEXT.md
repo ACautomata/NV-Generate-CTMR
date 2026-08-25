@@ -22,6 +22,10 @@ _Avoid_: 跨序列生成、模态合成、模态翻译(translation)
 
 **阶段 0 img2img 基线(stage-0 baseline)**:
 零训练比较下限——以冻结 P1-DM、src latent 与 tgt 模态标签执行 RF 插值起点(`x_t=(1-t)·src_latent+t·noise`)的 img2img 推理;契约中以 P3 run 的 `variant=stage0-baseline` 显式标记,四锚轮覆盖每病例 12 个有序模态对。它不训练任何权重(selection 钉 upstream P1-DM checkpoint)、不可挂 L1/L2/L3 正式报告、不可 conclude 终验——只作 P3 训练候选 L1 paired MAE/SSIM 的 baseline 侧与 L2 四锚轮参照,绝不冒充经 ControlNet 训练或终验通过的候选。
+
+**P3 跨模态候选(controlnet-candidate)**:
+stage-0 的受训对照——冻结 P1-DM + 独立从 DM encoder 重新初始化的 image-conditioned ControlNet 旁路,以 4 通道 src latent 为条件、tgt 模态标签经 `class_labels` 同时进 DM 与 ControlNet,从纯噪声去噪且 CFG=0(默认关闭 CFG,零 latent unconditional 分支——issue #61 验收 1-2)。训练钉 P2 同等配置、条件嵌入形状为 4 通道(区别于 P2 掩码的 8 通道)、不沿用 P2 ControlNet 权重,`variant=controlnet-candidate` 显式标记。它与 stage-0 基线合流为 L1 `brats-l1-pairs/1` 三元组(reference+baseline+candidate)供 paired MAE/SSIM 判定,并可挂 L1/L2/L3 正式报告、走 conclude 终验——但候选与基线是「受训对照 vs 比较下限」的关系:候选经整体 FID/配对误差/L2/L3 检验才判通过,绝不因相对基线占优而免于终验,也绝不冒充基线(反方向防混淆:候选 selection 钉自己的 ControlNet checkpoint,不是 upstream P1-DM)。
+_Avoid_: 把候选当基线、给候选贴 stage0 标记、让候选 selection 选 upstream DM、在候选侧沿用 P2 掩码条件或 8 通道条件嵌入
 _Avoid_: 把阶段 0 称作 P3 候选、给基线做终验裁决、无 variant 标记的 P3 img2img run
 
 **src 模态 / tgt 模态**:

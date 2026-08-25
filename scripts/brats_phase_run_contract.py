@@ -101,6 +101,7 @@ SCHEMA = "brats-phase-run/1"
 PHASES = ("P1", "P2", "P3")
 P3_VARIANTS = ("controlnet-candidate", "stage0-baseline")
 STAGE0_BASELINE = "stage0-baseline"  # zero-training img2img P3 baseline (issue #60 / spec #51 decision 8)
+CONTROLNET_CANDIDATE = "controlnet-candidate"  # trained image-conditioned P3 ControlNet candidate (issue #61)
 FORMAL_LAYER_KINDS = ("l1_report", "l2_report", "l3_report")
 STATUS_OPEN = "open"
 STATUS_FROZEN = "frozen"
@@ -414,12 +415,12 @@ class RunInitializer:
         config_entries = [{**self._fingerprinter.must_fingerprint(path, f"config {role}"), "role": role} for role, path in configs]
         if not config_entries:
             raise ContractViolationError("at least one --config ROLE=PATH is required")
-        if resolved_variant == STAGE0_BASELINE:
+        if resolved_variant is not None:
             inference_entries = [entry for entry in config_entries if entry["role"] == "inference"]
             if len(inference_entries) != 1:
                 raise ContractViolationError(
-                    "a stage-0 baseline must pin exactly one --config inference=<official stage-0 inference config> "
-                    "(issue #60 acceptance criterion 1: the recorded official inference provenance)"
+                    "a P3 run must pin exactly one --config inference=<official P3 inference config> "
+                    "(the recorded inference provenance: stage-0 baseline issue #60, ControlNet candidate issue #61)"
                 )
         list_entries = []
         for side, path in data_lists:
@@ -1531,11 +1532,12 @@ class RunVerifier:
             self.check(record.get("selection") is not None, "frozen run has no selection basis")
             self.check(record.get("samples") is not None, "frozen run has no sample manifest")
             self.check(record.get("frozen_utc"), "frozen run has no frozen_utc")
-        if variant == STAGE0_BASELINE:
+        if variant is not None:
             inference_entries = [entry for entry in record.get("configs", []) if entry.get("role") == "inference"]
             self.check(
                 len(inference_entries) == 1,
-                "a stage-0 baseline must pin exactly one role=inference config (recorded official inference provenance)",
+                "a P3 run must pin exactly one role=inference config (recorded official inference provenance: "
+                "stage-0 baseline issue #60, ControlNet candidate issue #61)",
             )
         if variant == STAGE0_BASELINE and record.get("selection"):
             upstream = record.get("upstream") or {}
@@ -1545,6 +1547,14 @@ class RunVerifier:
             )
             if any(attachment.get("kind") in FORMAL_LAYER_KINDS for attachment in record.get("attachments", [])):
                 self.failures.append("a stage-0 baseline must not carry formal L1/L2/L3 report attachments (comparison floor, not a candidate)")
+        if variant == CONTROLNET_CANDIDATE and record.get("selection"):
+            # issue #61 acceptance criterion 3: a trained candidate pins its own ControlNet checkpoint,
+            # never the upstream P1-DM (that would be a stage-0 baseline in disguise)
+            upstream = record.get("upstream") or {}
+            self.check(
+                record["selection"]["checkpoint"]["sha256"] != upstream.get("checkpoint", {}).get("sha256"),
+                "P3 ControlNet candidate selection must pin its own trained checkpoint, not the upstream P1-DM",
+            )
 
     def verify_guard(self, record):
         guard = HoldoutGuard(ManifestSides.from_path(record["manifest"]["path"]))
@@ -1666,6 +1676,7 @@ class ContractSelfTest:
         )
         (root / "base_ckpt.pt").write_bytes(b"rflow-mr-brain-v1-fixture")
         (root / "candidate.pt").write_bytes(b"candidate-fixture")
+        (root / "controlnet_candidate.pt").write_bytes(b"controlnet-candidate-fixture")
         dev_evidence = {"metrics": [{"sub": "GLI", "case": "FIXGLI-0100-000", "fid": 0.42}]}
         (root / "dev_metrics.json").write_text(json.dumps(dev_evidence))
         holdout_evidence = {"metrics": [{"sub": "GLI", "case": "FIXGLI-0200-000", "fid": 0.1}]}
@@ -2280,14 +2291,14 @@ class ContractSelfTest:
             "P3",
             "p3-fixture",
             fixture / "phase_manifest.json",
-            [("env", fixture / "env_config.json")],
+            [("env", fixture / "env_config.json"), ("inference", fixture / "infer_config.json")],
             [("train", fixture / "lists/train.json")],
             None,
             p1_final_path,
             None,
         )
         SelectionRecorder(store, fingerprinter).select(
-            p3_path, fixture / "candidate.pt", "dev light acceptance", [fixture / "dev_metrics.json"], None
+            p3_path, fixture / "controlnet_candidate.pt", "dev light acceptance", [fixture / "dev_metrics.json"], None
         )
         CandidateFreezer(store, fingerprinter).freeze(p3_path, fixture / "samples.json")
         self.write_l1_report(fixture / "p3_l1_report.json", store.load_by_path(p3_path))
