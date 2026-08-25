@@ -11,7 +11,7 @@
 - **`--disable_tta False` fatal token 3 处**：`nnunet_l2_synthetic_domain_eval.py:498`、`l2_synth_domain_sugon.py:334`、`run_l2_synth_domain_eval.sh:94`。在 nnUNetv2 2.8.1 argparse（`store_true` + `parse_args()`）下，该 token 触发 `unrecognized arguments: False`、**exit 2**（#78 findings 实测），而非「静默关 TTA」——与「冻结推理配置不可动」相悖。
 - **weights_only 白名单 3 份逐字节复制 + import 时改全局状态**：`nnunet_l2_instrument.py:29`、`nnunet_l2_closing_verification.py:26`、`l2_calibration_predict_entry.py:15`，载荷完全相同（`numpy.core.multiarray.scalar`、`numpy.dtype` 及一组数值 dtype 类），均在模块顶层 `add_safe_globals(...)`（import 副作用）。配套 load 点：`nnunet_l2_instrument.py:388`、`nnunet_l2_closing_verification.py:152`（均 `weights_only=True`）。另有 5 处**不同目的**的 `add_safe_globals`（`brats_p1_dev_eval.py:69`、`brats_p2_dev_eval.py:88`、`brats_p1_finetune.py:179`、`brats_p2_finetune.py:170`、`prototype/p3_image_cond_controlnet/p3_common.py:125`；reference-bank / MONAI MetaTensor / TraceKeys），不属本收敛范围。
 
-硬约束：**不改变终验路径的冻结读数**（[ADR-0002](0002-l2-instrument-calibration-envelopes.md) 校准包络 / [ADR-0004](0004-l2-final-acceptance-pass-lines.md) 通过线）。#58 终验判定链（`nnunet_l2_final_acceptance.py`）为冻结路径；#36 校准包络（`l2_calibration_predict.sh` 产生）为冻结读数来源、**不重跑**。#38 历史结论**不重跑、不复核**（#78 判「不可能翻转」，正式裁决见 #79）；本 ADR 只管未来口径正确。
+硬约束：**不改变终验路径的冻结读数**（[ADR-0002](0002-l2-instrument-calibration-envelopes.md) 校准包络 / [ADR-0004](0004-l2-final-acceptance-pass-lines.md) 通过线）。#58 终验判定链（`nnunet_l2_final_acceptance.py`）为冻结路径；#36 校准包络（`l2_calibration_predict.sh` 产生）为冻结读数来源、**不重跑**。#38 历史结论**不重跑、不复核**（#78 判「不可能翻转」，#79 已正式裁决＝维持有效）；本 ADR 只管未来口径正确。
 
 ## 决定
 
