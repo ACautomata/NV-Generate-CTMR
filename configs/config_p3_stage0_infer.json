@@ -1,0 +1,17 @@
+{
+  "schema": "brats-p3-stage0-infer/1",
+  "description": "P3 stage-0 zero-training img2img baseline inference config (issue #60, spec #51 decision 8): frozen P1-DM, src latent x_t=(1-t)*src+t*noise interpolation start, tgt modality label drives denoising",
+  "scheduler": "RFlowScheduler",
+  "num_inference_steps": 30,
+  "cfg_guidance_scale": 10.0,
+  "strength": 0.9,
+  "grid": [256, 256, 128],
+  "modality_tokens": {
+    "t1n": 29,
+    "t2w": 30,
+    "t2f": 31,
+    "t1c": 34
+  },
+  "seed_rule": "int(sha256(f'{case}|{src}->{tgt}')[:8], 16) % (2**31 - 1)",
+  "int16_scale": 1000.0
+}

@@ -20,6 +20,10 @@ _Avoid_: 跨序列生成、模态合成、模态翻译(translation)
 
 ### P3 专属
 
+**阶段 0 img2img 基线(stage-0 baseline)**:
+零训练比较下限——以冻结 P1-DM、src latent 与 tgt 模态标签执行 RF 插值起点(`x_t=(1-t)·src_latent+t·noise`)的 img2img 推理;契约中以 P3 run 的 `variant=stage0-baseline` 显式标记,四锚轮覆盖每病例 12 个有序模态对。它不训练任何权重(selection 钉 upstream P1-DM checkpoint)、不可挂 L1/L2/L3 正式报告、不可 conclude 终验——只作 P3 训练候选 L1 paired MAE/SSIM 的 baseline 侧与 L2 四锚轮参照,绝不冒充经 ControlNet 训练或终验通过的候选。
+_Avoid_: 把阶段 0 称作 P3 候选、给基线做终验裁决、无 variant 标记的 P3 img2img run
+
 **src 模态 / tgt 模态**:
 同一病例中作条件的源序列 / 待生成的目标序列;BraTS 四模态(T1、T2、FLAIR、T1c)同空间配准,tgt 模态标签经 class_labels 同时条件 DM 与 ControlNet。
 _Avoid_: 输入模态/输出模态、参考模态

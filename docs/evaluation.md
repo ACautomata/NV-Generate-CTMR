@@ -76,6 +76,15 @@ python -m scripts.brats_phase_run_contract attach \
 
 P3 also requires a `brats-l1-pairs/1` manifest. Each record binds one same-case `reference`, stage-0 `baseline`, and candidate NIfTI along with `challenge`, `case`, `src_modality`, and `target_modality`. The evaluator rejects shape or affine mismatches, normalizes all three volumes using the fixed MR protocol, computes 3D SSIM (`data_range=1.0`, `win_size=7`) and MAE, then applies paired case-level percentile bootstrap. The 11 information-sufficient directions require MAE reduction ≥10%, SSIM increase ≥0.02, and both CIs toward improvement. `t1n→t1c` is reported with an explicit known-unobservable exception, not a paired hard gate.
 
+The stage-0 side of that manifest comes from `scripts/brats_p3_stage0_generate.py` (issue #60): a P3 run
+opened with `--variant stage0-baseline` pins the frozen P1-DM and runs the four-anchor-round img2img
+protocol (12 ordered pairs per case). Its `pairs.json` records carry the baseline volume plus a
+`reference_grid/` copy of the real target resampled onto the generation grid (RAS + trilinear
+256×256×128, raw intensity domain), so baseline/reference/candidate triplets share shape and affine by
+construction; its `samples.json` feeds `nnunet_l2_final_acceptance assemble --phase P3` directly. The
+baseline run never attaches formal L1/L2/L3 reports or concludes final acceptance — it is only the
+comparison floor.
+
 The report applies the FID rule per challenge and target modality: the synthetic-vs-holdout mean-FID 95% CI upper bound must be at most 2.5× the real train-vs-holdout **bootstrap median**. The phase contract validates report schema, candidate and manifest hashes, coverage, threshold arithmetic, P3 direction semantics, and controlled-storage placement; a scientifically `fail` report is still valid evidence and may be attached.
 
 ## BraTS L3 blind evaluation
