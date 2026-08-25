@@ -23,6 +23,7 @@ Record layout (``<record-root>/runs/<run_id>/run.json``)::
       "schema": "brats-phase-run/1",
       "run_id": "p1-20260821T093000Z+9f2a1c",
       "phase": "P1",                      # P1 | P2 | P3
+      "variant": null,                    # P3 only: controlnet-candidate | stage0-baseline
       "status": "open",                   # open -> frozen (one way)
       "created_utc": "...", "frozen_utc": null,
       "code_version": {"git_commit": ..., "git_dirty": ..., "script_sha256": ...},
@@ -49,6 +50,12 @@ Contract rules enforced at every mutation:
   run and derive its DM checkpoint from that run's selection — P3 can never
   pin a P2 ControlNet through this contract. Retraining the DM means a new
   P1 run; existing records keep their pinned DM identity.
+- Stage-0 baseline (issue #60): a P3 run may open as ``stage0-baseline`` —
+  the zero-training img2img comparison floor run off the registered P1-DM.
+  It selects exactly the upstream DM checkpoint (nothing is trained), and it
+  can never attach formal L1/L2/L3 reports or conclude final acceptance: a
+  baseline is only the floor P3 candidates are compared against, never a
+  trained or accepted candidate itself.
 - Final acceptance (issue #58): ``conclude`` judges a frozen run's three
   formal layer reports (l1/l2/l3, each exactly one, each revalidated) with a
   non-compensatory AND — every layer must read ``pass``; any L1/L3 fail or any
@@ -92,6 +99,9 @@ from pathlib import Path
 
 SCHEMA = "brats-phase-run/1"
 PHASES = ("P1", "P2", "P3")
+P3_VARIANTS = ("controlnet-candidate", "stage0-baseline")
+STAGE0_BASELINE = "stage0-baseline"  # zero-training img2img P3 baseline (issue #60 / spec #51 decision 8)
+FORMAL_LAYER_KINDS = ("l1_report", "l2_report", "l3_report")
 STATUS_OPEN = "open"
 STATUS_FROZEN = "frozen"
 LIST_SIDES = ("train", "dev", "replay")  # holdout is never a data-list side; replay is the
@@ -384,13 +394,33 @@ class RunInitializer:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         return f"{phase.lower()}-{stamp}"
 
-    def init(self, phase, run_id, manifest_path, configs, data_lists, base_ckpt, upstream_run, platform_json):
+    def resolve_variant(self, phase, variant):
+        """P3-only variant marker (issue #60): a stage-0 baseline is the zero-training
+        img2img comparison floor; every other P3 run is a trained ControlNet candidate."""
+        if phase != "P3":
+            if variant is not None:
+                raise ContractViolationError(f"--variant is P3-only (a {phase} run has no stage-0 baseline variant): {variant!r}")
+            return None
+        resolved = P3_VARIANTS[0] if variant is None else variant
+        if resolved not in P3_VARIANTS:
+            raise ContractViolationError(f"P3 variant must be one of {P3_VARIANTS}: {variant!r}")
+        return resolved
+
+    def init(self, phase, run_id, manifest_path, configs, data_lists, base_ckpt, upstream_run, platform_json, variant=None):
         if phase not in PHASES:
             raise ContractViolationError(f"phase must be one of {PHASES}: {phase!r}")
+        resolved_variant = self.resolve_variant(phase, variant)
         manifest_entry = self._fingerprinter.must_fingerprint(manifest_path, "phase manifest")
         config_entries = [{**self._fingerprinter.must_fingerprint(path, f"config {role}"), "role": role} for role, path in configs]
         if not config_entries:
             raise ContractViolationError("at least one --config ROLE=PATH is required")
+        if resolved_variant == STAGE0_BASELINE:
+            inference_entries = [entry for entry in config_entries if entry["role"] == "inference"]
+            if len(inference_entries) != 1:
+                raise ContractViolationError(
+                    "a stage-0 baseline must pin exactly one --config inference=<official stage-0 inference config> "
+                    "(issue #60 acceptance criterion 1: the recorded official inference provenance)"
+                )
         list_entries = []
         for side, path in data_lists:
             if side not in LIST_SIDES:
@@ -442,6 +472,7 @@ class RunInitializer:
             "schema": SCHEMA,
             "run_id": resolved_id,
             "phase": phase,
+            "variant": resolved_variant,
             "status": STATUS_OPEN,
             "created_utc": self._store.now_utc(),
             "frozen_utc": None,
@@ -480,6 +511,13 @@ class SelectionRecorder:
             guard.guard_evidence(path)
             evidence_entries.append(self._fingerprinter.must_fingerprint(path, "selection evidence"))
         checkpoint_entry = self._fingerprinter.must_fingerprint(checkpoint, "candidate checkpoint")
+        if record.get("variant") == STAGE0_BASELINE:
+            upstream = record.get("upstream") or {}
+            if checkpoint_entry["sha256"] != upstream.get("checkpoint", {}).get("sha256"):
+                raise ContractViolationError(
+                    "a stage-0 baseline trains nothing: its selection must pin the upstream P1-DM checkpoint "
+                    "(the zero-training baseline never selects a different DM)"
+                )
         if epoch is not None:
             checkpoint_entry["epoch"] = epoch
         else:
@@ -1106,6 +1144,11 @@ class ReportAttacher:
             )
         if kind not in ATTACH_KINDS:
             raise ContractViolationError(f"attachment kind must be one of {ATTACH_KINDS}: {kind!r}")
+        if kind in FORMAL_LAYER_KINDS and record.get("variant") == STAGE0_BASELINE:
+            raise ContractViolationError(
+                f"a stage-0 baseline (run {record['run_id']}) is the P3 comparison floor, not a trained candidate; "
+                f"formal {kind} evidence would mislabel zero-training img2img output as an accepted candidate"
+            )
         if kind == "l1_report":
             self._assert_controlled_report(path, "l1_report")
             if any(attachment["kind"] == "l1_report" for attachment in record["attachments"]):
@@ -1243,6 +1286,12 @@ class FinalAcceptanceJudge:
             raise ContractViolationError(
                 f"run {record['run_id']} is {record['status']}; final acceptance concludes only frozen candidates "
                 "(holdout evidence attaches after the freeze)"
+            )
+        if record.get("variant") == STAGE0_BASELINE:
+            raise ContractViolationError(
+                f"run {record['run_id']} is the stage-0 zero-training img2img baseline; it is the P3 comparison "
+                "floor and never takes final acceptance (issue #60: a baseline must not be mislabelled as a "
+                "ControlNet-trained or final-acceptance-passing candidate)"
             )
         verdict_path = self.verdict_path_for(run_path)
         if verdict_path.is_file():
@@ -1466,6 +1515,12 @@ class RunVerifier:
         self.check(record["schema"] == SCHEMA, f"schema != {SCHEMA}")
         self.check(phase in PHASES, f"phase {phase!r} not in {PHASES}")
         self.check(record.get("run_id"), "run_id missing")
+        variant = record.get("variant")
+        if phase != "P3":
+            self.check(variant is None, f"a {phase} run must not carry the P3-only variant marker: {variant!r}")
+        elif variant is not None and variant not in P3_VARIANTS:
+            # legacy P3 records predate the variant marker and read as controlnet candidates
+            self.failures.append(f"P3 variant {variant!r} not in {P3_VARIANTS}")
         if phase == "P1":
             self.check(record.get("base_ckpt") is not None, "P1 must record its full-param continuation base")
             self.check(record.get("upstream") is None, "P1 must not carry an upstream run")
@@ -1476,6 +1531,20 @@ class RunVerifier:
             self.check(record.get("selection") is not None, "frozen run has no selection basis")
             self.check(record.get("samples") is not None, "frozen run has no sample manifest")
             self.check(record.get("frozen_utc"), "frozen run has no frozen_utc")
+        if variant == STAGE0_BASELINE:
+            inference_entries = [entry for entry in record.get("configs", []) if entry.get("role") == "inference"]
+            self.check(
+                len(inference_entries) == 1,
+                "a stage-0 baseline must pin exactly one role=inference config (recorded official inference provenance)",
+            )
+        if variant == STAGE0_BASELINE and record.get("selection"):
+            upstream = record.get("upstream") or {}
+            self.check(
+                record["selection"]["checkpoint"]["sha256"] == upstream.get("checkpoint", {}).get("sha256"),
+                "stage-0 baseline selection must pin the upstream P1-DM checkpoint (zero training, no DM of its own)",
+            )
+            if any(attachment.get("kind") in FORMAL_LAYER_KINDS for attachment in record.get("attachments", [])):
+                self.failures.append("a stage-0 baseline must not carry formal L1/L2/L3 report attachments (comparison floor, not a candidate)")
 
     def verify_guard(self, record):
         guard = HoldoutGuard(ManifestSides.from_path(record["manifest"]["path"]))
@@ -1590,6 +1659,11 @@ class ContractSelfTest:
 
         (root / "env_config.json").write_text('{"lr": 2e-06, "n_epochs": 100}\n')
         (root / "model_config.json").write_text('{"batch_size": 1}\n')
+        (root / "infer_config.json").write_text(
+            '{"schema": "brats-p3-stage0-infer/1", "scheduler": "RFlowScheduler", "num_inference_steps": 30, '
+            '"cfg_guidance_scale": 10.0, "strength": 0.9, "modality_tokens": {"t1n": 29, "t2w": 30, "t2f": 31, "t1c": 34}, '
+            '"seed_rule": "sha256"}\n'
+        )
         (root / "base_ckpt.pt").write_bytes(b"rflow-mr-brain-v1-fixture")
         (root / "candidate.pt").write_bytes(b"candidate-fixture")
         dev_evidence = {"metrics": [{"sub": "GLI", "case": "FIXGLI-0100-000", "fid": 0.42}]}
@@ -2226,6 +2300,108 @@ class ContractSelfTest:
         p3_verifier.verify(store.load_by_path(p3_path), record_path=p3_path)
         self.failures += [f"p3 chain: {f}" for f in p3_verifier.failures]
 
+        # --- stage-0 baseline (issue #60): zero-training P3 variant, comparison floor only
+        stage0_initializer = RunInitializer(store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json"))
+        self.expect_reject(
+            lambda: stage0_initializer.init(
+                "P3",
+                "p3-stage0",
+                fixture / "phase_manifest.json",
+                [("env", fixture / "env_config.json")],
+                [("train", fixture / "lists/train.json")],
+                None,
+                p1_final_path,
+                None,
+                variant="bogus-variant",
+            ),
+            "P3 init with an unknown variant",
+        )
+        self.expect_reject(
+            lambda: stage0_initializer.init(
+                "P3",
+                "p3-stage0-noinfer",
+                fixture / "phase_manifest.json",
+                [("env", fixture / "env_config.json")],
+                [("train", fixture / "lists/train.json")],
+                None,
+                p1_final_path,
+                None,
+                variant=STAGE0_BASELINE,
+            ),
+            "stage-0 without the pinned inference config",
+        )
+        self.expect_reject(
+            lambda: stage0_initializer.init(
+                "P1",
+                "p1-stage0",
+                fixture / "phase_manifest.json",
+                [("env", fixture / "env_config.json")],
+                [("train", fixture / "lists/train.json")],
+                fixture / "base_ckpt.pt",
+                None,
+                None,
+                variant=STAGE0_BASELINE,
+            ),
+            "variant on a P1 run",
+        )
+        stage0_path = stage0_initializer.init(
+            "P3",
+            "p3-stage0",
+            fixture / "phase_manifest.json",
+            [("env", fixture / "env_config.json"), ("inference", fixture / "infer_config.json")],
+            [("train", fixture / "lists/train.json")],
+            None,
+            p1_final_path,
+            None,
+            variant=STAGE0_BASELINE,
+        )
+        stage0_record = store.load_by_path(stage0_path)
+        if stage0_record.get("variant") != STAGE0_BASELINE:
+            self.failures.append("stage-0 run record must carry the stage0-baseline variant marker")
+        self.expect_reject(
+            lambda: SelectionRecorder(store, fingerprinter).select(
+                stage0_path, fixture / "base_ckpt.pt", "zero-training baseline", [fixture / "dev_metrics.json"], None
+            ),
+            "stage-0 selecting a checkpoint that is not the upstream DM",
+        )
+        upstream_ckpt = Path(stage0_record["upstream"]["checkpoint"]["path"])
+        SelectionRecorder(store, fingerprinter).select(
+            stage0_path, upstream_ckpt, "zero-training stage-0 baseline: DM is the upstream P1-DM selection", [fixture / "dev_metrics.json"], None
+        )
+        CandidateFreezer(store, fingerprinter).freeze(stage0_path, fixture / "samples.json")
+        stage0_verifier = RunVerifier(fingerprinter)
+        stage0_verifier.verify(store.load_by_path(stage0_path), record_path=stage0_path)
+        self.failures += [f"p3-stage0 verify: {f}" for f in stage0_verifier.failures]
+        self.expect_reject(
+            lambda: ReportAttacher(store, fingerprinter).attach(stage0_path, "l1_report", fixture / "l1_report.json"),
+            "stage-0 attaching a formal L1 report",
+        )
+        self.expect_reject(
+            lambda: FinalAcceptanceJudge(store, fingerprinter).conclude(stage0_path),
+            "stage-0 concluding final acceptance",
+        )
+        # A P1 record carrying the P3-only variant marker must fail verification.
+        tainted = json.loads(Path(p1_path).read_text())
+        tainted["variant"] = STAGE0_BASELINE
+        tainted_path = Path(p1_path).parent.parent / "runs" / "p1-tainted-variant" / "run.json"
+        tainted_path.parent.mkdir(parents=True, exist_ok=True)
+        tainted_path.write_text(json.dumps(tainted))
+        tainted_verifier = RunVerifier(fingerprinter)
+        tainted_verifier.verify(store.load_by_path(tainted_path), record_path=tainted_path)
+        if not any("variant" in failure for failure in tainted_verifier.failures):
+            self.failures.append(f"a P1 record carrying a variant marker must fail verification, got {tainted_verifier.failures}")
+
+        # A hand-edited stage-0 record with a formal report attached must fail verification.
+        tainted_stage0 = json.loads(Path(stage0_path).read_text())
+        tainted_stage0["attachments"] = [{"kind": "l1_report", "path": str(fixture / "l1_report.json"), "sha256": "0" * 64}]
+        tainted_stage0_path = Path(stage0_path).parent.parent / "runs" / "p3-stage0-tainted" / "run.json"
+        tainted_stage0_path.parent.mkdir(parents=True, exist_ok=True)
+        tainted_stage0_path.write_text(json.dumps(tainted_stage0))
+        tainted_stage0_verifier = RunVerifier(fingerprinter)
+        tainted_stage0_verifier.verify(store.load_by_path(tainted_stage0_path), record_path=tainted_stage0_path)
+        if not any("stage-0" in failure for failure in tainted_stage0_verifier.failures):
+            self.failures.append(f"a stage-0 record carrying a formal report must fail verification, got {tainted_stage0_verifier.failures}")
+
         # --- DM retrain (issue #58): a later passing P1 supersedes the source; old bypasses mismatch explicitly
         retrained_ckpt = fixture / "candidate_retrained.pt"
         retrained_ckpt.write_bytes(b"candidate-retrained-fixture")
@@ -2296,6 +2472,11 @@ def main(argv=None):
     p.add_argument("--run-id", help="stable id (default: <phase>-<utc stamp>)")
     p.add_argument("--base-ckpt", help="P1 only: the frozen rflow-mr-brain v1 checkpoint")
     p.add_argument("--upstream-run", help="P2/P3 only: run.json of the frozen P1 candidate")
+    p.add_argument(
+        "--variant",
+        choices=P3_VARIANTS,
+        help="P3 only: controlnet-candidate (default) or stage0-baseline (issue #60 zero-training img2img comparison floor)",
+    )
     p.add_argument("--platform-json", help="embedded verbatim (e.g. the DCU smoke provenance)")
     p.set_defaults(handler="init")
 
@@ -2348,6 +2529,7 @@ def main(argv=None):
                 args.base_ckpt,
                 args.upstream_run,
                 args.platform_json,
+                args.variant,
             )
             print(f"opened {path} (status=open)")
             return 0
