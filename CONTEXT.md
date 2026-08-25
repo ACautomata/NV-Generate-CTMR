@@ -110,5 +110,17 @@ _Avoid_: 以线性插值喂仪器(已统一收敛为 B-spline)、非居中裁剪
 以冻结配置(fold 0、`nnUNetTrainer250Epochs`、镜像 TTA on;SSA 用 `3d_fullres_bs16`+`nnUNetPlans_SSA_bs16_v1`)驱动 L2 肿瘤测量仪器 nnU-Net 预测的唯一构造点——`src/ctmr/instrument/` 的 `FrozenInstrumentCommand.build(输入, 输出) -> argv` 纯方法 + 唯一 canonical 执行入口 `python -m ctmr.instrument.predict`。TTA on 为冻结不变量(无 TTA 形参、永不产出 `--disable_tta`);weights_only 白名单 scoped 收敛于 `nnunet_safe_globals()`。口径经 ADR-0009 钉板,与 ADR-0002/0004 冻结读数一致;代码不动,执行期另行落地。
 _Avoid_: 在各脚本散落手写 `nnUNetv2_predict` 命令、用非标准入口名 `nnUNetv2_predict_from_raw_data`、写 `--disable_tta False` token、import 时 `add_safe_globals` 改全局状态
 
+**仪器读数(InstrumentMeasurement)**:
+把仪器网格(240×240×155)上的分割掩码派生为 WT/TC/ET 体积、质心位置、强化比等逐病例测量行的纯测量逻辑——`src/ctmr/measure/` 唯一入口 `InstrumentMeasurer.measure(pred, *, gt, condition, brain) -> CaseMeasurement`,校准列(vs GT)/生成列/回切 Dice 三列族按提供的可选 reference 显式门控,canonical 对象配 long(校准)/wide(终验)双序列化。REGIONS/Wilson/Dice 在此各唯一定义;cohort 聚合(R_fail/bootstrap/TOST/verdict)留在判定层、不属本测量。口径经 ADR-0010 钉板,与 ADR-0002/0004 冻结读数一致;代码不动,执行期另行落地。
+_Avoid_: 在各脚本散落重写掩码→测量行逻辑、把 cohort 聚合混入测量层、掩码不经仪器网格直接测量
+
+**层级违反(hierarchy_violation)**:
+单一 canonical 语义——pred 掩码上 ET⊄TC 或 TC⊄WT 的 containment 违反,或值域 ⊄{0,1,2,3};单表达式、无前置守卫,即 ADR-0004 决定 4 冻结定义(收敛自终验)。空超集不豁免:ET 存在而 TC 空即真违反。
+_Avoid_: 空超集前置守卫(跳过 ET 存在而 TC 空的真违反)、vacuous else-True 守卫、与校准病例可用性混称
+
+**校准病例可用性(calibration case-usability)**:
+校准侧判某真实病例可否用于包络估计的门禁——GT 值域 ∧ pred 值域 ∧ GT-WT 非空;需 GT,与层级违反(containment)是不同概念,喂校准 R_fail(ADR-0002 语义)。
+_Avoid_: 与层级违反混称、用于生成数据(无 GT)
+
 **weighted_loss(肿瘤区加权)**:
 以 label 构造的图像体素损失加权(作用于肿瘤亚区),与条件模态无关——label 进 loss 与验收,不进 P3 条件。
