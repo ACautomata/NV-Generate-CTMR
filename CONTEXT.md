@@ -124,3 +124,9 @@ _Avoid_: 与层级违反混称、用于生成数据(无 GT)
 
 **weighted_loss(肿瘤区加权)**:
 以 label 构造的图像体素损失加权(作用于肿瘤亚区),与条件模态无关——label 进 loss 与验收,不进 P3 条件。
+
+### 执行外壳
+
+**阶段脚本外壳(PhaseHarness)**:
+阶段脚本(finetune/dev_eval/launcher)中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询、checkpoint 原子发布、训练 provenance 写盘、dev watch/select 轮询骨架、参数化启动模板(幂等守卫内置)——统一收敛于 `src/ctmr/harness/`;各阶段只以内核(数据构成/模型挂接/单 batch 损失/checkpoint payload 四方法)组合注入,外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。CLI 面保持不变;口径经 ADR-0011 钉板,代码不动,执行期另行落地。
+_Avoid_: 在新阶段脚本中再抄外壳骨架(应注入内核)、把配方值下沉进外壳、把 P3 生成链轻复制族(prep/jobs/wait 轮询器)混称 PhaseHarness 纳界(另立 #92)
