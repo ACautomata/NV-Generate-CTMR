@@ -122,6 +122,14 @@ _Avoid_: 空超集前置守卫(跳过 ET 存在而 TC 空的真违反)、vacuous
 校准侧判某真实病例可否用于包络估计的门禁——GT 值域 ∧ pred 值域 ∧ GT-WT 非空;需 GT,与层级违反(containment)是不同概念,喂校准 R_fail(ADR-0002 语义)。
 _Avoid_: 与层级违反混称、用于生成数据(无 GT)
 
+**验收层注册表(AcceptanceLayer)**:
+run contract 中验收层(l1/l2/l3_report)全部接线的单点声明——附件 kind、层名、报告 schema 串、validator 构造、层读数路径与阻塞原因推导——`ACCEPTANCE_LAYERS` 一处注册,`ATTACH_KINDS`(层 kind+env,env 为非层附件)与 `LAYER_KINDS` 由此派生;新增验收层=注册表一项+新层自有类组(Rules 与 reasons builder),不再散落平行接线。validator 为组合注入:通用外壳(序幕+绑定+分派)+共享件(绑定校验/挑战读取/微工具)+层 Rules(protocol/coverage/verdict 复算/gate 检查留层——判定不同源的结构保证),非实现继承。经 ADR-0012 钉板,代码不动,执行期另行落地。
+_Avoid_: 以实现继承提取三胞胎 validator(应组合注入)、把 gate 检查参数化进注册表数据、ATTACH_KINDS/LAYER_KINDS 与注册表并存双份
+
+**冻结候选绑定(FrozenRunBinding)**:
+冻结候选身份五键(run_id/phase/manifest_sha256/candidate_checkpoint_sha256/samples_sha256)的唯一提取构造点,内置 require_frozen 门禁(提取即校验 run 状态);定义于 brats_phase_run_contract.py,L1/L2/L3 生产侧经 scripts 目录 shim import 共用。性质是身份提取而非判定:身份可共享(漂移风险在双侧失同步,共享恰消除);gate 常量镜像与 verdict 复算属判定,保持双侧不同源(ADR-0006 裁判独立性);生产侧 schema 串独立声明防版本漂移。经 ADR-0012 钉板,代码不动,执行期另行落地。
+_Avoid_: 生产侧重写五键提取、frozen 门禁留在各调用点、以共享身份为由合并 gate 常量镜像
+
 **weighted_loss(肿瘤区加权)**:
 以 label 构造的图像体素损失加权(作用于肿瘤亚区),与条件模态无关——label 进 loss 与验收,不进 P3 条件。
 
