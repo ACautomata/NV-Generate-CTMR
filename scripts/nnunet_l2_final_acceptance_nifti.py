@@ -34,7 +34,10 @@ import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE))  # sibling scripts (the stdlib judge module)
+sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python scripts/<this>.py
+sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
 
 from nnunet_l2_final_acceptance import (  # noqa: E402
     CHANNEL_SUFFIXES,
@@ -43,8 +46,9 @@ from nnunet_l2_final_acceptance import (  # noqa: E402
     MeasurementTable,
 )
 
-NNUNET_TARGET_SIZE = (240, 240, 155)
-NNUNET_TARGET_SPACING = (1.0, 1.0, 1.0)
+from ctmr.grid.instrument import INSTRUMENT_GRID, InstrumentGridAdapter  # noqa: E402
+
+NNUNET_TARGET_SIZE = INSTRUMENT_GRID.size
 PREDICTION_SHAPE = tuple(reversed(NNUNET_TARGET_SIZE))  # array layout is zyx
 
 # P2 condition combined mask -> instrument label space (mirrors the dev sidecar
@@ -67,23 +71,27 @@ class GeneratedVolumeResampler:
     """Issue #38 InputPreparator geometry (protocol §2), with the axis handling
     corrected for the zyx array layout (#38 applied xyz slices to a zyx array).
 
-    Generated volumes use B-spline; label volumes (the P2 condition mask) use
-    nearest neighbour so no label values are invented.
+    Since #105 (ADR-0008) the geometry itself lives in ctmr.grid
+    (InstrumentGridAdapter: B-spline continuum / nearest-neighbour label,
+    centred crop/pad onto the instrument grid); this shell keeps only the
+    terminal-acceptance-only DM-RAS -> LPS flip and the file IO.
     """
+
+    def __init__(self):
+        self._continuum = InstrumentGridAdapter.continuum()
+        self._label = InstrumentGridAdapter.label()
 
     def write(self, source, destination):
         image = sitk.ReadImage(str(source))
-        resampled = self._resample_to_1mm(image, sitk.sitkBSpline)
-        cropped = self._crop_or_pad(resampled, NNUNET_TARGET_SIZE)
-        sitk.WriteImage(cropped, str(destination))
+        aligned = self._flip_dm_grid_to_lps(self._continuum.align(image))
+        sitk.WriteImage(aligned, str(destination))
 
     def label_to_grid(self, source):
         """Aligns a label volume onto the instrument grid; None when unreadable."""
         try:
             image = sitk.ReadImage(str(source))
-            resampled = self._resample_to_1mm(image, sitk.sitkNearestNeighbor)
-            cropped = self._crop_or_pad(resampled, NNUNET_TARGET_SIZE)
-            array = sitk.GetArrayFromImage(cropped).astype(np.uint8, copy=False)
+            aligned = self._flip_dm_grid_to_lps(self._label.align(image))
+            array = sitk.GetArrayFromImage(aligned).astype(np.uint8, copy=False)
         except (RuntimeError, OSError):
             return None
         if array.shape != PREDICTION_SHAPE:
@@ -91,43 +99,15 @@ class GeneratedVolumeResampler:
         return array
 
     @staticmethod
-    def _resample_to_1mm(image, interpolator):
-        original_spacing = image.GetSpacing()
-        original_size = image.GetSize()
-        new_spacing = [1.0, 1.0, 1.0]
-        new_size = [int(round(osz * ospc / nspc)) for osz, ospc, nspc in zip(original_size, original_spacing, new_spacing)]
-        resampler = sitk.ResampleImageFilter()
-        resampler.SetOutputSpacing(new_spacing)
-        resampler.SetSize(new_size)
-        resampler.SetOutputDirection(image.GetDirection())
-        resampler.SetOutputOrigin(image.GetOrigin())
-        resampler.SetTransform(sitk.Transform())
-        resampler.SetDefaultPixelValue(image.GetPixelIDValue())
-        resampler.SetInterpolator(interpolator)
-        return resampler.Execute(image)
-
-    @staticmethod
-    def _crop_or_pad(image, target_size):
-        size = image.GetSize()
-        array = sitk.GetArrayFromImage(image)  # z, y, x
-        cropped = np.zeros(tuple(reversed(target_size)), dtype=array.dtype)  # array axes are zyx
-        src_slices, dst_slices = [], []
-        for s, t in zip(size, target_size):  # slices built in xyz order, applied reversed below
-            if s >= t:
-                start = (s - t) // 2
-                src_slices.append(slice(start, start + t))
-                dst_slices.append(slice(0, t))
-            else:
-                start = (t - s) // 2
-                src_slices.append(slice(0, s))
-                dst_slices.append(slice(start, start + s))
-        cropped[tuple(reversed(dst_slices))] = array[tuple(reversed(src_slices))]
-        for axis in DM_GRID_TO_LPS_AXIS_FLIP:  # RAS(DM grid) -> LPS(instrument grid)
-            cropped = np.flip(cropped, axis=axis)
-        result = sitk.GetImageFromArray(cropped)
-        result.SetSpacing(NNUNET_TARGET_SPACING)
+    def _flip_dm_grid_to_lps(image):
+        """RAS(DM grid) -> LPS(instrument grid); see DM_GRID_TO_LPS_AXIS_FLIP."""
+        array = sitk.GetArrayFromImage(image)
+        for axis in DM_GRID_TO_LPS_AXIS_FLIP:  # zyx array axes to reverse (y=1, x=2)
+            array = np.flip(array, axis=axis)
+        result = sitk.GetImageFromArray(array)
+        result.SetSpacing(image.GetSpacing())
         result.SetOrigin(image.GetOrigin())
-        result.SetDirection(np.eye(3).flatten().tolist())
+        result.SetDirection(image.GetDirection())
         return result
 
 
