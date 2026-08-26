@@ -26,9 +26,11 @@ lives in nnunet_l2_final_acceptance_nifti.py and runs on sugon):
               asserts every case is holdout-side and flags provisional when the
               case count falls short of the frozen quota)
   predict     plan -> per-challenge frozen-instrument inference scripts
-              (nnUNetv2_predict defaults: mirror TTA on by omission -- the flag
-              is store_true, passing "False" enables it -- overlap 0.5, fold 0,
-              nnUNetTrainer250Epochs; SSA uses the derived bs16 plans, ADR-0001)
+              (python -m ctmr.instrument.predict, the ADR-0009 canonical entry
+              sharing nnUNetv2_predict defaults: mirror TTA on by omission --
+              the flag is store_true, passing "False" enables it -- overlap 0.5,
+              fold 0, nnUNetTrainer250Epochs; SSA uses the derived bs16 plans,
+              ADR-0001)
   measure     (nifti side) plan + predictions -> per-observation measurement CSV
   evaluate    measurement CSV + frozen envelopes + freeze-audit verdict ->
               undecided | pass | fail per challenge, non-compensatory AND overall
@@ -73,8 +75,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))  # repo src layout: python -m scripts.<this>
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon deployment: src/ synced next to the script
 
 from brats_phase_run_contract import ArtifactFingerprinter, ManifestSides  # noqa: E402
+
+from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
 PLAN_SCHEMA = "l2-final-acceptance-plan/1"
 REPORT_SCHEMA = "l2-final-acceptance-report/1"
@@ -84,7 +90,6 @@ REGIONS = ("WT", "TC", "ET")
 REGION_LABELS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
 MODALITIES = ("t1n", "t1c", "t2w", "t2f")
 CHANNEL_SUFFIXES = {"t1n": "0000", "t1c": "0001", "t2w": "0002", "t2f": "0003"}
-DATASET_IDS = {"GLI": 501, "SSA": 502, "MEN": 503, "METS": 504, "PED": 505}
 
 # Frozen 20% final-holdout quotas (spec #51 decision 3 / split manifest).
 HOLDOUT_QUOTAS = {"GLI": 250, "SSA": 12, "MEN": 200, "METS": 48, "PED": 20}
@@ -497,39 +502,35 @@ class AssemblyPlanner:
 class PredictScriptWriter:
     """Per-challenge inference scripts under the frozen ADR-0003 §4 config.
 
-    Mirror TTA stays ON by omission (--disable_tta is store_true; passing any
-    value, including False, would turn it off). SSA uses the ADR-0001 derived
-    batch-16 plans identifier and configuration.
+    The command line is exactly ``FrozenInstrumentCommand.build`` (ADR-0009
+    decision 1): the canonical entry ``python -m ctmr.instrument.predict``, the
+    per-challenge frozen spec (SSA uses the ADR-0001 derived batch-16 plans and
+    configuration), fold 0, ``nnUNetTrainer250Epochs``. Mirror TTA stays ON by
+    omission (--disable_tta is store_true; passing any value, including False,
+    would turn it off). The generated shell also puts this module's src tree on
+    PYTHONPATH, so the canonical entry is importable from the fresh shell the
+    script runs in (repo and flat-deployment spellings, the ADR-0009 decision 6
+    shim).
     """
 
     def __init__(self, plan, output_dir):
         self._plan = plan
         self._output_dir = Path(output_dir)
 
+    @staticmethod
+    def _pythonpath_export():
+        script_dir = Path(__file__).resolve().parent
+        src_roots = ":".join(str(root) for root in dict.fromkeys((script_dir.parent / "src", script_dir / "src")))
+        return f'export PYTHONPATH="{src_roots}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+
     def write(self):
         self._output_dir.mkdir(parents=True, exist_ok=True)
         input_root = self._output_dir / "inputs"
         scripts = []
         for challenge in sorted(self._plan["challenges"]):
-            cmd = [
-                "nnUNetv2_predict",
-                "-i",
-                str(input_root / challenge),
-                "-o",
-                str(self._output_dir / "predictions" / challenge),
-                "-d",
-                str(DATASET_IDS[challenge]),
-                "-c",
-                "3d_fullres_bs16" if challenge == "SSA" else "3d_fullres",
-                "-f",
-                "0",
-                "-tr",
-                "nnUNetTrainer250Epochs",
-            ]
-            if challenge == "SSA":
-                cmd += ["-p", "nnUNetPlans_SSA_bs16_v1"]
+            cmd = FrozenInstrumentCommand(INSTRUMENT_SPECS[challenge]).build(input_root / challenge, self._output_dir / "predictions" / challenge)
             script_path = self._output_dir / f"predict_{challenge}.sh"
-            script_path.write_text("#!/bin/bash\nset -euo pipefail\n" + " ".join(cmd) + "\n")
+            script_path.write_text("#!/bin/bash\nset -euo pipefail\n" + self._pythonpath_export() + " ".join(cmd) + "\n")
             script_path.chmod(0o755)
             scripts.append(script_path)
         runner = self._output_dir / "predict_all.sh"

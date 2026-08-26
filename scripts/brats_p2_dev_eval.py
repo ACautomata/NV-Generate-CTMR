@@ -470,7 +470,6 @@ def main(argv=None):
     p.add_argument("--poll-seconds", type=float, default=60.0)
     p.add_argument("--skip-l2", action="store_true", help="FID-only trend (instruments unavailable)")
     p.add_argument("--instrument-results", action="append", default=[], help="CHALLENGE=nnUNet_results path")
-    p.add_argument("--instrument-entry", default="scripts/l2_calibration_predict_entry.py")
     p.add_argument("--nnunet-raw", default="/root/private_data/brats2023_nnunet")
     p.add_argument("--nnunet-preprocessed", default="/root/private_data/nnUNet_preprocessed")
     p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
@@ -538,7 +537,7 @@ def main(argv=None):
     fid = TrendFid(bank)
     sampler = P2CandidateSampler(merged, device, None)
     instrument_results = dict(item.split("=", 1) for item in args.instrument_results)
-    l2 = L2TrendRunner(instrument_results, args.instrument_entry, args.nnunet_raw, args.nnunet_preprocessed)
+    l2 = L2TrendRunner(instrument_results, args.nnunet_raw, args.nnunet_preprocessed)
     round_trip = P2RoundTripDice(masks)
     watcher = CheckpointWatcher(args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()})
     idle_since = None

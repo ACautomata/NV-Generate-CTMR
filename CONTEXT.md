@@ -115,7 +115,7 @@ _Avoid_: 用真实通道补缺生成体(真实通道主导测量)、以生成模
 _Avoid_: 以线性插值喂仪器(已统一收敛为 B-spline)、非居中裁剪、把 xyz 轴序作用于 zyx 数组、在各脚本中散落重写此几何
 
 **冻结仪器调用(FrozenInstrumentCommand)**:
-以冻结配置(fold 0、`nnUNetTrainer250Epochs`、镜像 TTA on;SSA 用 `3d_fullres_bs16`+`nnUNetPlans_SSA_bs16_v1`)驱动 L2 肿瘤测量仪器 nnU-Net 预测的唯一构造点——`src/ctmr/instrument/` 的 `FrozenInstrumentCommand.build(输入, 输出) -> argv` 纯方法 + 唯一 canonical 执行入口 `python -m ctmr.instrument.predict`。TTA on 为冻结不变量(无 TTA 形参、永不产出 `--disable_tta`);weights_only 白名单 scoped 收敛于 `nnunet_safe_globals()`。module 已落地(`src/ctmr/instrument/`,#107),7 命令 + 3 白名单的调用点收编归 #108;口径经 ADR-0009 钉板,与 ADR-0002/0004 冻结读数一致。
+以冻结配置(fold 0、`nnUNetTrainer250Epochs`、镜像 TTA on;SSA 用 `3d_fullres_bs16`+`nnUNetPlans_SSA_bs16_v1`)驱动 L2 肿瘤测量仪器 nnU-Net 预测的唯一构造点——`src/ctmr/instrument/` 的 `FrozenInstrumentCommand.build(输入, 输出) -> argv` 纯方法 + 唯一 canonical 执行入口 `python -m ctmr.instrument.predict`。TTA on 为冻结不变量(无 TTA 形参、永不产出 `--disable_tta`);weights_only 白名单 scoped 收敛于 `nnunet_safe_globals()`。module 已落地(`src/ctmr/instrument/`,#107),7 命令 + 3 白名单调用点均收编(#108);口径经 ADR-0009 钉板,与 ADR-0002/0004 冻结读数一致。
 _Avoid_: 在各脚本散落手写 `nnUNetv2_predict` 命令、用非标准入口名 `nnUNetv2_predict_from_raw_data`、写 `--disable_tta False` token、import 时 `add_safe_globals` 改全局状态
 
 **仪器读数(InstrumentMeasurement)**:

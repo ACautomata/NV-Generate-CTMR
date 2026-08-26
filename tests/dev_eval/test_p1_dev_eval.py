@@ -18,6 +18,10 @@ a GPU but imports torch, so it skips itself on light stacks via
 ``pytest.importorskip`` (ADR-0013 §4).
 """
 
+import subprocess
+import types
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("torch")
@@ -29,7 +33,12 @@ import SimpleITK as sitk  # noqa: E402
 
 from ctmr.grid.geometry import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler  # noqa: E402
 from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
-from scripts.brats_p1_dev_eval import DevEvalSelfTest, MrTrendFeatures  # noqa: E402  (importorskip must precede the torch-dependent import)
+from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
+from scripts.brats_p1_dev_eval import (  # noqa: E402  (importorskip must precede the torch-dependent import)
+    DevEvalSelfTest,
+    L2TrendRunner,
+    MrTrendFeatures,
+)
 
 
 @pytest.mark.torch
@@ -44,21 +53,47 @@ def test_p1_dev_eval_prep_inputs_matches_the_instrument_adapter(tmp_path):
     """L2TrendRunner.prep_inputs now delegates to the frozen instrument adapter
     (ADR-0008 adoption: the registered linear->B-spline + centred crop/pad changes
     land the nnU-Net inputs on the terminal-acceptance geometry)."""
-    from scripts.brats_p1_dev_eval import L2TrendRunner
-
     samples = []
     for modality, suffix in sorted(L2TrendRunner.NN_CHANNELS.items()):
         path = tmp_path / f"{modality}.nii.gz"
         sitk.WriteImage(_trend_volume(), str(path))  # v1-DM-ish footprint, mixed pad/crop axes
         samples.append({"sub": "GLI", "case": "SYNTH-9001", "modality": modality, "path": str(path)})
 
-    L2TrendRunner(None, None, None, None).prep_inputs(samples, tmp_path / "inputs")
+    L2TrendRunner(None, None, None).prep_inputs(samples, tmp_path / "inputs")
 
     for modality, suffix in sorted(L2TrendRunner.NN_CHANNELS.items()):
         produced = sitk.ReadImage(str(tmp_path / "inputs" / "GLI" / f"SYNTH-9001_{suffix}.nii.gz"))
         expected = InstrumentGridAdapter.continuum().align(sitk.ReadImage(str(tmp_path / f"{modality}.nii.gz")))
         assert np.array_equal(sitk.GetArrayFromImage(produced), sitk.GetArrayFromImage(expected))
         assert produced.GetSize() == (240, 240, 155)
+
+
+@pytest.mark.torch
+def test_p1_dev_eval_predict_uses_the_canonical_instrument_argv(tmp_path, monkeypatch):
+    """ADR-0009 #108 adoption: ``L2TrendRunner.predict`` produces exactly
+    ``FrozenInstrumentCommand.build`` -- the dev-side sidecar shares the single
+    construction point (canonical ``python -m ctmr.instrument.predict`` entry,
+    no TTA token anywhere, SSA derived config inside the spec)."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env", {})
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    for challenge in ("GLI", "SSA"):
+        log_path = tmp_path / f"predict-{challenge}.log"
+        results = {"GLI": "/results/gli", "SSA": "/results/ssa"}
+        rc = L2TrendRunner(results, None, None).predict(challenge, "/in", "/out", log_path)
+        assert rc == 0
+        assert captured["cmd"] == FrozenInstrumentCommand(INSTRUMENT_SPECS[challenge]).build("/in", "/out")
+        assert "--disable_tta" not in captured["cmd"]
+        assert captured["env"]["nnUNet_raw"]  # the nnU-Net env wiring stays with the executor
+        # the child process gets the module's src tree on PYTHONPATH (process-local
+        # sys.path.insert does not reach a fresh `python -m ctmr.instrument.predict`)
+        assert str(Path(__file__).resolve().parents[2] / "src") in captured["env"]["PYTHONPATH"]
 
 
 def _trend_volume():

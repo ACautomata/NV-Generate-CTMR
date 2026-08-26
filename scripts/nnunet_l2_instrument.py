@@ -13,26 +13,23 @@ import inspect
 import json
 import os
 import platform
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-# nnU-Net checkpoint 的 logging/init_args 携带 numpy 标量（spacing 等）与其
-# dtype，weights_only 加载需按官方推荐白名单这些被动类型；仍拒绝任意可执行类。
-# numpy>=2 中 dtype 反序列化为 numpy.dtypes.*DType 具体子类，按标量实际
-# 使用的数值 dtype 集合逐一放行。
-import numpy
-import torch
-from monai.apps.nnunet import nnUNetV2Runner
+# weights_only 白名单已收编到 ADR-0009 的单一 scoped 定义(ctmr.instrument.
+# safeglobals.nnunet_safe_globals)：load 处 `with` 包裹，import 本模块不再
+# 改全局 torch 状态。sugon 部署须连同 src/ 树一起同步(同族 shim,见
+# nnunet_l2_final_acceptance_nifti.py)。
+_PATH_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_PATH_HERE.parent / "src"))  # repo src layout: python scripts/<this>.py
+sys.path.insert(0, str(_PATH_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
 
-torch.serialization.add_safe_globals(
-    [numpy.core.multiarray.scalar, numpy.dtype]
-    + [
-        type(numpy.dtype(name))
-        for name in ("bool", "uint8", "int8", "int16", "int32", "int64", "float16", "float32", "float64", "complex64", "complex128")
-    ]
-)
+import torch  # noqa: E402
+from monai.apps.nnunet import nnUNetV2Runner  # noqa: E402
 
+from ctmr.instrument.safeglobals import nnunet_safe_globals  # noqa: E402
 
 PERSISTENT_ROOT = Path("/root/private_data")
 TRAINER_CLASS = "nnUNetTrainer250Epochs"
@@ -386,7 +383,8 @@ class InstrumentRun:
         )
         checkpoint = fold_dir / "checkpoint_final.pth"
         hasher = ArtifactHasher()
-        checkpoint_data = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        with nnunet_safe_globals():
+            checkpoint_data = torch.load(checkpoint, map_location="cpu", weights_only=True)
         if checkpoint_data.get("current_epoch") != 250:
             raise ValueError("checkpoint_final does not record current_epoch=250")
         if checkpoint_data.get("trainer_name") != TRAINER_CLASS:
