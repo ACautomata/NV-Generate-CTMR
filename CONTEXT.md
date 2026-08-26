@@ -146,3 +146,17 @@ _Avoid_: 生产侧重写五键提取、frozen 门禁留在各调用点、以共�
 **阶段脚本外壳(PhaseHarness)**:
 阶段脚本(finetune/dev_eval/launcher)中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询、checkpoint 原子发布、训练 provenance 写盘、dev watch/select 轮询骨架、参数化启动模板(幂等守卫内置)——统一收敛于 `src/ctmr/harness/`;各阶段只以内核(数据构成/模型挂接/单 batch 损失/checkpoint payload 四方法)组合注入,外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。CLI 面保持不变;口径经 ADR-0011 钉板,代码不动,执行期另行落地。
 _Avoid_: 在新阶段脚本中再抄外壳骨架(应注入内核)、把配方值下沉进外壳、把 P3 生成链轻复制族(prep/jobs/wait 轮询器)混称 PhaseHarness 纳界(另立 #92)
+
+### 测试面
+
+**canonical 测试面(pytest)**:
+仓库测试的唯一范式——新增测试只以 pytest 形态写进 tests/(两层结构,第二层按域模块组织),存量 selftest 由 tests/ 薄 wrapper 调用驻留实现收编入口。分界线是「能否在任意机器跑」,与两级门禁的收敛级同构;口径经 ADR-0013 钉板,代码不动,执行期另行落地。
+_Avoid_: 以新增 selftest 子命令承载无环境依赖的新测试、把 selftest 与 pytest 并列为两种测试范式
+
+**selftest(集群兼容入口)**:
+生产脚本内嵌的自检子命令——合成非 subject id fixture、无外部数据依赖;实现留驻生产文件不迁 tests/,定位是 sugon 集成门禁的集群兼容入口(集群无 pytest、tests/ 不上集群)。依赖 GPU/集群执行环境的冒烟(dcu_smoke、nnUNet 推理链)仍以此形态新增,归集成门禁。
+_Avoid_: 让 selftest 子命令转发 pytest(坏 sugon 门禁)、把存量 selftest 逻辑物理迁入 tests/
+
+**两级门禁(收敛 / 冻结·集成)**:
+深模块收编的两级验收口径——收敛门禁(单元级,任意机器可跑,pytest/CI 承载)与冻结/集成门禁(sugon 执行期:数值逐字节重跑,或 selftest 子命令全链+dcu_smoke)。ADR-0008~0012 逐份引用;ADR-0013 起收敛级由 CI 常驻承载。
+_Avoid_: 把收敛门禁升级成需 GPU/集群的检查、两级混为一级
