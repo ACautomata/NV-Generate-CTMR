@@ -405,7 +405,9 @@ def save_checkpoint(
     )
 
 
-def diff_model_train(env_config_path: str, model_config_path: str, model_def_path: str, num_gpus: int, amp: bool = True, amp_dtype: str = "fp16") -> None:
+def diff_model_train(
+    env_config_path: str, model_config_path: str, model_def_path: str, num_gpus: int, amp: bool = True, amp_dtype: str = "fp16"
+) -> None:
     """
     Main function to train a diffusion model.
 

@@ -7,16 +7,18 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
 from monai.transforms import CenterSpatialCrop, Compose
 
 sys.path.insert(0, ".")
 sys.path.insert(0, "prototype/vae_recon_brats")
 
-from vae_recon_smoke import AE_PATH, NETWORK_CONFIG, AutoencoderRunner, VolumeLoader  # noqa: E402
+import argparse
+import json  # noqa: E402
+
+from vae_recon_smoke import AE_PATH, NETWORK_CONFIG, VolumeLoader  # noqa: E402
+
 from scripts.utils import define_instance  # noqa: E402
-import argparse, json  # noqa: E402
 
 
 def load_ae(device, dtype):

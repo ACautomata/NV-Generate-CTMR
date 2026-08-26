@@ -11,16 +11,14 @@ fold_val fallback 病例取 nnU-Net imagesTr（<case>_000X.nii.gz）。
 
 在 sugon 上运行：python3 /root/private_data/l2-synth-eval/make_p3_jobs.py
 """
+
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 EVAL_ROOT = Path("/root/private_data/l2-synth-eval")
-DEV_RAW = Path(
-    "/root/private_data/l2-instrument-calibration/252940d0156f4c1258936fa25a1fb28bad61ae22/dev_raw"
-)
+DEV_RAW = Path("/root/private_data/l2-instrument-calibration/252940d0156f4c1258936fa25a1fb28bad61ae22/dev_raw")
 N_GPUS = 8
 
 # nnU-Net 通道后缀 -> (模态名, v1 DM label)
@@ -57,14 +55,16 @@ def main() -> None:
             for _tgt_suffix, (tgt_name, tgt_label) in CHANNELS.items():
                 if tgt_name == anchor_name:
                     continue
-                shards[idx0 % N_GPUS].append({
-                    "anchor": anchor_path,
-                    "anchor_key": anchor_key,
-                    "tgt_label": tgt_label,
-                    "tgt_name": tgt_name,
-                    "seed": idx * 10000 + anchor_label * 100 + tgt_label,
-                    "out": str(EVAL_ROOT / "p3_samples" / ch / case_id / f"a{anchor_name}" / f"{tgt_name}.nii.gz"),
-                })
+                shards[idx0 % N_GPUS].append(
+                    {
+                        "anchor": anchor_path,
+                        "anchor_key": anchor_key,
+                        "tgt_label": tgt_label,
+                        "tgt_name": tgt_name,
+                        "seed": idx * 10000 + anchor_label * 100 + tgt_label,
+                        "out": str(EVAL_ROOT / "p3_samples" / ch / case_id / f"a{anchor_name}" / f"{tgt_name}.nii.gz"),
+                    }
+                )
 
     total = sum(len(s) for s in shards)
     for gpu, jobs in enumerate(shards):

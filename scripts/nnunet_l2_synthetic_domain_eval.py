@@ -50,22 +50,18 @@ R_fail 给出合成域适用性判定。
 
 冻结语义沿用 ADR-0002/ADR-0003：仪器权重与推理配置不可动。
 """
+
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 import os
-import sys
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-import nibabel as nib
 import numpy as np
 import SimpleITK as sitk
-from scipy import ndimage
 
 # ── 常量 ──────────────────────────────────────────────────────────────────
 
@@ -73,7 +69,7 @@ PERSISTENT_ROOT = Path("/root/private_data")
 
 # BraTS 模态 → v1 DM modality label（modality_mapping.json）
 BRATS_MODALITY_LABELS = {
-    "t1n": 9,   # mri_t1 (skull-stripped)
+    "t1n": 9,  # mri_t1 (skull-stripped)
     "t1c": 17,  # mri_t1c (基模原始索引)
     "t2w": 10,  # mri_t2
     "t2f": 11,  # mri_flair
@@ -110,9 +106,11 @@ SAMPLES_PER_CHALLENGE = {
 
 # ── 数据类 ──────────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class CaseEntry:
     """一个用于合成域评估的病例条目。"""
+
     case_id: str
     challenge: str
     source: str  # "dev" | "fold_val" | "holdout"
@@ -122,6 +120,7 @@ class CaseEntry:
 @dataclass(frozen=True)
 class GenerationConfig:
     """v1 DM 生成配置。"""
+
     model_dir: Path
     output_dir: Path
     mode: str  # "p1" | "p3"
@@ -133,6 +132,7 @@ class GenerationConfig:
 @dataclass
 class SynthCaseResult:
     """一个合成病例的生成结果。"""
+
     case_id: str
     challenge: str
     mode: str
@@ -141,6 +141,7 @@ class SynthCaseResult:
 
 
 # ── 病例选择 ────────────────────────────────────────────────────────────
+
 
 class CaseSelector:
     """从 nnU-Net 数据集中选择用于合成域评估的病例。
@@ -153,17 +154,12 @@ class CaseSelector:
         self.nnunet_root = nnunet_root
 
     def select(self, challenge: str, n: int, seed: int = 42) -> list[CaseEntry]:
-        manifest_path = (
-            self.nnunet_root / "splits"
-            / "split_manifest_brats2023-rflow-v1.json"
-        )
+        manifest_path = self.nnunet_root / "splits" / "split_manifest_brats2023-rflow-v1.json"
         manifest = json.loads(manifest_path.read_text())
         challenge_data = manifest["challenges"][challenge]
 
         dev_cases = sorted(challenge_data["cases"]["dev"])
-        fold_val_path = (
-            self.nnunet_root / "splits" / f"fold0_val_cases_{challenge}.txt"
-        )
+        fold_val_path = self.nnunet_root / "splits" / f"fold0_val_cases_{challenge}.txt"
         fold_val_cases = sorted(fold_val_path.read_text().split())
 
         # 优先 dev，不足补 fold_val
@@ -185,6 +181,7 @@ class CaseSelector:
 
 
 # ── v1 DM 样本生成 ──────────────────────────────────────────────────────
+
 
 class V1DMSampler:
     """v1 DM 基模采样器。
@@ -221,12 +218,14 @@ class V1DMSampler:
             )
             modality_paths[mod_name] = output_path
 
-        return [SynthCaseResult(
-            case_id=case.case_id,
-            challenge=case.challenge,
-            mode="p1",
-            modalities_generated=modality_paths,
-        )]
+        return [
+            SynthCaseResult(
+                case_id=case.case_id,
+                challenge=case.challenge,
+                mode="p1",
+                modalities_generated=modality_paths,
+            )
+        ]
 
     def generate_p3(self, case: CaseEntry) -> list[SynthCaseResult]:
         """P3 式 img2img 锚轮：每轮一个真实模态作锚，生成其余三模态。
@@ -237,10 +236,7 @@ class V1DMSampler:
         real_modalities = self._load_real_modalities(case)
 
         for anchor_name in BRATS_MODALITY_LABELS:
-            anchor_dir = (
-                self.config.output_dir / case.challenge / case.case_id
-                / f"anchor_{anchor_name}"
-            )
+            anchor_dir = self.config.output_dir / case.challenge / case.case_id / f"anchor_{anchor_name}"
             anchor_dir.mkdir(parents=True, exist_ok=True)
 
             modality_paths = {anchor_name: real_modalities[anchor_name]}
@@ -260,13 +256,15 @@ class V1DMSampler:
                 )
                 modality_paths[target_name] = output_path
 
-            results.append(SynthCaseResult(
-                case_id=case.case_id,
-                challenge=case.challenge,
-                mode="p3",
-                modalities_generated=modality_paths,
-                anchor_modality=anchor_name,
-            ))
+            results.append(
+                SynthCaseResult(
+                    case_id=case.case_id,
+                    challenge=case.challenge,
+                    mode="p3",
+                    modalities_generated=modality_paths,
+                    anchor_modality=anchor_name,
+                )
+            )
         return results
 
     def _load_real_modalities(self, case: CaseEntry) -> dict[str, Path]:
@@ -368,6 +366,7 @@ echo "output: {output_path}"
 
 # ── nnU-Net 输入组装 ───────────────────────────────────────────────────
 
+
 class InputPreparator:
     """把 v1 DM 输出重采样并格式化为 nnU-Net 仪器输入契约。
 
@@ -413,10 +412,7 @@ class InputPreparator:
         original_spacing = img.GetSpacing()
         original_size = img.GetSize()
         new_spacing = [1.0, 1.0, 1.0]
-        new_size = [
-            int(round(osz * ospc / nspc))
-            for osz, ospc, nspc in zip(original_size, original_spacing, new_spacing)
-        ]
+        new_size = [int(round(osz * ospc / nspc)) for osz, ospc, nspc in zip(original_size, original_spacing, new_spacing)]
         resampler = sitk.ResampleImageFilter()
         resampler.SetOutputSpacing(new_spacing)
         resampler.SetSize(new_size)
@@ -457,6 +453,7 @@ class InputPreparator:
 
 
 # ── 仪器推理 ────────────────────────────────────────────────────────────
+
 
 class InstrumentRunner:
     """运行冻结的 nnU-Net 仪器推理。
@@ -512,6 +509,7 @@ class InstrumentRunner:
 
 # ── 指标计算与判定 ──────────────────────────────────────────────────────
 
+
 class MetricsCalculator:
     """计算合成域评估指标并与真实校准 R_fail 对照。
 
@@ -544,15 +542,9 @@ class MetricsCalculator:
 
         # 1. 输入契约检查
         try:
-            inputs = [
-                sitk.ReadImage(str(inputs_dir / f"{case_id}_{s}.nii.gz"))
-                for s in ("0000", "0001", "0002", "0003")
-            ]
+            inputs = [sitk.ReadImage(str(inputs_dir / f"{case_id}_{s}.nii.gz")) for s in ("0000", "0001", "0002", "0003")]
             reference = (inputs[0].GetSize(), inputs[0].GetSpacing(), inputs[0].GetOrigin())
-            consistent = all(
-                (img.GetSize(), img.GetSpacing(), img.GetOrigin()) == reference
-                for img in inputs[1:]
-            )
+            consistent = all((img.GetSize(), img.GetSpacing(), img.GetOrigin()) == reference for img in inputs[1:])
             isotropic = all(abs(s - 1.0) < 1e-3 for s in inputs[0].GetSpacing())
             result["input_fail"] = not (consistent and isotropic)
         except (RuntimeError, OSError):
@@ -572,7 +564,7 @@ class MetricsCalculator:
         # 3. 层级违反检查（ET⊆TC⊆WT）
         wt_pred = np.isin(pred_arr, (1, 2, 3))
         tc_pred = np.isin(pred_arr, (1, 3))
-        et_pred = (pred_arr == 3)
+        et_pred = pred_arr == 3
 
         # 层级约束：ET ⊆ TC ⊆ WT
         if et_pred.sum() > 0 and not np.all(et_pred[tc_pred] if tc_pred.sum() > 0 else True):
@@ -601,8 +593,7 @@ class MetricsCalculator:
                     vol_gt = float(gt_mask.sum()) * 0.001
                     vol_pred = float(pred_mask.sum()) * 0.001
                     denom = int(gt_mask.sum()) + int(pred_mask.sum())
-                    dice = (2 * np.logical_and(gt_mask, pred_mask).sum() / denom
-                            if denom > 0 else math.nan)
+                    dice = 2 * np.logical_and(gt_mask, pred_mask).sum() / denom if denom > 0 else math.nan
                     result["per_region"][region] = {
                         "dice": dice,
                         "vol_gt_ml": vol_gt,
@@ -618,10 +609,7 @@ class MetricsCalculator:
         k_input = sum(r["input_fail"] for r in case_results)
         k_run = sum(r["run_fail"] for r in case_results)
         k_hier = sum(r["hier_viol"] for r in case_results)
-        k_fail = sum(
-            r["input_fail"] or r["run_fail"] or r["hier_viol"]
-            for r in case_results
-        )
+        k_fail = sum(r["input_fail"] or r["run_fail"] or r["hier_viol"] for r in case_results)
 
         return {
             "k": k_fail,
@@ -641,18 +629,14 @@ class MetricsCalculator:
         p = k / n
         denom = 1 + self.Z95**2 / n
         center = (p + self.Z95**2 / (2 * n)) / denom
-        half = (self.Z95 / denom) * math.sqrt(
-            p * (1 - p) / n + self.Z95**2 / (4 * n**2)
-        )
+        half = (self.Z95 / denom) * math.sqrt(p * (1 - p) / n + self.Z95**2 / (4 * n**2))
         return min(1.0, center + half)
 
     def load_real_r_fail(self, calibration_metrics_dir: Path, challenge: str) -> dict:
         """从 ADR-0002 校准结果载入真实 R_fail。"""
         summary_path = calibration_metrics_dir / f"summary_{challenge}.json"
         if not summary_path.exists():
-            raise FileNotFoundError(
-                f"calibration summary not found: {summary_path}"
-            )
+            raise FileNotFoundError(f"calibration summary not found: {summary_path}")
         summary = json.loads(summary_path.read_text())
         return summary["R_fail"]
 
@@ -683,6 +667,7 @@ class MetricsCalculator:
 
 # ── 报告生成 ────────────────────────────────────────────────────────────
 
+
 class ReportGenerator:
     """生成合成域适用性评估报告。"""
 
@@ -698,10 +683,7 @@ class ReportGenerator:
             "title": "L2 仪器合成域适用性评估报告",
             "issue": 38,
             "mode": mode,
-            "description": (
-                "在 v1 DM 直出样本上测试 L2 测量仪器的输入失败率与层级违反率，"
-                "建立合成域适用性前置证据"
-            ),
+            "description": ("在 v1 DM 直出样本上测试 L2 测量仪器的输入失败率与层级违反率，" "建立合成域适用性前置证据"),
             "per_challenge": {},
             "overall_verdict": "PASS",
         }
@@ -721,8 +703,7 @@ class ReportGenerator:
         # P2 方向证据缺位记录
         if mode == "p1":
             report["p2_evidence_gap"] = (
-                "P2 方向前置证据缺位已知情接受（掩码 ControlNet 训练前不存在 v1 可产样本），"
-                "P2 依赖终验伴随监控（undecided 语义）兜底"
+                "P2 方向前置证据缺位已知情接受（掩码 ControlNet 训练前不存在 v1 可产样本），" "P2 依赖终验伴随监控（undecided 语义）兜底"
             )
 
         report_path = output_dir / f"synthetic_domain_report_{mode}.json"
@@ -771,25 +752,30 @@ class ReportGenerator:
             lines.append("")
 
         if "p2_evidence_gap" in report:
-            lines.extend([
-                "## P2 方向说明",
-                "",
-                report["p2_evidence_gap"],
-                "",
-            ])
+            lines.extend(
+                [
+                    "## P2 方向说明",
+                    "",
+                    report["p2_evidence_gap"],
+                    "",
+                ]
+            )
 
-        lines.extend([
-            "## 冻结语义",
-            "",
-            "仪器权重与推理配置沿用 ADR-0002/ADR-0003 冻结状态。",
-            "本评估不修改仪器，不反向调节任何阈值。",
-            "",
-        ])
+        lines.extend(
+            [
+                "## 冻结语义",
+                "",
+                "仪器权重与推理配置沿用 ADR-0002/ADR-0003 冻结状态。",
+                "本评估不修改仪器，不反向调节任何阈值。",
+                "",
+            ]
+        )
 
         return "\n".join(lines)
 
 
 # ── 主流程 ──────────────────────────────────────────────────────────────
+
 
 def cmd_generate(args: argparse.Namespace) -> None:
     """Step 1: 生成 v1 DM 直出样本。"""
@@ -928,12 +914,14 @@ def cmd_create_case_lists(args: argparse.Namespace) -> None:
         for challenge, n in SAMPLES_PER_CHALLENGE.items():
             entries = selector.select(challenge, n, seed=args.seed)
             for entry in entries:
-                cases.append({
-                    "case_id": entry.case_id,
-                    "challenge": entry.challenge,
-                    "source": entry.source,
-                    "images_dir": str(entry.images_dir),
-                })
+                cases.append(
+                    {
+                        "case_id": entry.case_id,
+                        "challenge": entry.challenge,
+                        "source": entry.source,
+                        "images_dir": str(entry.images_dir),
+                    }
+                )
 
         case_list_path = output_dir / f"{mode}_cases.json"
         case_list_path.write_text(json.dumps(cases, indent=2) + "\n")

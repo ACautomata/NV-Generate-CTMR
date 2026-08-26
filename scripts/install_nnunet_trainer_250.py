@@ -13,7 +13,6 @@ from pathlib import Path
 
 import nnunetv2
 
-
 PERSISTENT_ROOT = Path("/root/private_data")
 TARGET_RELATIVE_PATH = Path("training/nnUNetTrainer/variants/training_length/nnUNetTrainer250Epochs.py")
 

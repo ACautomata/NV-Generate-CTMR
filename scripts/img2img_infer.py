@@ -24,12 +24,10 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import random
 from datetime import datetime
 
 import monai.transforms as monai_t
-import nibabel as nib
 import numpy as np
 import torch
 from monai.inferers.inferer import SlidingWindowInferer
@@ -120,17 +118,12 @@ def run_img2img(
         raise ValueError(f"strength={strength} 截断后步数不足（timesteps={all_timesteps.tolist()[:5]}...）")
     timesteps = all_timesteps[start_idx:]
     next_timesteps = torch.cat((timesteps[1:], torch.tensor([0], dtype=timesteps.dtype)))
-    logger.info(
-        f"img2img: strength={strength}, skip first {start_idx} steps, "
-        f"t {float(timesteps[0])} -> 0 over {len(timesteps)} steps"
-    )
+    logger.info(f"img2img: strength={strength}, skip first {start_idx} steps, " f"t {float(timesteps[0])} -> 0 over {len(timesteps)} steps")
 
     # x_t = (1 - t/1000)·x0 + (t/1000)·ε —— 与训练 add_noise 同一概率路径
     noise = torch.randn(anchor_latent.shape, device=device, dtype=anchor_latent.dtype)
     latent_norm = anchor_latent * scale_factor
-    image = noise_scheduler.add_noise(
-        original_samples=latent_norm, noise=noise, timesteps=timesteps[:1].to(device)
-    )
+    image = noise_scheduler.add_noise(original_samples=latent_norm, noise=noise, timesteps=timesteps[:1].to(device))
 
     recon_model = ReconModel(autoencoder=autoencoder, scale_factor=scale_factor).to(device)
     autoencoder.eval()
@@ -214,15 +207,22 @@ def img2img_infer(
     args.cfg_guidance_scale = args.diffusion_unet_inference["cfg_guidance_scale"]
 
     autoencoder, unet, scale_factor = load_models(args, device, logger)
-    top_region_index_tensor, bottom_region_index_tensor, spacing_tensor, modality_tensor = prepare_tensors(
-        args, device
-    )
+    top_region_index_tensor, bottom_region_index_tensor, spacing_tensor, modality_tensor = prepare_tensors(args, device)
 
     anchor_latent = load_anchor_latent(anchor_path, autoencoder, device, output_size, logger)
     data = run_img2img(
-        args, device, autoencoder, unet, scale_factor, anchor_latent,
-        top_region_index_tensor, bottom_region_index_tensor, spacing_tensor, modality_tensor,
-        strength, logger,
+        args,
+        device,
+        autoencoder,
+        unet,
+        scale_factor,
+        anchor_latent,
+        top_region_index_tensor,
+        bottom_region_index_tensor,
+        spacing_tensor,
+        modality_tensor,
+        strength,
+        logger,
     )
 
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")

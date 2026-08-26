@@ -12,6 +12,7 @@ R_fail 定义与 #36 校准一致：input_fail | run_fail | hier_viol
 判定：R_fail_synth.point ≤ R_fail_real.point → PASS，否则 UNDECIDED（真实包络全 0，
 任何一例失败即 UNDECIDED，进入终验伴随监控）。
 """
+
 from __future__ import annotations
 
 import json
@@ -31,8 +32,7 @@ PRED = EVAL_ROOT / f"{MODE}_predictions"
 CAL_DIR = Path("/root/private_data/l2-instrument-calibration/252940d0156f4c1258936fa25a1fb28bad61ae22")
 REPORT_DIR = EVAL_ROOT / f"report_{MODE}"
 
-MODE_LABEL = {"p1": "P1 直出（独立模态采样 ×4）",
-              "p3": "P3 img2img 零训练基线（4 锚轮协议）"}
+MODE_LABEL = {"p1": "P1 直出（独立模态采样 ×4）", "p3": "P3 img2img 零训练基线（4 锚轮协议）"}
 
 Z95 = 1.959963984540054
 
@@ -48,13 +48,11 @@ def wilson_upper(k: int, n: int) -> float:
 
 
 def evaluate_case(challenge: str, case_id: str) -> dict:
-    result = {"case": case_id, "challenge": challenge,
-              "input_fail": False, "run_fail": False, "hier_viol": False}
+    result = {"case": case_id, "challenge": challenge, "input_fail": False, "run_fail": False, "hier_viol": False}
 
     # 输入契约
     try:
-        inputs = [sitk.ReadImage(str(INPUT / challenge / f"{case_id}_{s}.nii.gz"))
-                  for s in ("0000", "0001", "0002", "0003")]
+        inputs = [sitk.ReadImage(str(INPUT / challenge / f"{case_id}_{s}.nii.gz")) for s in ("0000", "0001", "0002", "0003")]
         ref = (inputs[0].GetSize(), inputs[0].GetSpacing())
         ok = all((img.GetSize(), img.GetSpacing()) == ref for img in inputs[1:])
         iso = all(abs(s - 1.0) < 1e-3 for s in inputs[0].GetSpacing())
@@ -66,8 +64,7 @@ def evaluate_case(challenge: str, case_id: str) -> dict:
 
     # 仪器运行
     try:
-        pred_arr = sitk.GetArrayFromImage(
-            sitk.ReadImage(str(PRED / challenge / f"{case_id}.nii.gz"))).astype(np.uint8)
+        pred_arr = sitk.GetArrayFromImage(sitk.ReadImage(str(PRED / challenge / f"{case_id}.nii.gz"))).astype(np.uint8)
     except Exception:
         result["run_fail"] = True
         return result
@@ -75,7 +72,7 @@ def evaluate_case(challenge: str, case_id: str) -> dict:
     # 层级违反: ET⊆TC⊆WT
     wt = np.isin(pred_arr, (1, 2, 3))
     tc = np.isin(pred_arr, (1, 3))
-    et = (pred_arr == 3)
+    et = pred_arr == 3
     if (et & ~tc).any() or (tc & ~wt).any():
         result["hier_viol"] = True
     if not np.isin(pred_arr, (0, 1, 2, 3)).all():
@@ -83,15 +80,15 @@ def evaluate_case(challenge: str, case_id: str) -> dict:
 
     # 附加观察：空预测（PED ET 已知 25% 空 pred 的背景）
     result["empty_pred"] = bool(not wt.any() and not tc.any() and not et.any())
-    result["vol_ml"] = {"WT": float((wt.sum()) * 1e-3), "TC": float((tc.sum()) * 1e-3),
-                        "ET": float((et.sum()) * 1e-3)}
+    result["vol_ml"] = {"WT": float((wt.sum()) * 1e-3), "TC": float((tc.sum()) * 1e-3), "ET": float((et.sum()) * 1e-3)}
     return result
 
 
 def main() -> int:
     report = {
         "title": "L2 仪器合成域适用性评估报告",
-        "issue": 38, "mode": MODE,
+        "issue": 38,
+        "mode": MODE,
         "per_challenge": {},
         "overall_verdict": "PASS",
     }
@@ -114,9 +111,13 @@ def main() -> int:
         k_hier = sum(r["hier_viol"] for r in case_results)
         k_fail = sum(r["input_fail"] or r["run_fail"] or r["hier_viol"] for r in case_results)
 
-        r_synth = {"k": k_fail, "n": n, "point": k_fail / n,
-                   "wilson_95_upper": wilson_upper(k_fail, n),
-                   "breakdown": {"input_fail": k_input, "run_fail": k_run, "hier_viol": k_hier}}
+        r_synth = {
+            "k": k_fail,
+            "n": n,
+            "point": k_fail / n,
+            "wilson_95_upper": wilson_upper(k_fail, n),
+            "breakdown": {"input_fail": k_input, "run_fail": k_run, "hier_viol": k_hier},
+        }
 
         cal_path = CAL_DIR / "metrics" / f"summary_{challenge}.json"
         r_real = json.loads(cal_path.read_text())["R_fail"] if cal_path.exists() else None
@@ -125,8 +126,11 @@ def main() -> int:
         n_empty = sum(r["empty_pred"] for r in case_results)
 
         report["per_challenge"][challenge] = {
-            "n_samples": n, "r_fail_synth": r_synth,
-            "r_fail_real": r_real, "empty_pred_cases": n_empty, "verdict": verdict,
+            "n_samples": n,
+            "r_fail_synth": r_synth,
+            "r_fail_real": r_real,
+            "empty_pred_cases": n_empty,
+            "verdict": verdict,
         }
         if verdict == "UNDECIDED":
             report["overall_verdict"] = "UNDECIDED"
@@ -146,34 +150,43 @@ def main() -> int:
         )
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    (REPORT_DIR / f"report_{MODE}.json").write_text(
-        json.dumps(report, indent=2, ensure_ascii=False))
-    (REPORT_DIR / "case_results.json").write_text(
-        json.dumps(all_case_results, indent=2, ensure_ascii=False))
+    (REPORT_DIR / f"report_{MODE}.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    (REPORT_DIR / "case_results.json").write_text(json.dumps(all_case_results, indent=2, ensure_ascii=False))
 
-    md = [f"# {report['title']}", "",
-          f"**模式**: {MODE_LABEL[MODE]}  ",
-          f"**总体判定**: **{report['overall_verdict']}**", "",
-          "| 挑战 | 样本数 | R_fail_synth (k/n) | Wilson 95% 上界 | R_fail_real | 空 pred | 判定 |",
-          "|------|--------|--------------------|-----------------|-------------|---------|------|"]
+    md = [
+        f"# {report['title']}",
+        "",
+        f"**模式**: {MODE_LABEL[MODE]}  ",
+        f"**总体判定**: **{report['overall_verdict']}**",
+        "",
+        "| 挑战 | 样本数 | R_fail_synth (k/n) | Wilson 95% 上界 | R_fail_real | 空 pred | 判定 |",
+        "|------|--------|--------------------|-----------------|-------------|---------|------|",
+    ]
     for ch, d in report["per_challenge"].items():
         s, r = d["r_fail_synth"], d["r_fail_real"]
         real = f"{r['point']:.4f} ({r['k']}/{r['n']})" if r else "N/A"
-        md.append(f"| {ch} | {d['n_samples']} | {s['point']:.4f} ({s['k']}/{s['n']}) "
-                  f"| {s['wilson_95_upper']:.4f} | {real} | {d['empty_pred_cases']} | **{d['verdict']}** |")
+        md.append(
+            f"| {ch} | {d['n_samples']} | {s['point']:.4f} ({s['k']}/{s['n']}) "
+            f"| {s['wilson_95_upper']:.4f} | {real} | {d['empty_pred_cases']} | **{d['verdict']}** |"
+        )
     md += ["", "## R_fail 细分", ""]
     for ch, d in report["per_challenge"].items():
         b = d["r_fail_synth"]["breakdown"]
-        md += [f"- **{ch}**: input_fail={b['input_fail']} run_fail={b['run_fail']} "
-               f"hier_viol={b['hier_viol']} (n={d['n_samples']})"]
+        md += [f"- **{ch}**: input_fail={b['input_fail']} run_fail={b['run_fail']} " f"hier_viol={b['hier_viol']} (n={d['n_samples']})"]
     note = report.get("p2_evidence_gap") or report.get("p3_protocol_note")
     md += ["", "## 方向说明", "", note, ""]
     (REPORT_DIR / f"report_{MODE}.md").write_text("\n".join(md))
 
-    print(json.dumps({ch: {"verdict": d["verdict"],
-                           "r_fail_synth": d["r_fail_synth"],
-                           "empty_pred": d["empty_pred_cases"]}
-                      for ch, d in report["per_challenge"].items()}, indent=2, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                ch: {"verdict": d["verdict"], "r_fail_synth": d["r_fail_synth"], "empty_pred": d["empty_pred_cases"]}
+                for ch, d in report["per_challenge"].items()
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
     print(f"\noverall: {report['overall_verdict']} → {REPORT_DIR}")
     return 0
 

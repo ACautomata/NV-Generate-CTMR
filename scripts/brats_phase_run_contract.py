@@ -1115,8 +1115,7 @@ class L2ReportValidator:
             return
         per_challenge = report.get("per_challenge")
         verdicts = (
-            [verdict.get("verdict") for verdict in per_challenge.values() if isinstance(verdict, dict)]
-            if isinstance(per_challenge, dict) else []
+            [verdict.get("verdict") for verdict in per_challenge.values() if isinstance(verdict, dict)] if isinstance(per_challenge, dict) else []
         )
         if len(verdicts) != len(L2_CHALLENGES) or any(v not in L2_VERDICTS for v in verdicts):
             return  # already reported by _per_challenge
@@ -1233,8 +1232,7 @@ class DmSourceLedger:
         current = self.current()
         if current is None:
             raise ContractViolationError(
-                "no P1 candidate has passed final acceptance yet; P2/P3 must hang off the "
-                "registered DM source (conclude a passing P1 run first)"
+                "no P1 candidate has passed final acceptance yet; P2/P3 must hang off the " "registered DM source (conclude a passing P1 run first)"
             )
         if upstream_run_id != current["run_id"] or checkpoint_sha256 != current["checkpoint"]["sha256"]:
             raise ContractViolationError(
@@ -1248,7 +1246,10 @@ class DmSourceLedger:
         if current is None:
             return []
         if record.get("phase") == "P1":
-            if record["run_id"] == current["run_id"] and record.get("selection", {}).get("checkpoint", {}).get("sha256") != current["checkpoint"]["sha256"]:
+            if (
+                record["run_id"] == current["run_id"]
+                and record.get("selection", {}).get("checkpoint", {}).get("sha256") != current["checkpoint"]["sha256"]
+            ):
                 return ["registered DM source checkpoint no longer matches its P1 run record"]
             return []
         upstream = record.get("upstream")
@@ -1296,9 +1297,7 @@ class FinalAcceptanceJudge:
             )
         verdict_path = self.verdict_path_for(run_path)
         if verdict_path.is_file():
-            raise ContractViolationError(
-                f"final acceptance for {record['run_id']} is already concluded at {verdict_path}; the verdict is immutable"
-            )
+            raise ContractViolationError(f"final acceptance for {record['run_id']} is already concluded at {verdict_path}; the verdict is immutable")
         layers, problems = self._collect_layers(record)
         if problems:
             raise ContractViolationError("final acceptance blocked before judgement: " + "; ".join(problems))
@@ -1828,17 +1827,32 @@ class ContractSelfTest:
                 verdict = "fail"
             else:
                 verdict = "pass"
-            tost = [{
-                "quantity": "vol_wt_rel", "margin": 0.2802, "ci90_low": -0.02, "ci90_high": 0.02,
-                "n_cases": 6, "n_excluded": 0, "exclusion_reasons": {},
-                "passed": passed if challenge not in undecided_challenges else True,
-            }]
+            tost = [
+                {
+                    "quantity": "vol_wt_rel",
+                    "margin": 0.2802,
+                    "ci90_low": -0.02,
+                    "ci90_high": 0.02,
+                    "n_cases": 6,
+                    "n_excluded": 0,
+                    "exclusion_reasons": {},
+                    "passed": passed if challenge not in undecided_challenges else True,
+                }
+            ]
             round_trip = None
             if record["phase"] == "P2":
-                round_trip = [{
-                    "region": region, "floor": 0.0, "bound": 0.9, "n_cases": 6, "n_excluded": 0,
-                    "vacuous_pass": False, "passed": passed,
-                } for region in ("WT", "TC", "ET")]
+                round_trip = [
+                    {
+                        "region": region,
+                        "floor": 0.0,
+                        "bound": 0.9,
+                        "n_cases": 6,
+                        "n_excluded": 0,
+                        "vacuous_pass": False,
+                        "passed": passed,
+                    }
+                    for region in ("WT", "TC", "ET")
+                ]
             per_challenge[challenge] = {
                 "challenge": challenge,
                 "n_observations": 12,
@@ -2018,9 +2032,7 @@ class ContractSelfTest:
 
         # P1 replay positive path: train + external replay list opens and verifies.
         replay_store = self.store_at(self._workdir / "records_replay")
-        replay_path = RunInitializer(
-            replay_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")
-        ).init(
+        replay_path = RunInitializer(replay_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
             "P1",
             "p1-replay-fixture",
             fixture / "phase_manifest.json",
@@ -2082,18 +2094,22 @@ class ContractSelfTest:
         self.write_l2_report(fixture / "l2_report.json", p1_record)
         l2_mutations = (
             ("unbound L2 report", lambda r: r["binding"].update(run_id="wrong-run")),
-            ("provisional L2 coverage", lambda r: (r.update(provisional_challenges=["GLI"], complete_coverage=False), r.update(challenges_missing=["PED"]))[0]),
+            (
+                "provisional L2 coverage",
+                lambda r: (r.update(provisional_challenges=["GLI"], complete_coverage=False), r.update(challenges_missing=["PED"]))[0],
+            ),
             (
                 "L2 overall-verdict mismatch",
                 lambda r: (
-                    r["per_challenge"]["SSA"].update(
-                        verdict="fail", tost=[dict(r["per_challenge"]["SSA"]["tost"][0], passed=False)]
-                    ),
+                    r["per_challenge"]["SSA"].update(verdict="fail", tost=[dict(r["per_challenge"]["SSA"]["tost"][0], passed=False)]),
                     r,
                 )[1],
             ),
             ("L2 P1 carrying round-trip evidence", lambda r: r["per_challenge"]["GLI"].update(round_trip=[{"region": "WT", "passed": True}])),
-            ("L2 challenge verdict disagreeing with its evidence", lambda r: r["per_challenge"]["MEN"].update(verdict="pass", tost=[dict(r["per_challenge"]["MEN"]["tost"][0], passed=False)])),
+            (
+                "L2 challenge verdict disagreeing with its evidence",
+                lambda r: r["per_challenge"]["MEN"].update(verdict="pass", tost=[dict(r["per_challenge"]["MEN"]["tost"][0], passed=False)]),
+            ),
         )
         for label, mutate in l2_mutations:
             report = json.loads((fixture / "l2_report.json").read_text())
@@ -2225,9 +2241,7 @@ class ContractSelfTest:
         # P2 fold-split combined list (train+dev under one train label) opens and
         # verifies; P1 must reject the same list (no dev leak into a full-param
         # continuation train list). spec #51 decision 8.
-        p2_combined_path = RunInitializer(
-            store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")
-        ).init(
+        p2_combined_path = RunInitializer(store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
             "P2",
             "p2-combined-split",
             fixture / "phase_manifest.json",
@@ -2242,9 +2256,7 @@ class ContractSelfTest:
         self.failures += [f"p2 combined-split list: {f}" for f in comb_verifier.failures]
         comb_reject_store = self.store_at(self._workdir / "records_comb_reject")
         self.expect_reject(
-            lambda: RunInitializer(
-                comb_reject_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")
-            ).init(
+            lambda: RunInitializer(comb_reject_store, fingerprinter, ManifestSides.from_path(fixture / "phase_manifest.json")).init(
                 "P1",
                 "p1-combined-split",
                 fixture / "phase_manifest.json",

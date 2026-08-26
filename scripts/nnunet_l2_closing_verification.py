@@ -17,16 +17,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import torch  # noqa: E402
-
 import numpy  # noqa: E402
+import torch  # noqa: E402
 
 # nnU-Net checkpoint 携带 numpy 标量与其 dtype（numpy>=2 反序列化为
 # numpy.dtypes.*DType 子类），按数值 dtype 类集合白名单被动类型。
 torch.serialization.add_safe_globals(
     [numpy.core.multiarray.scalar, numpy.dtype]
-    + [type(numpy.dtype(name)) for name in ("bool", "uint8", "int8", "int16", "int32", "int64",
-                                            "float16", "float32", "float64", "complex64", "complex128")]
+    + [
+        type(numpy.dtype(name))
+        for name in ("bool", "uint8", "int8", "int16", "int32", "int64", "float16", "float32", "float64", "complex64", "complex128")
+    ]
 )
 
 from nnunet_l2_instrument import (  # noqa: E402
@@ -43,8 +44,7 @@ from nnunet_l2_instrument import (  # noqa: E402
 class ClosingVerifier:
     """逐条重算一个受控 run 的 manifest 证据。"""
 
-    def __init__(self, challenge: str, raw_root: Path, preprocessed_root: Path,
-                 results_root: Path, audit_dir: Path, ssa_exception: bool):
+    def __init__(self, challenge: str, raw_root: Path, preprocessed_root: Path, results_root: Path, audit_dir: Path, ssa_exception: bool):
         self.spec = ChallengeRegistry().get(challenge)
         self.protocol = TrainingProtocol(self.spec, ssa_exception)
         self.dataset = DatasetContract(self.spec, raw_root, preprocessed_root)
@@ -104,8 +104,7 @@ class ClosingVerifier:
             and live["fold_0_train_cases"] == self.spec.fold_train_cases
             and live["fold_0_validation_cases"] == self.spec.fold_val_cases
         )
-        self._record("raw.counts", counts_ok,
-                     f"{self.spec.training_cases}/{self.spec.fold_train_cases}/{self.spec.fold_val_cases}")
+        self._record("raw.counts", counts_ok, f"{self.spec.training_cases}/{self.spec.fold_train_cases}/{self.spec.fold_val_cases}")
 
     def _check_preprocessed(self, manifest: dict) -> None:
         live = self.dataset.verify_preprocessed(self.protocol)
@@ -113,15 +112,13 @@ class ClosingVerifier:
         for key in ("dataset_fingerprint", "source_plans", "derived_plans"):
             if key in recorded:
                 ok = live[key]["sha256"] == recorded[key]["sha256"]
-                self._record(f"preprocessed.{key}", ok,
-                             f"live {live[key]['sha256'][:16]}… vs manifest {recorded[key]['sha256'][:16]}…")
+                self._record(f"preprocessed.{key}", ok, f"live {live[key]['sha256'][:16]}… vs manifest {recorded[key]['sha256'][:16]}…")
 
     def _check_trainer(self, manifest: dict) -> None:
         live = TrainerContract().verify()
         for key in ("trainer_source", "upstream_trainer_source"):
             ok = live[key]["sha256"] == manifest["trainer"][key]["sha256"]
-            self._record(f"trainer.{key}", ok,
-                         f"live {live[key]['sha256'][:16]}… vs manifest {manifest['trainer'][key]['sha256'][:16]}…")
+            self._record(f"trainer.{key}", ok, f"live {live[key]['sha256'][:16]}… vs manifest {manifest['trainer'][key]['sha256'][:16]}…")
         ok = live["num_epochs"] == 250 and live["num_iterations_per_epoch"] == 250
         self._record("trainer.recipe", ok, "250 epochs x 250 iterations")
 
@@ -146,8 +143,7 @@ class ClosingVerifier:
         checkpoint = fold_dir / "checkpoint_final.pth"
         live_hash = self.hasher.sha256(checkpoint)
         ok = live_hash == completion["checkpoint_final"]["sha256"]
-        self._record("checkpoint_final.hash", ok,
-                     f"live {live_hash[:16]}… vs completion {completion['checkpoint_final']['sha256'][:16]}…")
+        self._record("checkpoint_final.hash", ok, f"live {live_hash[:16]}… vs completion {completion['checkpoint_final']['sha256'][:16]}…")
 
         data = torch.load(checkpoint, map_location="cpu", weights_only=True)
         ok = data.get("current_epoch") == 250
@@ -169,6 +165,7 @@ class ClosingVerifier:
 
 def platform_version() -> str:
     import platform
+
     return platform.python_version()
 
 
@@ -182,8 +179,12 @@ def main() -> int:
     parser.add_argument("--ssa-batch16-exception", action="store_true")
     args = parser.parse_args()
     verdict = ClosingVerifier(
-        args.challenge, args.raw_root, args.preprocessed_root,
-        args.results_root, args.audit_dir, args.ssa_batch16_exception,
+        args.challenge,
+        args.raw_root,
+        args.preprocessed_root,
+        args.results_root,
+        args.audit_dir,
+        args.ssa_batch16_exception,
     ).verify()
     print(json.dumps(verdict, indent=2, sort_keys=True))
     return 0 if verdict["all_passed"] else 1

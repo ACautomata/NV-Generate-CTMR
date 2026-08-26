@@ -1,6 +1,7 @@
 # L2 仪器合成域适用性评估报告
 
-**模式**: P3 img2img 零训练基线（4 锚轮协议）  
+**模式**: P3 img2img 零训练基线（4 锚轮协议）
+
 **总体判定**: **PASS**
 
 | 挑战 | 样本数 | R_fail_synth (k/n) | Wilson 95% 上界 | R_fail_real | 空 pred | 判定 |

@@ -40,10 +40,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import subprocess
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import monai
@@ -90,8 +89,10 @@ class P2RecipeGuard:
             raise ValueError(f"pinned P2 cache_rate is {self.PINNED_CACHE_RATE}, got {cfg.get('cache_rate')} (ADR-0007)")
         if cfg.get("n_epochs", self.MAX_EPOCHS) > self.MAX_EPOCHS:
             raise ValueError(f"pinned P2 max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')} (ADR-0007)")
-        self._logger.info(f"P2 recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} "
-                          f"weighted_loss={self.PINNED_WEIGHTED_LOSS}@{self.PINNED_WEIGHTED_LABELS} RCL=off")
+        self._logger.info(
+            f"P2 recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} "
+            f"weighted_loss={self.PINNED_WEIGHTED_LOSS}@{self.PINNED_WEIGHTED_LABELS} RCL=off"
+        )
         return True
 
 
@@ -117,8 +118,10 @@ class P2DataCatalog:
             image = os.path.join(self._args.data_base_dir, entry["image"])
             label = os.path.join(self._args.data_base_dir, entry["label"])
             if not os.path.exists(label):
-                raise FileNotFoundError(f"mask condition missing: {label} (entry {entry.get('sub')}:{entry.get('case')}); "
-                                        "run the phase labels pipeline before training")
+                raise FileNotFoundError(
+                    f"mask condition missing: {label} (entry {entry.get('sub')}:{entry.get('case')}); "
+                    "run the phase labels pipeline before training"
+                )
             records.append(
                 {
                     "image": image,
@@ -250,9 +253,7 @@ class P2ControlNetJob:
                 timesteps = noise_scheduler.sample_timesteps(images)
                 noisy_latent = noise_scheduler.add_noise(original_samples=images, noise=noise, timesteps=timesteps)
                 controlnet_cond = binarize_labels(labels.as_tensor().to(torch.long)).float()
-                down, mid = controlnet(
-                    x=noisy_latent, timesteps=timesteps, controlnet_cond=controlnet_cond, class_labels=modality_tensor
-                )
+                down, mid = controlnet(x=noisy_latent, timesteps=timesteps, controlnet_cond=controlnet_cond, class_labels=modality_tensor)
                 model_output = unet(
                     x=noisy_latent,
                     timesteps=timesteps,
@@ -300,9 +301,7 @@ class P2ControlNetJob:
         }
         torch.save(ckpt, tmp)
         tmp.replace(path)
-        (Path(self._args.model_dir) / "latest.json").write_text(
-            json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n"
-        )
+        (Path(self._args.model_dir) / "latest.json").write_text(json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n")
         self._logger.info(f"epoch {epoch + 1} average loss: {(loss_totals[0] / loss_totals[1]).item():.4f} -> {path}")
 
 

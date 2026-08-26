@@ -76,13 +76,10 @@ class P3CandidateInferenceConfig:
         self.cfg_guidance_scale = self._number(payload, "cfg_guidance_scale")
         if self.cfg_guidance_scale != 0:
             raise P3CandidatePlanError(
-                "P3 candidate cfg_guidance_scale must be 0 (default CFG off, zero latent unconditional branch; "
-                "issue #61 acceptance criterion 1)"
+                "P3 candidate cfg_guidance_scale must be 0 (default CFG off, zero latent unconditional branch; " "issue #61 acceptance criterion 1)"
             )
         if "strength" in payload:
-            raise P3CandidatePlanError(
-                "P3 candidate inference config must not carry strength (it conditions from noise, not an img2img start)"
-            )
+            raise P3CandidatePlanError("P3 candidate inference config must not carry strength (it conditions from noise, not an img2img start)")
         self.grid = self._grid(payload)
         self.modality_tokens = payload.get("modality_tokens")
         if not isinstance(self.modality_tokens, dict) or set(self.modality_tokens) != set(MODALITIES):
@@ -418,7 +415,11 @@ class P3CandidatePlanSelfTest:
             ("open (unfrozen) run", record(status="open"), infer_path),
             ("selection carries no candidate checkpoint", record(selection={}), infer_path),
             ("selection == upstream DM (stage-0 in disguise)", record(selection={"checkpoint": {"path": str(dm), "sha256": dm_sha}}), infer_path),
-            ("selection pinning the upstream DM path but wrong sha", record(selection={"checkpoint": {"path": str(dm), "sha256": "0" * 64}}), infer_path),
+            (
+                "selection pinning the upstream DM path but wrong sha",
+                record(selection={"checkpoint": {"path": str(dm), "sha256": "0" * 64}}),
+                infer_path,
+            ),
             ("run pinning no inference config", record(configs=[]), infer_path),
             (
                 "run pinning two inference configs",

@@ -7,20 +7,17 @@
 用法:
   python3 /root/private_data/l2-synth-eval/run_eval.py --mode p1
 """
+
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 import os
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
 from pathlib import Path
 
-import nibabel as nib
 import numpy as np
 import SimpleITK as sitk
 
@@ -66,6 +63,7 @@ EXPECTED_COUNTS = {
 
 # ── Step 0: 选择病例 ───────────────────────────────────────────────────
 
+
 def select_cases(challenge: str, n: int) -> list[dict]:
     """从 nnU-Net 数据集中选取评估病例。"""
     manifest_path = NNUNET_ROOT / "splits/split_manifest_brats2023-rflow-v1.json"
@@ -99,6 +97,7 @@ def cmd_create_lists(args):
 
 # ── Step 1: 生成 v1 DM 样本 ────────────────────────────────────────────
 
+
 def run_v1_dm_inference(
     modality_label: int,
     output_path: Path,
@@ -128,11 +127,17 @@ def run_v1_dm_inference(
     model_def = REPO_DIR / "configs/config_maisi_diff_model_rflow-mr-brain.json"
 
     cmd = [
-        sys.executable, "-m", "scripts.diff_model_infer",
-        "-e", str(env_config),
-        "-c", str(config_path),
-        "-t", str(model_def),
-        "-g", "1",
+        sys.executable,
+        "-m",
+        "scripts.diff_model_infer",
+        "-e",
+        str(env_config),
+        "-c",
+        str(config_path),
+        "-t",
+        str(model_def),
+        "-g",
+        "1",
     ]
 
     env = os.environ.copy()
@@ -140,8 +145,12 @@ def run_v1_dm_inference(
 
     print(f"  [GEN] modality={modality_label} → {output_path.name}")
     result = subprocess.run(
-        cmd, cwd=str(REPO_DIR), env=env,
-        capture_output=True, text=True, timeout=600,
+        cmd,
+        cwd=str(REPO_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
     if result.returncode != 0:
         print(f"  [ERROR] modality {modality_label} failed:\n{result.stderr[-500:]}")
@@ -153,6 +162,7 @@ def run_v1_dm_inference(
     generated = list(output_dir.glob(f"*modality{modality_label}*.nii.gz"))
     if generated:
         import shutil
+
         shutil.move(str(generated[0]), str(output_path))
     else:
         raise FileNotFoundError(f"no output found for modality {modality_label}")
@@ -202,6 +212,7 @@ def cmd_generate(args):
 
 
 # ── Step 2: 组装 nnU-Net 输入 ──────────────────────────────────────────
+
 
 def resample_to_1mm(img: sitk.Image) -> sitk.Image:
     """重采样到 1mm isotropic。"""
@@ -275,6 +286,7 @@ def cmd_prep_inputs(args):
 
 # ── Step 3: 仪器推理 ───────────────────────────────────────────────────
 
+
 def cmd_predict(args):
     """运行冻结仪器推理。"""
     input_dir = EVAL_ROOT / f"{args.mode}_nnunet_inputs"
@@ -324,21 +336,34 @@ def cmd_predict(args):
         extra = ["-p", "nnUNetPlans_SSA_bs16_v1"] if challenge == "SSA" else []
 
         cmd = [
-            sys.executable, "-m", "scripts.l2_calibration_predict_entry",
-            "-i", str(tmp_dataset),
-            "-o", str(pred_dir),
-            "-d", str(dataset_id),
-            "-c", "3d_fullres",
-            "-f", "0",
-            "-tr", "nnUNetTrainer250Epochs",
-            "--disable_tta", "False",
+            sys.executable,
+            "-m",
+            "scripts.l2_calibration_predict_entry",
+            "-i",
+            str(tmp_dataset),
+            "-o",
+            str(pred_dir),
+            "-d",
+            str(dataset_id),
+            "-c",
+            "3d_fullres",
+            "-f",
+            "0",
+            "-tr",
+            "nnUNetTrainer250Epochs",
+            "--disable_tta",
+            "False",
         ] + extra
 
         print(f"[PREDICT] {challenge} ({len(list(case_input_dir.glob('*_0000.nii.gz')))} cases)...")
         # 逐病例推理（nnUNet predict_from_raw_data 会自动找 checkpoint）
         result = subprocess.run(
-            cmd, cwd=str(REPO_DIR), env=env,
-            capture_output=True, text=True, timeout=3600,
+            cmd,
+            cwd=str(REPO_DIR),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=3600,
         )
         if result.returncode != 0:
             print(f"  [WARN] {challenge} prediction failed: {result.stderr[-300:]}")
@@ -349,6 +374,7 @@ def cmd_predict(args):
 # ── Step 4: 评估 ───────────────────────────────────────────────────────
 
 Z95 = 1.959963984540054
+
 
 def wilson_upper(k: int, n: int) -> float:
     if n == 0:
@@ -363,14 +389,16 @@ def wilson_upper(k: int, n: int) -> float:
 def evaluate_case(case_id: str, challenge: str, input_dir: Path, pred_dir: Path) -> dict:
     """评估一个合成病例。"""
     result = {
-        "case": case_id, "challenge": challenge,
-        "input_fail": False, "run_fail": False, "hier_viol": False,
+        "case": case_id,
+        "challenge": challenge,
+        "input_fail": False,
+        "run_fail": False,
+        "hier_viol": False,
     }
 
     # 输入契约检查
     try:
-        inputs = [sitk.ReadImage(str(input_dir / f"{case_id}_{s}.nii.gz"))
-                  for s in ("0000", "0001", "0002", "0003")]
+        inputs = [sitk.ReadImage(str(input_dir / f"{case_id}_{s}.nii.gz")) for s in ("0000", "0001", "0002", "0003")]
         ref = (inputs[0].GetSize(), inputs[0].GetSpacing())
         ok = all((img.GetSize(), img.GetSpacing()) == ref for img in inputs[1:])
         iso = all(abs(s - 1.0) < 1e-3 for s in inputs[0].GetSpacing())
@@ -391,7 +419,7 @@ def evaluate_case(case_id: str, challenge: str, input_dir: Path, pred_dir: Path)
     # 层级违反: ET⊆TC⊆WT
     wt = np.isin(pred_arr, (1, 2, 3))
     tc = np.isin(pred_arr, (1, 3))
-    et = (pred_arr == 3)
+    et = pred_arr == 3
     if et.sum() > 0 and tc.sum() > 0:
         if (et & ~tc).sum() > 0:
             result["hier_viol"] = True
@@ -420,7 +448,8 @@ def cmd_evaluate(args):
 
     report = {
         "title": "L2 仪器合成域适用性评估报告",
-        "issue": 38, "mode": mode,
+        "issue": 38,
+        "mode": mode,
         "per_challenge": {},
         "overall_verdict": "PASS",
     }
@@ -429,8 +458,10 @@ def cmd_evaluate(args):
         case_results = []
         for entry in entries:
             r = evaluate_case(
-                entry["case_id"], challenge,
-                input_dir / challenge, pred_dir / challenge,
+                entry["case_id"],
+                challenge,
+                input_dir / challenge,
+                pred_dir / challenge,
             )
             case_results.append(r)
 
@@ -441,7 +472,8 @@ def cmd_evaluate(args):
         k_fail = sum(r["input_fail"] or r["run_fail"] or r["hier_viol"] for r in case_results)
 
         r_fail_synth = {
-            "k": k_fail, "n": n_obs,
+            "k": k_fail,
+            "n": n_obs,
             "point": k_fail / n_obs if n_obs else 0,
             "wilson_95_upper": wilson_upper(k_fail, n_obs),
             "breakdown": {"input_fail": k_input, "run_fail": k_run, "hier_viol": k_hier},
@@ -469,15 +501,32 @@ def cmd_evaluate(args):
     (output_dir / f"report_{mode}.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
 
     # 生成 markdown
-    md = [f"# {report['title']}", "", f"**模式**: {mode}", f"**总体判定**: **{report['overall_verdict']}**", "",
-          "| 挑战 | 样本数 | R_fail_synth | R_fail_real | 判定 |", "|------|--------|-------------|-------------|------|"]
+    md = [
+        f"# {report['title']}",
+        "",
+        f"**模式**: {mode}",
+        f"**总体判定**: **{report['overall_verdict']}**",
+        "",
+        "| 挑战 | 样本数 | R_fail_synth | R_fail_real | 判定 |",
+        "|------|--------|-------------|-------------|------|",
+    ]
     for ch, d in report["per_challenge"].items():
         s, r = d["r_fail_synth"], d["r_fail_real"]
-        md.append(f"| {ch} | {d['n_samples']} | {s['point']:.4f} ({s['k']}/{s['n']}) | {r.get('point',0):.4f} ({r.get('k',0)}/{r.get('n',0)}) | **{d['verdict']}** |")
+        md.append(
+            f"| {ch} | {d['n_samples']} | {s['point']:.4f} ({s['k']}/{s['n']}) | {r.get('point',0):.4f} ({r.get('k',0)}/{r.get('n',0)}) | **{d['verdict']}** |"
+        )
     md.extend(["", "## R_fail 细分", ""])
     for ch, d in report["per_challenge"].items():
         b = d["r_fail_synth"]["breakdown"]
-        md.extend([f"### {ch}", f"- 输入失败: {b['input_fail']}/{d['n_samples']}", f"- 运行失败: {b['run_fail']}/{d['n_samples']}", f"- 层级违反: {b['hier_viol']}/{d['n_samples']}", ""])
+        md.extend(
+            [
+                f"### {ch}",
+                f"- 输入失败: {b['input_fail']}/{d['n_samples']}",
+                f"- 运行失败: {b['run_fail']}/{d['n_samples']}",
+                f"- 层级违反: {b['hier_viol']}/{d['n_samples']}",
+                "",
+            ]
+        )
     if "p2_evidence_gap" in report:
         md.extend(["## P2 方向说明", report["p2_evidence_gap"], ""])
     (output_dir / f"report_{mode}.md").write_text("\n".join(md))
@@ -487,6 +536,7 @@ def cmd_evaluate(args):
 
 
 # ── main ────────────────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser()

@@ -116,8 +116,9 @@ class ModelBundle:
     device: torch.device
 
     @classmethod
-    def load(cls, device: torch.device) -> "ModelBundle":
+    def load(cls, device: torch.device) -> ModelBundle:
         from monai.utils.enums import TraceKeys
+
         from scripts.utils import define_instance
 
         # torch>=2.6 weights_only allowlist: the official AE ckpt carries MONAI
@@ -145,7 +146,7 @@ class ModelBundle:
         """image [1,1,X,Y,Z] in [0,1] -> latent [1,4,X/4,Y/4,Z/4] (unscaled)."""
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=self.device.type == "cuda"):
             z = self.autoencoder.encode_stage_2_inputs(image.to(self.device))
-        if isinstance(z, (tuple, list)):
+        if isinstance(z, tuple | list):
             z = z[0]
         return z.float()
 
@@ -153,7 +154,7 @@ class ModelBundle:
         """latent [1,4,...] (unscaled) -> image [1,1,X,Y,Z] in ~[0,1]."""
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=self.device.type == "cuda"):
             y = self.autoencoder.decode_stage_2_outputs(latent.to(self.device))
-            if isinstance(y, (tuple, list)):
+            if isinstance(y, tuple | list):
                 y = y[0]
         return y.float()
 

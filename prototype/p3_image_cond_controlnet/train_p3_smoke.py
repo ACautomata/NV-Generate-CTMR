@@ -29,15 +29,16 @@ import torch
 import torch.nn.functional as F
 from monai.networks.schedulers import RFlowScheduler
 from monai.networks.utils import copy_model_state
-from monai.transforms import Compose, EnsureChannelFirstd, EnsureTyped, Lambdad, LoadImaged
+from monai.transforms import Compose, EnsureTyped, Lambdad, LoadImaged
 from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from p3_common import LATENT, MODALITIES, ModelBundle, OUT_DIR  # noqa: E402
+from p3_common import LATENT, MODALITIES, OUT_DIR, ModelBundle  # noqa: E402
 from prep_p3_data import PAIRS_JSON  # noqa: E402
+
 from scripts.utils import define_instance  # noqa: E402
 
 MODALITY_INDEX = {key: idx for _suffix, (key, idx) in MODALITIES.items()}
@@ -132,9 +133,7 @@ def main() -> None:
         controlnet.load_state_dict(torch.load(args.resume, map_location=device, weights_only=True)["controlnet_state_dict"])
         print(f"resumed controlnet from {args.resume}")
 
-    scheduler = define_instance(
-        argparse.Namespace(**json.loads((OUT_DIR.parent / "network_config_p3.json").read_text())), "noise_scheduler"
-    )
+    scheduler = define_instance(argparse.Namespace(**json.loads((OUT_DIR.parent / "network_config_p3.json").read_text())), "noise_scheduler")
     assert isinstance(scheduler, RFlowScheduler)
 
     entries = load_entries(args.data_list, smoke_only=not args.include_t1c)
@@ -171,9 +170,7 @@ def main() -> None:
             with autocast("cuda", enabled=True):
                 noise = torch.randn_like(images)
                 timesteps = scheduler.sample_timesteps(images)
-                model_output = compute_model_output(
-                    src_latent, images, noise, timesteps, scheduler, controlnet, unet, spacing, modality
-                )
+                model_output = compute_model_output(src_latent, images, noise, timesteps, scheduler, controlnet, unet, spacing, modality)
                 model_gt = images - noise  # RFlow velocity target
                 if args.weighted_loss > 1.0:
                     weights = torch.ones_like(images)

@@ -1,5 +1,4 @@
 # PROTOTYPE (throwaway) — one contact sheet: t1c axial tumor slice, orig vs both grid plans, all 12 cases.
-import re
 import sys
 from pathlib import Path
 
@@ -8,20 +7,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
-from monai.transforms import CenterSpatialCrop
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from vae_recon_smoke import (  # noqa: E402
+    AE_PATH,
+    NETWORK_CONFIG,
     SAMPLES_DIR,
     SUBCHALLENGES,
     AutoencoderRunner,
-    NETWORK_CONFIG,
-    AE_PATH,
-    VolumeLoader,
     TumorSliceLocator,
+    VolumeLoader,
     make_plans,
     pick_device,
 )

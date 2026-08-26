@@ -53,11 +53,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
-import subprocess
 import sys
 import time
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -66,9 +64,9 @@ import torch
 from .brats_p1_dev_eval import (
     COHORT_QUOTAS,
     MODALITY_TOKENS,
-    TARGET_MODALITIES,
     PLANES,
     STOP_FILE,
+    TARGET_MODALITIES,
     CheckpointWatcher,
     DevCohortBuilder,
     EarlyStopRule,
@@ -85,9 +83,7 @@ from .infer_image_from_mask import ldm_conditional_sample_one_image_from_mask
 COMBINED_TO_INSTRUMENT = {22: 0, 129: 1, 130: 2, 131: 3}
 INSTRUMENT_REGION_LABELS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
 
-torch.serialization.add_safe_globals(
-    [np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.Float64DType]
-)
+torch.serialization.add_safe_globals([np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.Float64DType])
 
 
 class P2DevList:
@@ -259,8 +255,14 @@ class P2CandidateSampler:
                 if not out.is_file():
                     out.parent.mkdir(parents=True, exist_ok=True)
                     data = self.sample_one(
-                        autoencoder, unet, controlnet, scale, MODALITY_TOKENS[modality],
-                        spacings.spacing_of(item["case"]), seed, condition,
+                        autoencoder,
+                        unet,
+                        controlnet,
+                        scale,
+                        MODALITY_TOKENS[modality],
+                        spacings.spacing_of(item["case"]),
+                        seed,
+                        condition,
                     )
                     nib.save(nib.Nifti1Image(data, np.diag([1.0, 1.0, 1.0, 1.0])), out)
                 samples.append({"sub": item["sub"], "case": item["case"], "modality": modality, "path": str(out)})
@@ -341,10 +343,7 @@ class P2RoundTripDice:
             "per_case": rows,
             "n_run_fail": sum(1 for row in rows if row.get("run_fail")),
             "n_cond_fail": sum(1 for row in rows if row.get("cond_fail")),
-            "median_cond_dice": {
-                region: (float(np.median(values)) if values else None)
-                for region, values in region_medians.items()
-            },
+            "median_cond_dice": {region: (float(np.median(values)) if values else None) for region, values in region_medians.items()},
         }
         return summary
 
@@ -367,18 +366,28 @@ class P2DevEvalSelfTest:
         for challenge, quota in COHORT_QUOTAS.items():
             for index in range(quota + 2):
                 src_entries.append(
-                    {"image": f"embeddings/{challenge}/FIX{challenge}-{index:04d}-000-t1n_emb.nii.gz",
-                     "label": f"labels/{challenge}/FIX{challenge}-{index:04d}-000/FIX{challenge}-{index:04d}-000-combined.nii.gz",
-                     "spacing": [1.0, 1.0, 1.0], "modality": "mri_t1_skull_stripped",
-                     "fold": 0, "sub": challenge, "case": f"FIX{challenge}-{index:04d}-000"}
+                    {
+                        "image": f"embeddings/{challenge}/FIX{challenge}-{index:04d}-000-t1n_emb.nii.gz",
+                        "label": f"labels/{challenge}/FIX{challenge}-{index:04d}-000/FIX{challenge}-{index:04d}-000-combined.nii.gz",
+                        "spacing": [1.0, 1.0, 1.0],
+                        "modality": "mri_t1_skull_stripped",
+                        "fold": 0,
+                        "sub": challenge,
+                        "case": f"FIX{challenge}-{index:04d}-000",
+                    }
                 )
         # one train-side (fold=1) entry per challenge must be dropped.
         for challenge, quota in COHORT_QUOTAS.items():
             src_entries.append(
-                {"image": f"embeddings/{challenge}/TRAIN{challenge}-000-t1n_emb.nii.gz",
-                 "label": f"labels/{challenge}/TRAIN{challenge}-000/TRAIN{challenge}-000-combined.nii.gz",
-                 "spacing": [1.0, 1.0, 1.0], "modality": "mri_t1_skull_stripped",
-                 "fold": 1, "sub": challenge, "case": f"TRAIN{challenge}-000"}
+                {
+                    "image": f"embeddings/{challenge}/TRAIN{challenge}-000-t1n_emb.nii.gz",
+                    "label": f"labels/{challenge}/TRAIN{challenge}-000/TRAIN{challenge}-000-combined.nii.gz",
+                    "spacing": [1.0, 1.0, 1.0],
+                    "modality": "mri_t1_skull_stripped",
+                    "fold": 1,
+                    "sub": challenge,
+                    "case": f"TRAIN{challenge}-000",
+                }
             )
         src = self._workdir / "p2_src.json"
         src.write_text(json.dumps({"training": src_entries}))
@@ -430,9 +439,7 @@ class P2DevEvalSelfTest:
             ledger.append(record)
         if ledger.read() != trend:
             self.failures.append("ledger roundtrip mismatch")
-        selection = EarlyStopRule.selection(
-            [{"epoch": 5, "m": 1.2}, {"epoch": 10, "m": 0.8}, {"epoch": 20, "m": 0.8}]
-        )
+        selection = EarlyStopRule.selection([{"epoch": 5, "m": 1.2}, {"epoch": 10, "m": 0.8}, {"epoch": 20, "m": 0.8}])
         if selection["epoch"] != 10:
             self.failures.append(f"selection picked {selection}, expected epoch 10")
         return self.failures
@@ -533,9 +540,7 @@ def main(argv=None):
     instrument_results = dict(item.split("=", 1) for item in args.instrument_results)
     l2 = L2TrendRunner(instrument_results, args.instrument_entry, args.nnunet_raw, args.nnunet_preprocessed)
     round_trip = P2RoundTripDice(masks)
-    watcher = CheckpointWatcher(
-        args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()}
-    )
+    watcher = CheckpointWatcher(args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()})
     idle_since = None
 
     while True:

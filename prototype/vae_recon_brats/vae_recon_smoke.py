@@ -13,9 +13,10 @@
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # repo root for `scripts` package
 
@@ -23,7 +24,6 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import nibabel as nib
 import numpy as np
 import torch
 from monai.transforms import (
@@ -107,7 +107,7 @@ class AutoencoderRunner:
         x = plan.to_grid(volume).unsqueeze(0).to(self.device).float()  # [1,C,X',Y',Z']
         with torch.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.use_autocast):
             z = self.autoencoder.encode_stage_2_inputs(x)
-            if isinstance(z, (tuple, list)):
+            if isinstance(z, tuple | list):
                 z = z[0]
             y = self.autoencoder.decode_stage_2_outputs(z)
         y = torch.clip(y.float(), 0.0, 1.0)[0].cpu()
@@ -278,8 +278,7 @@ def main() -> None:
         plotter.plot_ortho(sub, case, vol, recon, locator, plan_names)
 
     # metrics summary table
-    lines = ["| sub | case | modality | " + " | ".join(f"{p} MAE / PSNR" for p in plan_names) + " |",
-             "|---|---|" + "---|" * len(plan_names)]
+    lines = ["| sub | case | modality | " + " | ".join(f"{p} MAE / PSNR" for p in plan_names) + " |", "|---|---|" + "---|" * len(plan_names)]
     by_key: dict[tuple, dict] = {}
     for r in results:
         by_key.setdefault((r.sub, r.case, r.modality), {})[r.plan] = (r.mae, r.psnr)

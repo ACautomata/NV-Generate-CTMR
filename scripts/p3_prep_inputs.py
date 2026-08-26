@@ -8,6 +8,7 @@ p3_nnunet_inputs/<CH>/<case>_a<a>_000{0..3}.nii.gz（通道映射与 P1/校准�
 
 在 sugon 上运行：python3 /root/private_data/l2-synth-eval/p3_prep_inputs.py
 """
+
 from __future__ import annotations
 
 import json
@@ -74,9 +75,7 @@ def main() -> int:
             continue
         for line in jobs_path.read_text().splitlines():
             job = json.loads(line)
-            key = (job["anchor_key"].split("/")[0],
-                   job["anchor_key"].split("/")[1],
-                   job["anchor_key"].split("/")[2])  # (CH, case, anchor_name)
+            key = (job["anchor_key"].split("/")[0], job["anchor_key"].split("/")[1], job["anchor_key"].split("/")[2])  # (CH, case, anchor_name)
             vol = volumes.setdefault(key, {"anchor_file": job["anchor"]})
             vol[job["tgt_name"]] = job["out"]
 

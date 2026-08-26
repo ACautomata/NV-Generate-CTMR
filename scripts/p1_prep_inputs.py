@@ -8,6 +8,7 @@
 
 在 sugon 上运行：python3 /root/private_data/l2-synth-eval/p1_prep_inputs.py
 """
+
 from __future__ import annotations
 
 import sys

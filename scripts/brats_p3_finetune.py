@@ -43,10 +43,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import logging
 import os
 import subprocess
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import monai
@@ -163,9 +162,7 @@ class P3RecipeGuard:
         if cfg.get("n_epochs", self.MAX_EPOCHS) > self.MAX_EPOCHS:
             raise ValueError(f"pinned P3 max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')}")
         if self._infer.get("cfg_guidance_scale", 0.0) != self.PINNED_CFG:
-            raise ValueError(
-                f"P3 candidate is evaluated/selected with CFG OFF (cfg_guidance_scale=0); got {self._infer.get('cfg_guidance_scale')}"
-            )
+            raise ValueError(f"P3 candidate is evaluated/selected with CFG OFF (cfg_guidance_scale=0); got {self._infer.get('cfg_guidance_scale')}")
         self._logger.info(
             f"P3 recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} weighted_loss={self.PINNED_WEIGHTED_LOSS}"
             f"@{self.PINNED_WEIGHTED_LABELS} RCL=off cfg={self.PINNED_CFG}"
@@ -338,9 +335,7 @@ class P3ControlNetJob:
                 # The ONLY structural change vs P2: condition on the 4ch src latent,
                 # not the binarized mask. Labels never enter the condition.
                 controlnet_cond = src_latent
-                down, mid = controlnet(
-                    x=noisy_latent, timesteps=timesteps, controlnet_cond=controlnet_cond, class_labels=modality_tensor
-                )
+                down, mid = controlnet(x=noisy_latent, timesteps=timesteps, controlnet_cond=controlnet_cond, class_labels=modality_tensor)
                 model_output = unet(
                     x=noisy_latent,
                     timesteps=timesteps,
@@ -388,9 +383,7 @@ class P3ControlNetJob:
         }
         torch.save(ckpt, tmp)
         tmp.replace(path)
-        (Path(self._args.model_dir) / "latest.json").write_text(
-            json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n"
-        )
+        (Path(self._args.model_dir) / "latest.json").write_text(json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n")
         self._logger.info(f"epoch {epoch + 1} average loss: {(loss_totals[0] / loss_totals[1]).item():.4f} -> {path}")
 
 
@@ -415,7 +408,9 @@ class P3TrainProvenanceWriter:
             "trained_diffusion_path": self._args.trained_diffusion_path,
             "replay": None,
             "hyperparameters": self._args.controlnet_train,
-            "cfg_guidance_scale": self._args.diffusion_unet_inference.get("cfg_guidance_scale") if hasattr(self._args, "diffusion_unet_inference") else None,
+            "cfg_guidance_scale": self._args.diffusion_unet_inference.get("cfg_guidance_scale")
+            if hasattr(self._args, "diffusion_unet_inference")
+            else None,
             "amp_dtype": self._args.amp_dtype,
             "world_size": dist.get_world_size() if dist.is_initialized() else 1,
             "torch_version": torch.__version__,

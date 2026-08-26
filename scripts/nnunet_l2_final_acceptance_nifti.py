@@ -95,8 +95,7 @@ class GeneratedVolumeResampler:
         original_spacing = image.GetSpacing()
         original_size = image.GetSize()
         new_spacing = [1.0, 1.0, 1.0]
-        new_size = [int(round(osz * ospc / nspc))
-                    for osz, ospc, nspc in zip(original_size, original_spacing, new_spacing)]
+        new_size = [int(round(osz * ospc / nspc)) for osz, ospc, nspc in zip(original_size, original_spacing, new_spacing)]
         resampler = sitk.ResampleImageFilter()
         resampler.SetOutputSpacing(new_spacing)
         resampler.SetSize(new_size)
@@ -277,9 +276,13 @@ class MeasurementRunner:
         pred = None if input_fail else self._checker.read_prediction(observation, self._pred_root / observation["challenge"])
         run_fail = pred is None
         row.update(
-            obs_id=observation["obs_id"], challenge=observation["challenge"], case=observation["case"],
-            side=observation["side"], anchor=observation["anchor"] or "",
-            input_fail=int(input_fail), run_fail=int(run_fail),
+            obs_id=observation["obs_id"],
+            challenge=observation["challenge"],
+            case=observation["case"],
+            side=observation["side"],
+            anchor=observation["anchor"] or "",
+            input_fail=int(input_fail),
+            run_fail=int(run_fail),
             hier_viol=0 if pred is None else int(self._checker.hierarchy_violation(pred)),
             pred_empty="" if pred is None else int(not np.isin(pred, (1, 2, 3)).any()),
         )
@@ -292,13 +295,10 @@ class MeasurementRunner:
         row["et_wt"] = volumes["ET"] / volumes["WT"] if volumes["WT"] > 0 else None
         for region in REGIONS:
             centroid = self._measurer.centroid_mm(pred, region)
-            values = {f"c{axis}_{region.lower()}_mm": (None if centroid is None else centroid[i])
-                      for i, axis in enumerate("xyz")}
+            values = {f"c{axis}_{region.lower()}_mm": (None if centroid is None else centroid[i]) for i, axis in enumerate("xyz")}
             row.update(values)
         if condition is not None:
-            row.update({f"cond_dice_{region.lower()}":
-                        self._measurer.condition_dice(pred, condition, region)
-                        for region in REGIONS})
+            row.update({f"cond_dice_{region.lower()}": self._measurer.condition_dice(pred, condition, region) for region in REGIONS})
         return row
 
     def run(self):
