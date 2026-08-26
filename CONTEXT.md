@@ -119,7 +119,7 @@ _Avoid_: 以线性插值喂仪器(已统一收敛为 B-spline)、非居中裁剪
 _Avoid_: 在各脚本散落手写 `nnUNetv2_predict` 命令、用非标准入口名 `nnUNetv2_predict_from_raw_data`、写 `--disable_tta False` token、import 时 `add_safe_globals` 改全局状态
 
 **仪器读数(InstrumentMeasurement)**:
-把仪器网格(240×240×155)上的分割掩码派生为 WT/TC/ET 体积、质心位置、强化比等逐病例测量行的纯测量逻辑——`src/ctmr/measure/` 唯一入口 `InstrumentMeasurer.measure(pred, *, gt, condition, brain) -> CaseMeasurement`,校准列(vs GT)/生成列/回切 Dice 三列族按提供的可选 reference 显式门控,canonical 对象配 long(校准)/wide(终验)双序列化。REGIONS/Wilson/Dice 在此各唯一定义;cohort 聚合(R_fail/bootstrap/TOST/verdict)留在判定层、不属本测量。口径经 ADR-0010 钉板,与 ADR-0002/0004 冻结读数一致;代码不动,执行期另行落地。
+把仪器网格(240×240×155)上的分割掩码派生为 WT/TC/ET 体积、质心位置、强化比等逐病例测量行的纯测量逻辑——`src/ctmr/measure/` 唯一入口 `InstrumentMeasurer.measure(pred, *, gt, condition, brain) -> CaseMeasurement`,校准列(vs GT)/生成列/回切 Dice 三列族按提供的可选 reference 显式门控,canonical 对象配 long(校准)/wide(终验)双序列化。REGIONS/Wilson/Dice 在此各唯一定义;cohort 聚合(R_fail/bootstrap/TOST/verdict)留在判定层、不属本测量。module 已落地(`src/ctmr/measure/`,#109),6 处调用点收编归 #110;口径经 ADR-0010 钉板,与 ADR-0002/0004 冻结读数一致。
 _Avoid_: 在各脚本散落重写掩码→测量行逻辑、把 cohort 聚合混入测量层、掩码不经仪器网格直接测量
 
 **层级违反(hierarchy_violation)**:
