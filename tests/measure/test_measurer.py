@@ -209,7 +209,6 @@ def _synthetic_case(seed=109, dtype=np.uint8, shape=(12, 14, 16)):
     """A well-formed nested case: WT⊃TC⊃ET, plus scattered oedema/background."""
     rng = np.random.default_rng(seed)
     pred = np.zeros(shape, dtype=dtype)
-    center = tuple(s // 2 for s in shape)
     pred[5:9, 5:10, 6:11] = 1  # core (WT + TC)
     pred[6:8, 6:9, 7:10] = 2  # oedema (WT only) -- inside core region but TC mask excludes 2
     pred[7:9, 7:9, 8:9] = 3  # ET

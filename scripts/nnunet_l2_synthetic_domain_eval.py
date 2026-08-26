@@ -69,6 +69,7 @@ sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python -m scri
 sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
 
 from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
+from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
 # ── 常量 ──────────────────────────────────────────────────────────────────
 
@@ -418,11 +419,10 @@ class InputPreparator:
 class InstrumentRunner:
     """运行冻结的 nnU-Net 仪器推理。
 
-    复用 nnunetv2 的 ``predict_from_raw_data`` 接口。
-    推理配置按 ADR-0003 §4：镜像 TTA on、滑窗 overlap 0.5。
+    命令构造已收编 ADR-0009:canonical 入口 ``python -m ctmr.instrument.predict``
+    (镜像 TTA on 靠省略;SSA 派生 plans/config 在 spec 内),argv 与
+    ``FrozenInstrumentCommand.build`` 输出逐一相等。
     """
-
-    DATASET_IDS = {"GLI": 501, "SSA": 502, "MEN": 503, "METS": 504, "PED": 505}
 
     def __init__(self, results_root: Path):
         self.results_root = results_root
@@ -437,31 +437,28 @@ class InstrumentRunner:
         pred_dir = output_dir / challenge
         pred_dir.mkdir(parents=True, exist_ok=True)
 
-        dataset_id = self.DATASET_IDS[challenge]
-        # nnU-Net predict_from_raw_data 期望目录结构：
+        # nnU-Net predict 期望目录结构：
         # input_dir/<case_id>_0000.nii.gz .. _0003.nii.gz
         # 输出到 pred_dir/<case_id>.nii.gz
 
-        # 构造 nnU-Net 推理命令
-        # 注意：实际执行需要在有 nnunetv2 环境的 DCU 上运行
-        cmd = (
-            f"nnUNetv2_predict_from_raw_data "
-            f"-i {input_dir} "
-            f"-o {pred_dir} "
-            f"-d {dataset_id} "
-            f"-c 3d_fullres "
-            f"-f 0 "
-            f"-tr nnUNetTrainer250Epochs "
-            f"--disable_tta False "
-            f"--verbose {pred_dir / 'predict.log'}"
+        # 冻结推理配置由单一构造点给出(ADR-0009);日志经 shell 重定向落
+        # pred_dir/predict.log(旧 `--verbose <path>` 是 store_true 后带值,
+        # 与 #78 的 TTA token 同族的 fatal argparse 形式)。
+        cmd = FrozenInstrumentCommand(INSTRUMENT_SPECS[challenge]).build(input_dir, pred_dir)
+
+        # 生成脚本在独立 shell 里跑 canonical 入口:src 树自举到 PYTHONPATH
+        # (与 nnunet_l2_final_acceptance 的 writer 同族,ADR-0009 决定 6)。
+        script_dir = Path(__file__).resolve().parent
+        src_roots = ":".join(str(root) for root in dict.fromkeys((script_dir.parent / "src", script_dir / "src")))
+        script = (
+            "#!/bin/bash\nset -euo pipefail\n"
+            + f'export PYTHONPATH="{src_roots}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+            + " ".join(cmd)
+            + f" 2>&1 | tee {pred_dir / 'predict.log'}\n"
         )
 
-        # SSA 需要特殊 plans
-        if challenge == "SSA":
-            cmd += " -p nnUNetPlans_SSA_bs16_v1"
-
         script_path = output_dir / f"predict_{challenge}.sh"
-        script_path.write_text("#!/bin/bash\nset -euo pipefail\n" + cmd + "\n")
+        script_path.write_text(script)
         script_path.chmod(0o755)
         print(f"[INFO] Generated prediction script: {script_path}")
         return pred_dir

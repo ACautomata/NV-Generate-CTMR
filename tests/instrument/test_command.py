@@ -61,22 +61,15 @@ def test_mirror_tta_stays_on_by_omission(challenge):
     assert not [field for field in fields(InstrumentSpec) if "tta" in field.name]  # the interface exposes no TTA parameter
 
 
-def test_terminal_acceptance_invocation_matches_the_frozen_reference(tmp_path):
+def test_terminal_acceptance_invocation_is_the_builder_argv(tmp_path):
+    """The #108 adoption: PredictScriptWriter emits exactly ``build(...)`` -- the
+    frozen call site lands on the single construction point, so the generated
+    script line is verbatim the builder argv (entry ``\\ -m ctmr.instrument.predict``,
+    the canonical spec flags, no TTA token)."""
     challenges = {challenge: {} for challenge in FIVE_CHALLENGES}  # the writer only reads the keys
     PredictScriptWriter({"challenges": challenges}, tmp_path).write()
 
     for challenge in FIVE_CHALLENGES:
+        cmd = FrozenInstrumentCommand(INSTRUMENT_SPECS[challenge]).build(tmp_path / "inputs" / challenge, tmp_path / "predictions" / challenge)
         line = (tmp_path / f"predict_{challenge}.sh").read_text().splitlines()[-1]
-        reference = line.split()[1:]  # drop the pre-#107 entry name "nnUNetv2_predict"
-        reference_options = dict(zip(reference[0::2], reference[1::2]))
-        argv = FrozenInstrumentCommand(INSTRUMENT_SPECS[challenge]).build("/raw/in", "/pred/out")
-        options = dict(zip(argv[3::2], argv[4::2]))  # skip [executable, "-m", module]
-        for key, value in reference_options.items():
-            if key in ("-i", "-o"):
-                continue  # path plumbing of the two constructions, not part of the frozen spec
-            if key == "-d":
-                # both nnUNetv2 spellings resolve to the same model directory; the canonical form is the unambiguous full name
-                assert options[key].startswith(f"Dataset{value}_")
-            else:
-                assert options[key] == value
-        assert options["-p"] == reference_options.get("-p", "nnUNetPlans")  # an omitted -p is nnUNetv2's default; build pins it explicitly
+        assert line == " ".join(cmd)

@@ -16,20 +16,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))  # repo src layout: python scripts/<this>.py
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon deployment: src/ synced next to the script
 
-import numpy  # noqa: E402
 import torch  # noqa: E402
-
-# nnU-Net checkpoint 携带 numpy 标量与其 dtype（numpy>=2 反序列化为
-# numpy.dtypes.*DType 子类），按数值 dtype 类集合白名单被动类型。
-torch.serialization.add_safe_globals(
-    [numpy.core.multiarray.scalar, numpy.dtype]
-    + [
-        type(numpy.dtype(name))
-        for name in ("bool", "uint8", "int8", "int16", "int32", "int64", "float16", "float32", "float64", "complex64", "complex128")
-    ]
-)
-
 from nnunet_l2_instrument import (  # noqa: E402
     PERSISTENT_ROOT,
     TRAINER_CLASS,
@@ -39,6 +29,11 @@ from nnunet_l2_instrument import (  # noqa: E402
     TrainerContract,
     TrainingProtocol,
 )
+
+# weights_only 白名单已收编到 ADR-0009 的单一 scoped 定义
+# (ctmr.instrument.safeglobals.nnunet_safe_globals)：load 处 `with` 包裹，
+# import 本模块不再改全局 torch 状态。
+from ctmr.instrument.safeglobals import nnunet_safe_globals  # noqa: E402
 
 
 class ClosingVerifier:
@@ -145,7 +140,8 @@ class ClosingVerifier:
         ok = live_hash == completion["checkpoint_final"]["sha256"]
         self._record("checkpoint_final.hash", ok, f"live {live_hash[:16]}… vs completion {completion['checkpoint_final']['sha256'][:16]}…")
 
-        data = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        with nnunet_safe_globals():
+            data = torch.load(checkpoint, map_location="cpu", weights_only=True)
         ok = data.get("current_epoch") == 250
         self._record("checkpoint_final.current_epoch", ok, str(data.get("current_epoch")))
         ok = data.get("trainer_name") == TRAINER_CLASS

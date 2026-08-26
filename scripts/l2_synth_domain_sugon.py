@@ -31,6 +31,7 @@ sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python scripts
 sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
 
 from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
+from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
 # ── sugon 固定路径 ──────────────────────────────────────────────────────
 
@@ -298,6 +299,11 @@ def cmd_predict(args):
 
         # 设置环境
         env = os.environ.copy()
+        # canonical 入口在全新子进程里跑:src 树进子进程 PYTHONPATH
+        # (sys.path.insert 是进程局部;ADR-0009 决定 6 双拼写 shim)。
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(_HERE.parent / "src"), str(_HERE / "src")] + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])
+        )
         env["nnUNet_raw"] = str(NNUNET_ROOT)
         env["nnUNet_preprocessed"] = str(NNUNET_ROOT.parent / "nnUNet_preprocessed")
 
@@ -309,27 +315,10 @@ def cmd_predict(args):
 
         env["nnUNet_results"] = str(results_dir)
 
-        extra = ["-p", "nnUNetPlans_SSA_bs16_v1"] if challenge == "SSA" else []
-
-        cmd = [
-            sys.executable,
-            "-m",
-            "scripts.l2_calibration_predict_entry",
-            "-i",
-            str(tmp_dataset),
-            "-o",
-            str(pred_dir),
-            "-d",
-            str(dataset_id),
-            "-c",
-            "3d_fullres",
-            "-f",
-            "0",
-            "-tr",
-            "nnUNetTrainer250Epochs",
-            "--disable_tta",
-            "False",
-        ] + extra
+        # 冻结推理配置由单一构造点给出(ADR-0009#108 收编):
+        # canonical 入口 python -m ctmr.instrument.predict、TTA on 靠省略、
+        # SSA 派生 plans/config 在 spec 内;env 接线留在执行侧。
+        cmd = FrozenInstrumentCommand(INSTRUMENT_SPECS[challenge]).build(tmp_dataset, pred_dir)
 
         print(f"[PREDICT] {challenge} ({len(list(case_input_dir.glob('*_0000.nii.gz')))} cases)...")
         # 逐病例推理（nnUNet predict_from_raw_data 会自动找 checkpoint）

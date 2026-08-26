@@ -14,6 +14,11 @@
 #
 set -euo pipefail
 
+# canonical 入口 python -m ctmr.instrument.predict 需要 src 树在 sys.path
+# （ADR-0009 #108 收编；两种部署形态的同族 shim）。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONPATH="$SCRIPT_DIR/../src:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
 EVAL_ROOT="/root/private_data/l2-synth-eval"
 NNUNET_ROOT="/root/private_data/brats2023_nnunet"
 V1_MODEL_DIR="/root/private_data/models"
@@ -73,26 +78,24 @@ evaluate_mode() {
             continue
         fi
 
-        DATASET_ID=$(case "${CHALLENGE}" in
-            GLI) echo 501 ;; SSA) echo 502 ;; MEN) echo 503 ;;
-            METS) echo 504 ;; PED) echo 505 ;;
-        esac
+        # 每挑战 spec 与 FrozenInstrumentCommand 的 INSTRUMENT_SPECS 逐字一致
+        # （ADR-0009 #108 收编：canonical 入口、TTA on 靠省略、无 fatal token）。
+        declare -A DATASET_NAME=( [GLI]=Dataset501_BraTS2023GLI [SSA]=Dataset502_BraTS2023SSA \
+          [MEN]=Dataset503_BraTS2023MEN [METS]=Dataset504_BraTS2023METS [PED]=Dataset505_BraTS2023PED )
+        declare -A PLANS=( [GLI]=nnUNetPlans [SSA]=nnUNetPlans_SSA_bs16_v1 [MEN]=nnUNetPlans \
+          [METS]=nnUNetPlans [PED]=nnUNetPlans )
+        declare -A CONFIG=( [GLI]=3d_fullres [SSA]=3d_fullres_bs16 [MEN]=3d_fullres \
+          [METS]=3d_fullres [PED]=3d_fullres )
 
-        EXTRA_FLAGS=""
-        if [ "${CHALLENGE}" = "SSA" ]; then
-            EXTRA_FLAGS="-p nnUNetPlans_SSA_bs16_v1"
-        fi
-
-        echo "  [PREDICT] ${CHALLENGE} (Dataset${DATASET_ID})..."
-        nnUNetv2_predict_from_raw_data \
+        echo "  [PREDICT] ${CHALLENGE} (${DATASET_NAME[$CHALLENGE]})..."
+        python3 -m ctmr.instrument.predict \
             -i "${INPUT_DIR}" \
             -o "${PRED_DIR}" \
-            -d "${DATASET_ID}" \
-            -c 3d_fullres \
-            -f 0 \
+            -d "${DATASET_NAME[$CHALLENGE]}" \
+            -c "${CONFIG[$CHALLENGE]}" \
+            -p "${PLANS[$CHALLENGE]}" \
             -tr nnUNetTrainer250Epochs \
-            --disable_tta False \
-            ${EXTRA_FLAGS} \
+            -f 0 \
             2>&1 | tee "${PRED_DIR}/predict.log" || {
                 echo "  [WARN] ${CHALLENGE}: prediction failed, continuing..."
             }

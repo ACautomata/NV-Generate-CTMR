@@ -63,6 +63,7 @@ sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced nex
 
 from ctmr.grid.geometry import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler  # noqa: E402
 from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
+from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
 from .brats_l1_quantitative import FidScoreCalculator  # noqa: E402
 from .diff_model_setting import load_config  # noqa: E402
@@ -82,16 +83,8 @@ EMPTY_SLICE_THRESHOLD = 0.05
 SAMPLE_EVERY_K = 2
 STOP_FILE = ".early_stop"
 
-# Frozen instrument chain (ADR-0003 / l2_calibration_predict.sh conventions).
-INSTRUMENT_DATASETS = {
-    "GLI": "Dataset501_BraTS2023GLI",
-    "SSA": "Dataset502_BraTS2023SSA",
-    "MEN": "Dataset503_BraTS2023MEN",
-    "METS": "Dataset504_BraTS2023METS",
-    "PED": "Dataset505_BraTS2023PED",
-}
-INSTRUMENT_DEFAULT = {"plans": "nnUNetPlans", "config": "3d_fullres"}
-INSTRUMENT_SSA = {"plans": "nnUNetPlans_SSA_bs16_v1", "config": "3d_fullres_bs16"}
+# Frozen instrument command comes from the single construction point (ADR-0009
+# #108 adoption): INSTRUMENT_SPECS / FrozenInstrumentCommand in ctmr.instrument.
 
 
 class DevCohortBuilder:
@@ -380,14 +373,18 @@ class TrendFid:
 
 
 class L2TrendRunner:
-    """Frozen-instrument measurements on the generated pseudo-four-modality cohort."""
+    """Frozen-instrument measurements on the generated pseudo-four-modality cohort.
+
+    The instrument invocation is the ADR-0009 single construction point: argv is
+    exactly ``FrozenInstrumentCommand.build`` (canonical entry
+    ``python -m ctmr.instrument.predict``, frozen config inside the spec).
+    """
 
     NN_CHANNELS = {"t1n": "0000", "t1c": "0001", "t2w": "0002", "t2f": "0003"}
     REGIONS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
 
-    def __init__(self, instrument_results, instrument_entry, nnunet_raw, nnunet_preprocessed):
+    def __init__(self, instrument_results, nnunet_raw, nnunet_preprocessed):
         self._results = instrument_results
-        self._entry = instrument_entry
         self._nnunet_raw = nnunet_raw
         self._nnunet_preprocessed = nnunet_preprocessed
 
@@ -409,27 +406,15 @@ class L2TrendRunner:
         return out
 
     def predict(self, challenge, input_dir, output_dir, log_path):
-        spec = INSTRUMENT_SSA if challenge == "SSA" else INSTRUMENT_DEFAULT
-        command = [
-            sys.executable,
-            str(self._entry),
-            "-i",
-            str(input_dir),
-            "-o",
-            str(output_dir),
-            "-d",
-            INSTRUMENT_DATASETS[challenge],
-            "-c",
-            spec["config"],
-            "-p",
-            spec["plans"],
-            "-tr",
-            "nnUNetTrainer250Epochs",
-            "-f",
-            "0",
-        ]
+        command = FrozenInstrumentCommand(INSTRUMENT_SPECS[challenge]).build(input_dir, output_dir)
         env = {
             **os.environ,
+            # the canonical entry runs in a fresh child process: this module's src
+            # tree goes onto the child PYTHONPATH (sys.path.insert is process-local;
+            # the ADR-0009 decision 6 shim, same two spellings as the executors).
+            "PYTHONPATH": os.pathsep.join(
+                [str(_HERE.parent / "src"), str(_HERE / "src")] + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])
+            ),
             "nnUNet_compile": "f",
             "nnUNet_raw": str(self._nnunet_raw),
             "nnUNet_preprocessed": str(self._nnunet_preprocessed),
@@ -634,7 +619,6 @@ def main(argv=None):
     p.add_argument("--poll-seconds", type=float, default=60.0)
     p.add_argument("--skip-l2", action="store_true", help="FID-only trend (instruments unavailable)")
     p.add_argument("--instrument-results", action="append", default=[], help="CHALLENGE=nnUNet_results path")
-    p.add_argument("--instrument-entry", default="scripts/l2_calibration_predict_entry.py")
     p.add_argument("--nnunet-raw", default="/root/private_data/brats2023_nnunet")
     p.add_argument("--nnunet-preprocessed", default="/root/private_data/nnUNet_preprocessed")
     p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
@@ -699,7 +683,7 @@ def main(argv=None):
     fid = TrendFid(bank)
     sampler = CandidateSampler(merged, device, None)
     instrument_results = dict(item.split("=", 1) for item in args.instrument_results)
-    l2 = L2TrendRunner(instrument_results, args.instrument_entry, args.nnunet_raw, args.nnunet_preprocessed)
+    l2 = L2TrendRunner(instrument_results, args.nnunet_raw, args.nnunet_preprocessed)
     watcher = CheckpointWatcher(args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()})
     idle_since = None
 
