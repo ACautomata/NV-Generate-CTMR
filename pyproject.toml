@@ -1,4 +1,13 @@
-# Minimal config for tooling (pre-commit, ruff). NV-Generate-CTMR has no installable package.
+# Minimal config for tooling (pre-commit, ruff, pytest). NV-Generate-CTMR has no installable package.
+
+[tool.pytest.ini_options]
+# pytest-only config (ADR-0013 §6): src on sys.path without conftest hacks or an
+# installable package; "." keeps the repo root importable (scripts.* wrappers).
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+markers = [
+    "torch: torch-level test; auto-skipped via pytest.importorskip when torch is absent",
+]
 
 [tool.ruff]
 target-version = "py311"
