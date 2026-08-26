@@ -34,6 +34,8 @@
 
 **判定统计在本地是完整的**:两份 report MD 覆盖了全部十个子挑战(P1/P3 × 五挑战)的 k/n、细分与空 pred 计数,issue #38 resolution 补充了判定规则与 Wilson 上界。#38 的 margin 量化(§3)不需要任何 sugon 侧产物。
 
+> **出清注记(#145)**:`eval/l2-synth-domain/` 两份报告已随 ticket #145 整体删除,本节表格与 §3 所引读数即其全部判定量;报告全文(含 P1/P3 方向说明——P1 直出保留独立采样跨模态不一致,P3 为 img2img 零训练基线:RF 插值 strength=0.9、每轮一真实模态作锚、12 有序模态对全覆盖、真实锚通道用原始数据重采样对齐)以 #145 出清提交的 git 历史为锚,判定规则的另一沉淀在 [issue #38 resolution](https://github.com/ACautomata/NV-Generate-CTMR/issues/38)。
+
 ### 1.2 本地没有、只在 sugon 的(如需取证再拉取)
 
 以下均非本结论所需,列出供后续会话按需拉取(路径依据 issue #38 resolution 与 `scripts/l2_synth_domain_sugon.py:24` 的 `EVAL_ROOT`):
@@ -151,8 +153,8 @@ P3 的判定量同样是 R_fail(0/352 全过)+ 空 pred 观察项,不含任何 T
 
 | 事实 | 来源 |
 |---|---|
-| #38 P1 判定数字 | `eval/l2-synth-domain/report_p1.md:6-20` |
-| #38 P3 判定数字 | `eval/l2-synth-domain/report_p3.md:6-20` |
+| #38 P1 判定数字 | 原 `eval/l2-synth-domain/report_p1.md:6-20`(#145 出清,git 历史为锚;读数转录见 §1.1/§3) |
+| #38 P3 判定数字 | 原 `eval/l2-synth-domain/report_p3.md:6-20`(同上) |
 | #38 判定规则 / Wilson / 空 pred 语义 | [issue #38 resolution](https://github.com/ACautomata/NV-Generate-CTMR/issues/38)(2026-08-20T11:56:01Z) |
 | R_fail 三组件定义 | `scripts/nnunet_l2_synthetic_domain_eval.py:536-636` |
 | 真实校准 R_fail=0 与包络数值 | `docs/adr/0002-l2-instrument-calibration-envelopes.md:16-68` |

@@ -55,7 +55,7 @@ src/ctmr/
     └── dataio/                # transforms/augmentation/quality_check/find_masks/sample_mask/utils_plot/NIfTI·下载装配
 ```
 
-原则：**纯度上浮、IO 下沉**。同一文件内混血时，IO 骨架留 infrastructure、算法核心抽 domain；执行期逐件搬移时在 PR 描述申报 from→to 映射，防静默漂移。prototype/、data/、configs/ 本 ADR 不触碰。
+原则：**纯度上浮、IO 下沉**。同一文件内混血时，IO 骨架留 infrastructure、算法核心抽 domain；执行期逐件搬移时在 PR 描述申报 from→to 映射，防静默漂移。data/、configs/ 本 ADR 不触碰；prototype/ 曾列本 ADR 豁免，已随 #145 整体出清（读数沉淀后删除），不在终态图中。
 
 ### 3. installable package 与统一 CLI
 
