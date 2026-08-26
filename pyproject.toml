@@ -1,4 +1,24 @@
-# Minimal config for tooling (pre-commit, ruff, pytest). NV-Generate-CTMR has no installable package.
+# NV-Generate-CTMR package + tooling config (pre-commit, ruff, pytest).
+# Installable since issue #130 (ADR-0015 §3): runtime dependencies stay EMPTY --
+# version locking remains requirements.txt's job until the M5 pivot
+# (pip -e + explicit light-sci-stack lists).
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ctmr"
+version = "0.1.0"
+description = "NV-Generate-CTMR BraTS2023 rectified-flow finetuning -- the ctmr package and unified CLI"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+ctmr = "ctmr.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 # pytest-only config (ADR-0013 §6): src on sys.path without conftest hacks or an

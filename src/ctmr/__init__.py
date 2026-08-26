@@ -9,11 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ctmr — src layout package skeleton (issue #103 / ADR-0013).
+"""ctmr — src layout package (issue #103 / ADR-0013; installable per ADR-0015 §3 / issue #130).
 
-No installable package: ``src`` is put on ``sys.path`` by pytest
-(``pythonpath = ["src", "."]``); sugon deployments will sync the ``src/``
-tree with their own sys.path shim (rollout #102, story 30).
+``pip install -e . --no-deps`` installs the package with the ``ctmr``
+console entry point (stdlib-only ``cli``, no heavy deps); until the pythonpath
+removal lands in M5, pytest keeps the dual track ``pythonpath = ["src", "."]``
+so uninstalled checkouts work unchanged, and sugon deployments keep syncing
+the ``src/`` tree with their own sys.path shim (rollout #102, story 30).
 The four deep modules land with their convergence-gate tests ("born with
 tests", ADR-0013 §5):
 
