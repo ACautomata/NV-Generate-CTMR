@@ -8,23 +8,28 @@
 
 **P1(image-only 带肿瘤生成)**:
 仅以模态标签为条件的影像生成微调——全参续训 DM,VAE 冻结,使基模习得肿瘤外观与 t1c 模态。
+落地名:`ctmr.application.generation.modality_label`(代号不进代码命名,[ADR-0015](docs/adr/0015-ddd-layered-endstate.md))。
 _Avoid_: 文生图、无条件生成
 
 **P2(掩码→影像配对生成)**:
 以解剖/肿瘤掩码为条件的影像生成——ControlNet-only,职责是「掩码→空间布局」。掩码条件**仅属 P2**。
+落地名:`ctmr.application.generation.mask`。
 _Avoid_: 分割条件生成(与 P3 混称)
 
 **P3(跨模态条件生成)**:
 以源模态影像为条件生成目标模态——image→image 跨模态翻译,条件**只有源影像**(不含掩码)。
+落地名:`ctmr.application.generation.cross_modal`。
 _Avoid_: 跨序列生成、模态合成、模态翻译(translation)
 
 ### P3 专属
 
 **阶段 0 img2img 基线(stage-0 baseline)**:
 零训练比较下限——以冻结 P1-DM、src latent 与 tgt 模态标签执行 RF 插值起点(`x_t=(1-t)·src_latent+t·noise`)的 img2img 推理;契约中以 P3 run 的 `variant=stage0-baseline` 显式标记,四锚轮覆盖每病例 12 个有序模态对。它不训练任何权重(selection 钉 upstream P1-DM checkpoint)、不可挂 L1/L2/L3 正式报告、不可 conclude 终验——只作 P3 训练候选 L1 paired MAE/SSIM 的 baseline 侧与 L2 四锚轮参照,绝不冒充经 ControlNet 训练或终验通过的候选。
+落地名:`ctmr.application.generation.cross_modal.baseline`(纯代码用词;工件契约标记串 `variant=stage0-baseline` 为冻结兼容值不改,[ADR-0015](docs/adr/0015-ddd-layered-endstate.md) 命名规则⑥)。
 
 **P3 跨模态候选(controlnet-candidate)**:
 stage-0 的受训对照——冻结 P1-DM + 独立从 DM encoder 重新初始化的 image-conditioned ControlNet 旁路,以 4 通道 src latent 为条件、tgt 模态标签经 `class_labels` 同时进 DM 与 ControlNet,从纯噪声去噪且 CFG=0(默认关闭 CFG,零 latent unconditional 分支——issue #61 验收 1-2)。训练钉 P2 同等配置、条件嵌入形状为 4 通道(区别于 P2 掩码的 8 通道)、不沿用 P2 ControlNet 权重,`variant=controlnet-candidate` 显式标记。它与 stage-0 基线合流为 L1 `brats-l1-pairs/1` 三元组(reference+baseline+candidate)供 paired MAE/SSIM 判定,并可挂 L1/L2/L3 正式报告、走 conclude 终验——但候选与基线是「受训对照 vs 比较下限」的关系:候选经整体 FID/配对误差/L2/L3 检验才判通过,绝不因相对基线占优而免于终验,也绝不冒充基线(反方向防混淆:候选 selection 钉自己的 ControlNet checkpoint,不是 upstream P1-DM)。
+落地名:`ctmr.application.generation.cross_modal.candidate`。
 _Avoid_: 把候选当基线、给候选贴 stage0 标记、让候选 selection 选 upstream DM、在候选侧沿用 P2 掩码条件或 8 通道条件嵌入
 _Avoid_: 把阶段 0 称作 P3 候选、给基线做终验裁决、无 variant 标记的 P3 img2img run
 
@@ -56,12 +61,15 @@ P1-DM(全参续训后)+ 旁路(P2 或 P3 ControlNet)构成的推理组合;DM 一
 
 **L1 定量验收**:
 按目标模态测量影像特征分布距离；P1/P2 以 MR 适配 2.5D FID 及其不确定性为证据，P3 还利用同病例的配对影像误差。它检验整体影像分布，不替代肿瘤空间分布或专家视觉判断。
+落地名:`ctmr.application.acceptance.quantitative`。
 
 **L2 分布对齐验收**:
 以生成影像导出的肿瘤测量量，比较肿瘤负荷、强化组成与空间位置的分布；P2 还检验生成结果是否遵循输入掩码条件。它不等同于训练 label 的分布，也不等同于下游分割效用。
+落地名:`ctmr.application.acceptance.distribution`。
 
 **L3 专家目检验收**:
 由盲法神经放射科评审同时判断整体真实感、解剖合理性、肿瘤真实性/边缘以及伪影/层间一致性，并以真伪辨识试验检验可区分性。
+落地名:`ctmr.application.acceptance.expert_review`。
 
 ### 训练配方
 
@@ -112,14 +120,16 @@ _Avoid_: 用真实通道补缺生成体(真实通道主导测量)、以生成模
 
 **仪器输入几何(InstrumentGridGeometry)**:
 把体数据重采样到 1mm 各向同性并居中 crop/pad 到目标网格的纯几何变换——连续体用 B-spline、label 用最近邻、背景填体数据默认像素值；仪器网格 240×240×155@1mm 为其标准实例。它是 L2 仪器输入与终验测量网格的唯一几何来源,其仪器口径经 ADR-0002/0004 冻结、不得偏离;B-spline 为冻结标准而非刻意最优。
+落地名:`ctmr.domain.grid`。
+
 _Avoid_: 以线性插值喂仪器(已统一收敛为 B-spline)、非居中裁剪、把 xyz 轴序作用于 zyx 数组、在各脚本中散落重写此几何
 
 **冻结仪器调用(FrozenInstrumentCommand)**:
-以冻结配置(fold 0、`nnUNetTrainer250Epochs`、镜像 TTA on;SSA 用 `3d_fullres_bs16`+`nnUNetPlans_SSA_bs16_v1`)驱动 L2 肿瘤测量仪器 nnU-Net 预测的唯一构造点——`src/ctmr/instrument/` 的 `FrozenInstrumentCommand.build(输入, 输出) -> argv` 纯方法 + 唯一 canonical 执行入口 `python -m ctmr.instrument.predict`。TTA on 为冻结不变量(无 TTA 形参、永不产出 `--disable_tta`);weights_only 白名单 scoped 收敛于 `nnunet_safe_globals()`。module 已落地(`src/ctmr/instrument/`,#107),7 命令 + 3 白名单调用点均收编(#108);口径经 ADR-0009 钉板,与 ADR-0002/0004 冻结读数一致。
+以冻结配置(fold 0、`nnUNetTrainer250Epochs`、镜像 TTA on;SSA 用 `3d_fullres_bs16`+`nnUNetPlans_SSA_bs16_v1`)驱动 L2 肿瘤测量仪器 nnU-Net 预测的唯一构造点——规格侧 `ctmr.domain.instrument_spec` 的 `FrozenInstrumentCommand.build(输入, 输出) -> argv` 纯方法 + 唯一 canonical 执行入口 `ctmr measure predict`(住址随 [ADR-0015](docs/adr/0015-ddd-layered-endstate.md) 甲案迁移,取代旧 `python -m ctmr.instrument.predict`)。TTA on 为冻结不变量(无 TTA 形参、永不产出 `--disable_tta`);weights_only 白名单 scoped 收敛于 `nnunet_safe_globals()`。实现已落地(#107 收编 #108),执行侧居 `ctmr.infrastructure.nnunet_runner`,规格侧居 `ctmr.domain.instrument_spec`;口径经 ADR-0009 钉板,与 ADR-0002/0004 冻结读数一致。
 _Avoid_: 在各脚本散落手写 `nnUNetv2_predict` 命令、用非标准入口名 `nnUNetv2_predict_from_raw_data`、写 `--disable_tta False` token、import 时 `add_safe_globals` 改全局状态
 
 **仪器读数(InstrumentMeasurement)**:
-把仪器网格(240×240×155)上的分割掩码派生为 WT/TC/ET 体积、质心位置、强化比等逐病例测量行的纯测量逻辑——`src/ctmr/measure/` 唯一入口 `InstrumentMeasurer.measure(pred, *, gt, condition, brain) -> CaseMeasurement`,校准列(vs GT)/生成列/回切 Dice 三列族按提供的可选 reference 显式门控,canonical 对象配 long(校准)/wide(终验)双序列化。REGIONS/Wilson/Dice 在此各唯一定义;cohort 聚合(R_fail/bootstrap/TOST/verdict)留在判定层、不属本测量。module 已落地(`src/ctmr/measure/`,#109),6 处调用点收编归 #110;口径经 ADR-0010 钉板,与 ADR-0002/0004 冻结读数一致。
+把仪器网格(240×240×155)上的分割掩码派生为 WT/TC/ET 体积、质心位置、强化比等逐病例测量行的纯测量逻辑——`ctmr.domain.measurement` 唯一入口 `InstrumentMeasurer.measure(pred, *, gt, condition, brain) -> CaseMeasurement`,校准列(vs GT)/生成列/回切 Dice 三列族按提供的可选 reference 显式门控,canonical 对象配 long(校准)/wide(终验)双序列化。REGIONS/Wilson/Dice 在此各唯一定义;cohort 聚合(R_fail/bootstrap/TOST/verdict)留在判定层、不属本测量。实现已落地(`ctmr.domain.measurement`,#109),6 处调用点收编归 #110;口径经 ADR-0010 钉板,与 ADR-0002/0004 冻结读数一致。
 _Avoid_: 在各脚本散落重写掩码→测量行逻辑、把 cohort 聚合混入测量层、掩码不经仪器网格直接测量
 
 **层级违反(hierarchy_violation)**:
@@ -135,7 +145,7 @@ run contract 中验收层(l1/l2/l3_report)全部接线的单点声明——附�
 _Avoid_: 以实现继承提取三胞胎 validator(应组合注入)、把 gate 检查参数化进注册表数据、ATTACH_KINDS/LAYER_KINDS 与注册表并存双份
 
 **冻结候选绑定(FrozenRunBinding)**:
-冻结候选身份五键(run_id/phase/manifest_sha256/candidate_checkpoint_sha256/samples_sha256)的唯一提取构造点,内置 require_frozen 门禁(提取即校验 run 状态);定义于 brats_phase_run_contract.py,L1/L2/L3 生产侧经 scripts 目录 shim import 共用。性质是身份提取而非判定:身份可共享(漂移风险在双侧失同步,共享恰消除);gate 常量镜像与 verdict 复算属判定,保持双侧不同源(ADR-0006 裁判独立性);生产侧 schema 串独立声明防版本漂移。经 ADR-0012 钉板,代码不动,执行期另行落地。
+冻结候选身份五键(run_id/phase/manifest_sha256/candidate_checkpoint_sha256/samples_sha256)的唯一提取构造点,内置 require_frozen 门禁(提取即校验 run 状态);定义于 run contract 模块(ADR-0015 甲案后居 `ctmr.application.acceptance`),L1/L2/L3 生产侧直接 import 共用。性质是身份提取而非判定:身份可共享(漂移风险在双侧失同步,共享恰消除);gate 常量镜像与 verdict 复算属判定,保持双侧不同源(ADR-0006 裁判独立性);生产侧 schema 串独立声明防版本漂移。经 ADR-0012 钉板,代码不动,执行期另行落地。
 _Avoid_: 生产侧重写五键提取、frozen 门禁留在各调用点、以共享身份为由合并 gate 常量镜像
 
 **weighted_loss(肿瘤区加权)**:
@@ -144,23 +154,37 @@ _Avoid_: 生产侧重写五键提取、frozen 门禁留在各调用点、以共�
 ### 执行外壳
 
 **阶段脚本外壳(PhaseHarness)**:
-阶段脚本(finetune/dev_eval/launcher)中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询、checkpoint 原子发布、训练 provenance 写盘、dev watch/select 轮询骨架、参数化启动模板(幂等守卫内置)——统一收敛于 `src/ctmr/harness/`;各阶段只以内核(数据构成/模型挂接/单 batch 损失/checkpoint payload 四方法)组合注入,外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。CLI 面保持不变;口径经 ADR-0011 钉板,代码不动,执行期另行落地。
-_Avoid_: 在新阶段脚本中再抄外壳骨架(应注入内核)、把配方值下沉进外壳、把 P3 生成链轻复制族(prep/jobs/wait 轮询器)混称 PhaseHarness 纳界(经 ADR-0014 钉板为历史运行器留驻,非外壳纳界)
+训练/dev_eval/生成链驱动中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询、训练 provenance 写盘、dev watch/select 轮询骨架、幂等守卫——统一收敛于 `ctmr.application.shell`;各阶段只以内核(数据构成/模型挂接/单 batch 损失/checkpoint payload 四方法)组合注入,外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。checkpoint 原子发布与 latest.json 协议归 CheckpointRepository(仓储 b 档);「CLI 面保持不变」已被 ADR-0015 取代为统一 `ctmr` CLI 子命令(namespace 等价断言护航迁移)。
+_Avoid_: 在新用例中再抄外壳骨架(应注入内核)、把配方值下沉进外壳、把 launcher/nohup/sidecar 类编排能力写成 bash 或放入 deploy/(编排属应用层)
 
 **历史运行器(legacy run orchestrator)**:
-服务单一受控执行或评估、使命完结后留驻原地仅作追溯锚的脚本(#38 生成链轻复制族 11 件为钉板例)——不收编、不改造、不删除,口径原样保持以保证所服务执行的复现原样性(#38 nnU-Net 输入的 linear 口径即由此保持,ADR-0008 收编映射中已移出);同用途新需求一律走正式形状(如 `brats_p3_*_generate`),ssh 轮询监控类允许一次性现写,均不从中再抄。经 ADR-0014 钉板,代码不动。
-_Avoid_: 把历史运行器当活入口复用或从中再抄、为退役脚本做收编/参数化改造、把一次性现写的轮询器沉淀为参数化模板
+曾服务单一受控执行、使命完结后即退役的脚本——其 ADR-0014 的「留驻原地」处置已被 [ADR-0015](docs/adr/0015-ddd-layered-endstate.md) 取代:仓库终态零 scripts,#38 轻复制族 11 件等全部退役删除,**git 历史**是唯一复现锚(重放=取当时原样代码＋受控产物指纹,#38 nnU-Net 输入的 linear 历史口径亦由 git 历史承载)。同用途新需求一律走正式形状(`ctmr p3 generate` 等),ssh 轮询监控类允许一次性现写,均不从退役件再抄。
+_Avoid_: 从 git 捡回退役件当活入口复用或从中再抄、为复现而重建常驻脚本目录(应用 git 历史＋产物指纹)、把一次性轮询器沉淀为参数化模板
+
+### 身份与运维
+
+**检查点身份(Checkpoint Identity)**:
+模型权重的业务身份——以 checkpoint sha256 内容寻址标识的血统实例,不是 Python 对象或网络类:同一 Unet 架构会实例化出基模/P1 各 epoch 候选/P2 冻结底座等互异实体。载体是权重集 payload 及其血统记录;dm_source.json 账本是 DM source 血统的权威登记处。CheckpointRepository 是其唯一持久化协议(state_dict 存取＋tmp 原子发布＋latest.json 指针,b 档辖区——provenance 运行日志不入仓储)。
+_Avoid_: 把架构类当实体类型作身份、以文件路径代替内容寻址、绕开仓储直接读写 checkpoint
+
+**运维面(deploy)**:
+顶层 `deploy/` 目录——部署手册、集群作业提交配方(`jobs/`:仅允许 .sh 居此)、数据获取运维(`data/`)与实验记录(`experiments/`)的分层住址;独立于 Python 包与 ruff/pytest 分层管束之外。launcher/nohup/torchrun 派生/sidecar 落盘等编排能力属应用层,永不回栖运维面。
+_Avoid_: 在 deploy/ 之外新产任何 .sh、把业务编排伪装成运维配方塞进 deploy/、在 deploy/ 根部平铺堆放不分职责、实验记录散落仓库其他位置
+
+**实验记录(ExperimentRecord)**:
+一次受控实验的知识聚合——目的与关联 issue、运行配置/run_id、关键读数、产物路径、结论与后续动作,单文件承载于 `deploy/experiments/YYYYMMDD-<主题>.md`。「记录落盘=实验完成」。属仓储管束的领域工件(ADR-0015 决定 11):未来一切读取/汇总/工具化写入须经统一 ExperimentRecord 接口,不另开旁路(接口本体待真实需求再实现)。
+_Avoid_: 记录散落仓库他处、以聊天或 issue 评论替代落盘、绕过约定批量重写历史记录
 
 ### 测试面
 
 **canonical 测试面(pytest)**:
-仓库测试的唯一范式——新增测试只以 pytest 形态写进 tests/(两层结构,第二层按域模块组织),存量 selftest 由 tests/ 薄 wrapper 调用驻留实现收编入口。分界线是「能否在任意机器跑」,与两级门禁的收敛级同构;口径经 ADR-0013 钉板,代码不动,执行期另行落地。
-_Avoid_: 以新增 selftest 子命令承载无环境依赖的新测试、把 selftest 与 pytest 并列为两种测试范式
+仓库测试的唯一范式——新增测试一律以 pytest 形态写进 tests/,第二层目录按域模块组织(tests/domain|application|infrastructure/…)。13 处存量内嵌 selftest 在迁移中整体转正:子命令消亡、断言成为 test 函数,GPU/集群级加 `gpu` 标记自动跳过。分界线是「能否在任意机器跑」,与两级门禁的收敛级同构;形态经 ADR-0013 钉板、由 ADR-0015 整合收口。
+_Avoid_: 以新增子命令形态承载无环境依赖的新测试、把 selftest 与 pytest 并列为两种测试范式、让标记只做转发而不承载断言
 
-**selftest(集群兼容入口)**:
-生产脚本内嵌的自检子命令——合成非 subject id fixture、无外部数据依赖;实现留驻生产文件不迁 tests/,定位是 sugon 集成门禁的集群兼容入口(集群无 pytest、tests/ 不上集群)。依赖 GPU/集群执行环境的冒烟(dcu_smoke、nnUNet 推理链)仍以此形态新增,归集成门禁。
-_Avoid_: 让 selftest 子命令转发 pytest(坏 sugon 门禁)、把存量 selftest 逻辑物理迁入 tests/
+**selftest(废止形态)**:
+生产脚本内嵌的自检子命令,曾定位 sugon 无 pytest 环境下的集群兼容入口——该前提随 ADR-0015 废止:受控执行窗口暂停,恢复时集群跑的就是 installable package＋正经 pytest。存量 13 处实现按 canonical 测试面词条整体迁入 tests/,本词条仅存史备查。
+_Avoid_: 再向任何生产脚本添加 selftest 子命令、把 GPU 冒烟写成需要人肉的临时散件(应为带 gpu 标记的测试)
 
 **两级门禁(收敛 / 冻结·集成)**:
-深模块收编的两级验收口径——收敛门禁(单元级,任意机器可跑,pytest/CI 承载)与冻结/集成门禁(sugon 执行期:数值逐字节重跑,或 selftest 子命令全链+dcu_smoke)。ADR-0008~0012 逐份引用;ADR-0013 起收敛级由 CI 常驻承载。
+深模块收编的两级验收口径——收敛门禁(单元级,任意机器可跑,pytest/CI 承载)与冻结/集成门禁(DCU 环境:数值逐字节重跑,或 gpu 标记测试全集——dcu_smoke、nnUNet 推理链均已 pytest 化)。ADR-0008~0012 逐份引用;ADR-0013 起收敛级由 CI 常驻承载,集成级载体经 ADR-0015 由子命令改为 gpu 标记测试。
 _Avoid_: 把收敛门禁升级成需 GPU/集群的检查、两级混为一级
