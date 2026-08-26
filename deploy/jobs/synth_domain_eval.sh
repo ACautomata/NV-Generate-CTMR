@@ -2,7 +2,7 @@
 # Issue #38 L2 仪器合成域适用性评估——sugon DCU 集群执行脚本
 #
 # 用法：在 sugon DCU 集群上执行
-#   bash scripts/run_l2_synth_domain_eval.sh [p1|p3|all]
+#   bash deploy/jobs/synth_domain_eval.sh [p1|p3|all]
 #
 # 前置条件：
 #   1. v1 DM 权重已部署到 /root/private_data/models/
@@ -17,7 +17,7 @@ set -euo pipefail
 # canonical 入口 python -m ctmr.instrument.predict 需要 src 树在 sys.path
 # （ADR-0009 #108 收编；两种部署形态的同族 shim）。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PYTHONPATH="$SCRIPT_DIR/../src:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$SCRIPT_DIR/../../src:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
 EVAL_ROOT="/root/private_data/l2-synth-eval"
 NNUNET_ROOT="/root/private_data/brats2023_nnunet"
