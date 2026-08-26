@@ -80,7 +80,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon d
 
 from brats_phase_run_contract import ArtifactFingerprinter, ManifestSides  # noqa: E402
 
-from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
 PLAN_SCHEMA = "l2-final-acceptance-plan/1"
 REPORT_SCHEMA = "l2-final-acceptance-report/1"

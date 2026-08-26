@@ -23,8 +23,8 @@ predicates must disagree on crafted inputs.
 
 import numpy as np
 
-from ctmr.measure.hierarchy import CalibrationCaseUsability, HierarchyChecker
-from ctmr.measure.regions import REGIONS
+from ctmr.domain.measurement.hierarchy import CalibrationCaseUsability, HierarchyChecker
+from ctmr.domain.measurement.regions import REGIONS
 
 
 # The frozen reference: InstrumentFailureChecker.hierarchy_violation pre-#109,

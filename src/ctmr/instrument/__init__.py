@@ -9,16 +9,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ctmr.instrument -- frozen instrument command, the unique module (ADR-0009, #107).
+"""ctmr.instrument -- frozen-instrument execution side (ADR-0009, #107).
 
-``command`` is the single construction point (``InstrumentSpec`` value object,
-per-challenge frozen specs, ``FrozenInstrumentCommand.build`` -- pure argv onto
-the canonical entry); ``safeglobals`` holds the single allowlist definition
-and its scoped activation ``nnunet_safe_globals``; ``predict`` is the
-canonical execution entry (``python -m ctmr.instrument.predict``). Mirror TTA
-stays ON by omission -- a frozen invariant (see ``command``).
+The command *spec* side moved to ``ctmr.domain.instrument_spec`` (#133);
+the argv execution side still lives here until it lands as the M3
+infrastructure nnunet-runner (ADR-0015 §2): ``safeglobals`` holds the single
+allowlist definition and its scoped activation ``nnunet_safe_globals``, and
+``predict`` is the canonical execution entry (``python -m ctmr.instrument.predict``,
+the entry the spec-side builder emits). Mirror TTA stays ON by omission -- a
+frozen invariant (see ``ctmr.domain.instrument_spec``).
 
-This package re-exports nothing: ``command`` is stdlib-only so its convergence
-gate runs on any machine, while ``safeglobals`` needs torch and ``predict``
-needs nnunetv2 -- import the submodules directly (ADR-0013 §4).
+This package re-exports nothing: ``predict`` needs nnunetv2 and ``safeglobals``
+needs torch, while the domain spec side is stdlib-only -- import submodules
+directly (ADR-0013 §4).
 """

@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ctmr.measure -- instrument measurement, the unique module (ADR-0010, issue #109).
+"""``ctmr.domain.measurement`` -- instrument measurement, the unique module (ADR-0010, issue #109).
 
 ``regions`` is the single source of the WT / TC / ET label projection rules
 (``REGIONS`` + the derived ``REGION_NAMES`` tuple form + ``RegionMasks``);
@@ -29,11 +29,11 @@ The package re-exports the public surface; all modules are numpy/scipy-level
 run on any machine.
 """
 
-from ctmr.measure.hierarchy import CalibrationCaseUsability, HierarchyChecker
-from ctmr.measure.measurement import CALIBRATION_FIELDS, FINAL_ACCEPTANCE_FIELDS, CaseMeasurement, GtRegionMetrics
-from ctmr.measure.measurer import InstrumentMeasurer
-from ctmr.measure.metrics import DiceScore, WilsonUpper
-from ctmr.measure.regions import LABEL_DOMAIN, REGION_NAMES, REGIONS, RegionMasks
+from ctmr.domain.measurement.hierarchy import CalibrationCaseUsability, HierarchyChecker
+from ctmr.domain.measurement.measurement import CALIBRATION_FIELDS, FINAL_ACCEPTANCE_FIELDS, CaseMeasurement, GtRegionMetrics
+from ctmr.domain.measurement.measurer import InstrumentMeasurer
+from ctmr.domain.measurement.metrics import DiceScore, WilsonUpper
+from ctmr.domain.measurement.regions import LABEL_DOMAIN, REGION_NAMES, REGIONS, RegionMasks
 
 __all__ = [
     "CALIBRATION_FIELDS",

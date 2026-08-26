@@ -3,7 +3,7 @@
 The #105 gate pinned the engine against the frozen terminal-acceptance geometry;
 this file proves the *call sites* adopted in issue #106 now land on that same
 standard: under identical synthetic inputs, each adopted path must produce
-bit-identical output to ``ctmr.grid`` (which the #105 tests already proved equal
+bit-identical output to ``ctmr.domain.grid`` (which the #105 tests already proved equal
 to the frozen standard). The two #38-family scripts carry no RAS->LPS flip
 (that flip is terminal-acceptance-only), so equality against the plain adapter
 is the full convergence statement here. SimpleITK unit level, any machine, no
@@ -16,8 +16,7 @@ import numpy as np
 import pytest
 import SimpleITK as sitk
 
-from ctmr.grid.geometry import CenterCropOrPad, GridResampler, TargetGrid
-from ctmr.grid.instrument import InstrumentGridAdapter
+from ctmr.domain.grid import CenterCropOrPad, GridResampler, InstrumentGridAdapter, TargetGrid
 
 
 def _smooth_volume(shape_zyx, spacing_xyz):
@@ -253,7 +252,7 @@ def test_trend_feature_grid_is_the_pinned_240x240x160():
     """The trend-feature grid used by MrTrendFeatures: 240x240x160 @ 1mm (ADR-0008
     decisions 3-4: linear strategy injected, centred crop/pad, grid as TargetGrid).
     Lives in the torch-free engine module so the convergence gate runs on any machine."""
-    from ctmr.grid.geometry import TREND_FEATURE_GRID
+    from ctmr.domain.grid import TREND_FEATURE_GRID
 
     assert TREND_FEATURE_GRID == TargetGrid(size=(240, 240, 160), spacing=(1.0, 1.0, 1.0))
 

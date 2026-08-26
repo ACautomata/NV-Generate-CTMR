@@ -46,7 +46,7 @@ from nnunet_l2_final_acceptance import (  # noqa: E402
     MeasurementTable,
 )
 
-from ctmr.grid.instrument import INSTRUMENT_GRID, InstrumentGridAdapter  # noqa: E402
+from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter  # noqa: E402
 
 NNUNET_TARGET_SIZE = INSTRUMENT_GRID.size
 PREDICTION_SHAPE = tuple(reversed(NNUNET_TARGET_SIZE))  # array layout is zyx
@@ -71,7 +71,7 @@ class GeneratedVolumeResampler:
     """Issue #38 InputPreparator geometry (protocol §2), with the axis handling
     corrected for the zyx array layout (#38 applied xyz slices to a zyx array).
 
-    Since #105 (ADR-0008) the geometry itself lives in ctmr.grid
+    Since #105 (ADR-0008) the geometry itself lives in ctmr.domain.grid
     (InstrumentGridAdapter: B-spline continuum / nearest-neighbour label,
     centred crop/pad onto the instrument grid); this shell keeps only the
     terminal-acceptance-only DM-RAS -> LPS flip and the file IO.

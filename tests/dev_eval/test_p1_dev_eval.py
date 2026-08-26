@@ -31,9 +31,8 @@ import nibabel as nib  # noqa: E402  (importorskip must precede the torch-depend
 import numpy as np  # noqa: E402
 import SimpleITK as sitk  # noqa: E402
 
-from ctmr.grid.geometry import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler  # noqa: E402
-from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
-from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
+from ctmr.domain.grid import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler, InstrumentGridAdapter  # noqa: E402
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 from scripts.brats_p1_dev_eval import (  # noqa: E402  (importorskip must precede the torch-dependent import)
     DevEvalSelfTest,
     L2TrendRunner,
