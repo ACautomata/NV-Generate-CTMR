@@ -5,7 +5,7 @@ Proves decision 4's collapse on the two remaining copy sites: importing
 no longer mutates global torch state (import-time ``add_safe_globals`` gone),
 their ``torch.load`` calls run inside the ``nnunet_safe_globals()`` scope, the
 promoted ``l2_calibration_predict_entry.py`` is gone as a call site, and the
-five different-payload whitelists stay untouched. Auto-skipped on light stacks
+four different-payload whitelists stay untouched. Auto-skipped on light stacks
 (``pytest.importorskip``, ADR-0013 §4); the AST half needs no torch but lives
 here to keep the adoption gate in one file.
 """
@@ -31,7 +31,6 @@ UNTOUCHED_WHITELIST_SITES = (
     "scripts/brats_p2_dev_eval.py",
     "scripts/brats_p1_finetune.py",
     "scripts/brats_p2_finetune.py",
-    "prototype/p3_image_cond_controlnet/p3_common.py",
 )
 
 

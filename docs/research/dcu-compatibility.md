@@ -213,6 +213,30 @@
 | 10 | **显存容量**：单 DCU VRAM 是否够目标输出尺寸（512³ 训练需 ≥40GB，`docs/setup.md`） | 决定 batch_size/输出尺寸上限 | 实机 `hy-smi` 看显存，从小尺寸起冒烟 |
 | 11 | **monai↔torch 版本**：实装 monai 版本是否 ≥1.5.2（与 torch 2.9 兼容）；`import monai` 后与 torch 无冲突 | 装错 monai 1.5.0/1.5.1 会试图降级 torch（§3） | `python -c "import monai,torch; print(monai.__version__, torch.__version__)"` 并跑 `from monai.networks.schedulers import RFlowScheduler` |
 
+### 6.1 实机冒烟结果（2026-08-18，DTK26.04 / torch 2.9.0+das / 8×BW DCU：11/11 全绿）
+
+> 来源:`prototype/dcu_smoke/`(wayfinder #15)README 结果表。该目录已随 ticket #145 整体出清,
+> 本节为结论摘录;README 全文以引入提交 `29b51e5` 及 #145 出清提交的 git 历史为锚。
+
+| # | 验证项 | 结论 |
+|---|---|---|
+| 1 | device 命名 | ✅ `cuda.is_available()=True`,count=8,dev0="BW",hip=6.3.26093 |
+| 2 | nccl→RCCL | ✅ `is_nccl_available=True`,默认后端 nccl;**2 卡 torchrun 跑通 1 epoch**,epoch 末 loss all_reduce 过 RCCL 正常 |
+| 3 | SDPA | ✅ 前向有限;实测走 DCU flash-attn(cutlassfa) 接口;mem-efficient 未编译(math 保底,不影响) |
+| 4 | AMP | ✅ **bf16(免 GradScaler)18/18 loss 有限,均值 0.9742**;fp16+GradScaler 对照亦 18/18 有限(均值 0.9664,冒烟尺度无 NaN);#10 锁定 bf16 依旧更稳(`--amp_dtype {fp16,bf16}` 开关已落 `scripts/diff_model_train.py`,默认 fp16 行为不变) |
+| 5 | SyncBN | ✅ 模型全 GroupNorm(0 处 BatchNorm),`convert_sync_batchnorm` 空操作;多卡路径由 2 卡跑通实证 |
+| 6 | 算子覆盖 | ✅ 端到端(3D conv/GN/SDPA/LogisticNormal/RFlow)1 epoch 无错 |
+| 7 | numpy | ✅ 1.26.4,补装 scikit-image/fire 及其纯 python 依赖(--no-deps)后 torch 完好 |
+| 8 | 可见性变量 | ✅ CUDA/HIP_VISIBLE_DEVICES 均未设,count=8(全卡可见) |
+| 9 | CacheDataset | ✅ cache_rate=0 跑通;全量数据缓存 RAM 需全量管线实机再评估 |
+| 10 | VRAM | ✅ 单卡峰值 **6134 MiB / 65520 MiB**(≈9.4%,256×256×128 batch1 bf16;512³ 估 39G 可进 64G 卡) |
+| 11 | monai | ✅ 1.6.0,RFlowScheduler 可导入 |
+
+冒烟另沉淀两个**与 DCU 无关的上游发现**(NVIDIA 卡同样存在):
+
+1. **伴侣 json 缺口**:训练侧读 `<emb>.json`(spacing/modality),但本仓与上游 `diff_model_create_training_data.py` 都只写 `_emb.nii.gz` 不写该 json → 冒烟以临时脚本补齐;spec 全量数据管线须含此步。
+2. **DDP 包装后自定义属性读取崩溃**:DDP 包装后直读 `include_top_region_index_input`/`num_class_embeds` 抛 AttributeError → 按既有 `.module` 解包模式修复(`29b51e5` 已带);多卡部署需携带该修复。
+
 ---
 
 ## 7. 风险清单汇总
