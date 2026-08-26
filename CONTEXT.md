@@ -145,7 +145,11 @@ _Avoid_: 生产侧重写五键提取、frozen 门禁留在各调用点、以共�
 
 **阶段脚本外壳(PhaseHarness)**:
 阶段脚本(finetune/dev_eval/launcher)中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询、checkpoint 原子发布、训练 provenance 写盘、dev watch/select 轮询骨架、参数化启动模板(幂等守卫内置)——统一收敛于 `src/ctmr/harness/`;各阶段只以内核(数据构成/模型挂接/单 batch 损失/checkpoint payload 四方法)组合注入,外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。CLI 面保持不变;口径经 ADR-0011 钉板,代码不动,执行期另行落地。
-_Avoid_: 在新阶段脚本中再抄外壳骨架(应注入内核)、把配方值下沉进外壳、把 P3 生成链轻复制族(prep/jobs/wait 轮询器)混称 PhaseHarness 纳界(另立 #92)
+_Avoid_: 在新阶段脚本中再抄外壳骨架(应注入内核)、把配方值下沉进外壳、把 P3 生成链轻复制族(prep/jobs/wait 轮询器)混称 PhaseHarness 纳界(经 ADR-0014 钉板为历史运行器留驻,非外壳纳界)
+
+**历史运行器(legacy run orchestrator)**:
+服务单一受控执行或评估、使命完结后留驻原地仅作追溯锚的脚本(#38 生成链轻复制族 11 件为钉板例)——不收编、不改造、不删除,口径原样保持以保证所服务执行的复现原样性(#38 nnU-Net 输入的 linear 口径即由此保持,ADR-0008 收编映射中已移出);同用途新需求一律走正式形状(如 `brats_p3_*_generate`),ssh 轮询监控类允许一次性现写,均不从中再抄。经 ADR-0014 钉板,代码不动。
+_Avoid_: 把历史运行器当活入口复用或从中再抄、为退役脚本做收编/参数化改造、把一次性现写的轮询器沉淀为参数化模板
 
 ### 测试面
 
