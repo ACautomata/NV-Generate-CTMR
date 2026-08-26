@@ -67,6 +67,7 @@ from .brats_p1_dev_eval import (
     TrendLedger,
 )
 from .brats_p3_controlnet_manifest import P3CandidateInferenceConfig
+from .brats_phase_prep import MODALITIES as PAIR_MODALITIES
 from .diff_model_setting import load_config
 from .utils_infer import load_image_models, run_controlnet_conditioned_image_dm
 
@@ -145,13 +146,14 @@ class P3DevCohort:
                 return entry["spacing"]
 
     def src_image_of(self, case, src_suffix):
+        # list fields carry the long mapping keys (mri_*), translate the BraTS file suffix
         for entry in self._entries:
-            if entry["case"] == case and entry["src_modality"] == src_suffix:
+            if entry["case"] == case and entry["src_modality"] == PAIR_MODALITIES[src_suffix][0]:
                 return entry["src_image"]
 
     def tgt_of(self, case, tgt_suffix):
         for entry in self._entries:
-            if entry["case"] == case and entry["modality"] == tgt_suffix:
+            if entry["case"] == case and entry["modality"] == PAIR_MODALITIES[tgt_suffix][0]:
                 return entry["image"]
 
 
@@ -249,8 +251,8 @@ class P3DevEvalSelfTest:
                                 "src_image": f"embeddings/{challenge}/{case}/{case}-{src}_emb.nii.gz",
                                 "label": f"labels/{challenge}/{case}/{case}-tumor129.nii.gz",
                                 "spacing": [1.0, 1.0, 1.0],
-                                "modality": tgt,
-                                "src_modality": src,
+                                "modality": PAIR_MODALITIES[tgt][0],
+                                "src_modality": PAIR_MODALITIES[src][0],
                                 "fold": 0,
                                 "sub": challenge,
                                 "case": case,
@@ -268,12 +270,18 @@ class P3DevEvalSelfTest:
         if "src_image" not in entries[0]:
             self.failures.append("dev-view dropped the src_image condition")
 
-        cohort = P3DevCohort(out).cases()
+        cohort_source = P3DevCohort(out)
+        cohort = cohort_source.cases()
         n_cases = sum(quota for quota in COHORT_QUOTAS.values())
         if len(cohort) != n_cases:
             self.failures.append(f"cohort has {len(cohort)} dev cases, expected {n_cases}")
         if {item["sub"] for item in cohort} != set(COHORT_QUOTAS):
             self.failures.append("cohort missing a challenge")
+        # the real pairs list keys src_modality/modality by the long mapping keys (mri_*);
+        # the lookups must resolve the BraTS suffixes through that translation
+        for suffix in PAIR_MODALITIES:
+            if cohort_source.src_image_of(cohort[0]["case"], suffix) is None:
+                self.failures.append(f"src lookup unresolved for {cohort[0]['case']} {suffix}")
 
         # src-latent channel-axis read: write a (H,W,D,C) NIfTI and confirm (C,H,W,D).
         import nibabel as nib
