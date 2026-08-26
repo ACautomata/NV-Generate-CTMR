@@ -23,7 +23,13 @@ import pytest
 pytest.importorskip("torch")
 pytest.importorskip("monai")  # transitively imported at module level via diff_model_setting / utils_infer
 
-from scripts.brats_p1_dev_eval import DevEvalSelfTest  # noqa: E402  (importorskip must precede the torch-dependent import)
+import nibabel as nib  # noqa: E402  (importorskip must precede the torch-dependent import)
+import numpy as np  # noqa: E402
+import SimpleITK as sitk  # noqa: E402
+
+from ctmr.grid.geometry import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler  # noqa: E402
+from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
+from scripts.brats_p1_dev_eval import DevEvalSelfTest, MrTrendFeatures  # noqa: E402  (importorskip must precede the torch-dependent import)
 
 
 @pytest.mark.torch
@@ -31,3 +37,59 @@ def test_p1_dev_eval_selftest(tmp_path):
     failures = DevEvalSelfTest(tmp_path).run()
 
     assert failures == []
+
+
+@pytest.mark.torch
+def test_p1_dev_eval_prep_inputs_matches_the_instrument_adapter(tmp_path):
+    """L2TrendRunner.prep_inputs now delegates to the frozen instrument adapter
+    (ADR-0008 adoption: the registered linear->B-spline + centred crop/pad changes
+    land the nnU-Net inputs on the terminal-acceptance geometry)."""
+    from scripts.brats_p1_dev_eval import L2TrendRunner
+
+    samples = []
+    for modality, suffix in sorted(L2TrendRunner.NN_CHANNELS.items()):
+        path = tmp_path / f"{modality}.nii.gz"
+        sitk.WriteImage(_trend_volume(), str(path))  # v1-DM-ish footprint, mixed pad/crop axes
+        samples.append({"sub": "GLI", "case": "SYNTH-9001", "modality": modality, "path": str(path)})
+
+    L2TrendRunner(None, None, None, None).prep_inputs(samples, tmp_path / "inputs")
+
+    for modality, suffix in sorted(L2TrendRunner.NN_CHANNELS.items()):
+        produced = sitk.ReadImage(str(tmp_path / "inputs" / "GLI" / f"SYNTH-9001_{suffix}.nii.gz"))
+        expected = InstrumentGridAdapter.continuum().align(sitk.ReadImage(str(tmp_path / f"{modality}.nii.gz")))
+        assert np.array_equal(sitk.GetArrayFromImage(produced), sitk.GetArrayFromImage(expected))
+        assert produced.GetSize() == (240, 240, 155)
+
+
+def _trend_volume():
+    zz, yy, xx = np.mgrid[0:80, 0:130, 0:300]  # zyx -> xyz size (300, 130, 80): crop x/y, pad z
+    image = sitk.GetImageFromArray((100.0 * np.exp(-(((xx - 100.0) ** 2 + (yy - 65.0) ** 2 + (zz - 40.0) ** 2) / 2.0e4))).astype(np.float32))
+    image.SetSpacing((1.0, 2.0, 1.5))  # xyz mm
+    return image
+
+
+@pytest.mark.torch
+def test_p1_dev_eval_trend_preprocess_lands_on_the_pinned_engine_composition(tmp_path):
+    """ADR-0008 decision 4: MrTrendFeatures.preprocess keeps the percentile
+    normalisation, then resamples (linear) and centre-crops/pads via the generic
+    engine onto the 240x240x160 trend grid.  This pins the xyz<->zyx wiring: the
+    nibabel input is (x, y, z) and the preprocessed output stays (x, y, z), while
+    the engine works in sitk zyx."""
+    sample = tmp_path / "sample.nii.gz"
+    zz, yy, xx = np.mgrid[0:80, 0:150, 0:100]  # zyx
+    volume = 100.0 * np.exp(-(((xx - 33.0) ** 2 + (yy - 75.0) ** 2 + (zz - 40.0) ** 2) / 3.0e3))
+    nib.save(nib.Nifti1Image(volume.astype(np.float32), np.diag([1.0, 1.5, 2.0, 1.0])), str(sample))
+
+    produced = MrTrendFeatures.preprocess(str(sample))
+    assert produced.shape == (240, 240, 160)  # xyz, the pinned grid
+
+    # replicate the percentile step, then the engine composition the method delegates to
+    data = np.asarray(nib.load(str(sample)).dataobj, dtype=np.float32)
+    values = data[data > 0] if (data > 0).any() else data.ravel()
+    lo, hi = np.percentile(values, [0.0, 99.5])
+    normalized = np.clip((data - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+    sitk_image = sitk.GetImageFromArray(np.ascontiguousarray(normalized.transpose(2, 1, 0)).astype(np.float32))
+    sitk_image.SetSpacing((1.0, 1.5, 2.0))
+    aligned = CenterCropOrPad().crop_or_pad(GridResampler(sitk.sitkLinear).resample(sitk_image, TREND_FEATURE_GRID), TREND_FEATURE_GRID)
+    expected = sitk.GetArrayFromImage(aligned).transpose(2, 1, 0)
+    assert np.allclose(produced, expected, atol=1e-5)

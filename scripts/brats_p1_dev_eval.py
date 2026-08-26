@@ -57,10 +57,17 @@ import nibabel as nib
 import numpy as np
 import torch
 
-from .brats_l1_quantitative import FidScoreCalculator
-from .diff_model_setting import load_config
-from .utils import define_instance, dynamic_infer
-from .utils_infer import ReconModel
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python -m scripts.<this>
+sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
+
+from ctmr.grid.geometry import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler  # noqa: E402
+from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
+
+from .brats_l1_quantitative import FidScoreCalculator  # noqa: E402
+from .diff_model_setting import load_config  # noqa: E402
+from .utils import define_instance, dynamic_infer  # noqa: E402
+from .utils_infer import ReconModel  # noqa: E402
 
 MODALITY_TOKENS = {"t1n": 29, "t1c": 34, "t2w": 30, "t2f": 31}
 
@@ -71,7 +78,6 @@ TARGET_MODALITIES = ("t1n", "t1c", "t2w", "t2f")
 PLANES = ("xy", "yz", "zx")
 COHORT_QUOTAS = {"GLI": 4, "SSA": 2, "MEN": 4, "METS": 3, "PED": 3}
 TREND_PREPROCESSING = "percentile_0_99.5_to_0_1_ras_1mm_zero_pad_240x240x160"
-FEATURE_SHAPE = (240, 240, 160)
 EMPTY_SLICE_THRESHOLD = 0.05
 SAMPLE_EVERY_K = 2
 STOP_FILE = ".early_stop"
@@ -274,22 +280,21 @@ class MrTrendFeatures:
 
     @staticmethod
     def preprocess(path):
+        import SimpleITK as sitk  # deferred: execution-side only (sugon system env)
+
         image = nib.load(str(path))
         data = np.asarray(image.dataobj, dtype=np.float32)
         values = data[data > 0] if (data > 0).any() else data.ravel()
         lo, hi = np.percentile(values, [0.0, 99.5])
         data = np.clip((data - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
-        # 1 mm isotropic resample (linear, background 0) then zero pad/crop.
-        zoom = image.header.get_zooms()[:3]
-        new_shape = tuple(max(1, int(round(dim * spacing))) for dim, spacing in zip(data.shape, zoom))
-        rows = (np.arange(new_shape[0]) * (data.shape[0] / new_shape[0])).astype(int).clip(max=data.shape[0] - 1)
-        cols = (np.arange(new_shape[1]) * (data.shape[1] / new_shape[1])).astype(int).clip(max=data.shape[1] - 1)
-        depths = (np.arange(new_shape[2]) * (data.shape[2] / new_shape[2])).astype(int).clip(max=data.shape[2] - 1)
-        resampled = data[np.ix_(rows, cols, depths)]
-        padded = np.zeros(FEATURE_SHAPE, dtype=np.float32)
-        limits = tuple(min(s, t) for s, t in zip(resampled.shape, FEATURE_SHAPE))
-        padded[: limits[0], : limits[1], : limits[2]] = resampled[: limits[0], : limits[1], : limits[2]]
-        return padded
+        # ADR-0008 decision 4: the 1 mm resample + centring go through the generic
+        # engine (linear, grid 240x240x160 in xyz); the percentile normalisation
+        # stays in the feature extractor -- it is intensity, not geometry.
+        zoom = [float(v) for v in image.header.get_zooms()[:3]]  # nib zooms are np.float32; sitk needs float
+        sitk_image = sitk.GetImageFromArray(np.ascontiguousarray(data.transpose(2, 1, 0)).astype(np.float32))  # xyz -> zyx
+        sitk_image.SetSpacing(zoom)
+        aligned = CenterCropOrPad().crop_or_pad(GridResampler(sitk.sitkLinear).resample(sitk_image, TREND_FEATURE_GRID), TREND_FEATURE_GRID)
+        return sitk.GetArrayFromImage(aligned).transpose(2, 1, 0).astype(np.float32)  # zyx -> xyz (nibabel order)
 
     def volume_features(self, path):
         """Per-plane RadImageNet slice features of one preprocessed volume."""
@@ -379,7 +384,6 @@ class L2TrendRunner:
 
     NN_CHANNELS = {"t1n": "0000", "t1c": "0001", "t2w": "0002", "t2f": "0003"}
     REGIONS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
-    NN_SIZE = (240, 240, 155)
 
     def __init__(self, instrument_results, instrument_entry, nnunet_raw, nnunet_preprocessed):
         self._results = instrument_results
@@ -397,24 +401,11 @@ class L2TrendRunner:
                 continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             image = sitk.ReadImage(sample["path"])
-            spacing = image.GetSpacing()
-            size = image.GetSize()
-            new_size = [int(round(s * sp)) for s, sp in zip(size, spacing)]
-            resampler = sitk.ResampleImageFilter()
-            resampler.SetOutputSpacing((1.0, 1.0, 1.0))
-            resampler.SetSize(new_size)
-            resampler.SetOutputDirection(image.GetDirection())
-            resampler.SetOutputOrigin(image.GetOrigin())
-            resampler.SetDefaultPixelValue(0.0)
-            resampler.SetInterpolator(sitk.sitkLinear)
-            resampled = resampler.Execute(image)
-            arr = sitk.GetArrayFromImage(resampled)
-            cropped = np.zeros(self.NN_SIZE[::-1], dtype=arr.dtype)
-            limits = tuple(min(s, t) for s, t in zip(arr.shape, self.NN_SIZE[::-1]))
-            cropped[: limits[0], : limits[1], : limits[2]] = arr[: limits[0], : limits[1], : limits[2]]
-            out_img = sitk.GetImageFromArray(cropped)
-            out_img.SetSpacing((1.0, 1.0, 1.0))
-            sitk.WriteImage(out_img, str(dst))
+            # ADR-0008 adoption: the #38 InputPreparator geometry via the frozen
+            # instrument adapter (B-spline + centred crop/pad) -- registered linear->B-spline
+            # + centreing changes vs the pre-adoption top-left linear resize.
+            aligned = InstrumentGridAdapter.continuum().align(image)
+            sitk.WriteImage(aligned, str(dst))
         return out
 
     def predict(self, challenge, input_dir, output_dir, log_path):
