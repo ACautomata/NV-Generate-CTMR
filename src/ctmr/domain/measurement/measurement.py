@@ -42,10 +42,10 @@ are registered and do not belong to the frozen ADR-0002 aggregates.
 
 from dataclasses import dataclass
 
-from ctmr.measure.regions import REGION_NAMES
+from ctmr.domain.measurement.regions import REGION_NAMES
 
 # The canonical wide-row schema: mirror of the frozen judge MEASUREMENT_FIELDS
-# (ADR-0010 decision 5, #2). tests/measure pins this list equal to
+# (ADR-0010 decision 5, #2). tests/domain/measurement pins this list equal to
 # scripts/nnunet_l2_final_acceptance.MEASUREMENT_FIELDS -- drift is the
 # 收编 #110 trigger, not a silent edit.
 FINAL_ACCEPTANCE_FIELDS = [

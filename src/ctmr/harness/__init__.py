@@ -20,6 +20,7 @@ never implementation inheritance), with the recipe guard as a first-class hook.
 Stage kernels stay in their thin script entries -- the shell holds no recipe
 values and no domain decisions.
 
-Import policy mirrors ADR-0009: ``cli`` and the guard specs are stdlib-only
-(any machine); ``train_shell`` needs torch -- import submodules directly.
+Import policy: ``cli`` is stdlib-only (any machine); ``train_shell`` needs
+torch -- import submodules directly. The pinned-recipe guards moved to
+``ctmr.domain.recipe`` in #133 (thin re-export kept in ``recipe``).
 """

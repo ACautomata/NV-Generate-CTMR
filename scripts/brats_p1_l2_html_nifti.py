@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon d
 from brats_p1_l2_html import CaseSampler, IndexSummarizer, L2HtmlReport  # noqa: E402
 from nnunet_l2_final_acceptance import MODALITIES  # noqa: E402
 
-from ctmr.grid.geometry import GridResampler, TargetGrid  # noqa: E402
+from ctmr.domain.grid import GridResampler, TargetGrid  # noqa: E402
 
 REAL_CANDIDATE_ROOTS = ("raw/ASNR-MICCAI-BraTS2023", "ASNR-MICCAI-BraTS2023", ".")
 VIEW_AXIS = {"axial": 0, "coronal": 1, "sagittal": 2}  # sitk array layout is zyx
@@ -95,7 +95,7 @@ class SliceScene:
 
     The display grid is a per-case ``TargetGrid`` (GRID size, derived spacing,
     reconstructed from the raw t1n), and every other image (real modalities,
-    gen/real predictions) is resampled onto it as a ctmr.grid engine client
+    gen/real predictions) is resampled onto it as a ctmr.domain.grid engine client
     (ADR-0008: strategy injected at construction, grid as input).  The
     representative slice is chosen at the axis whose label centroid is the
     generated WT centre (falling back to the middle slice when the prediction

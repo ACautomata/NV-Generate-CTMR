@@ -9,18 +9,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ctmr — src layout package (issue #103 / ADR-0013; installable per ADR-0015 §3 / issue #130).
+"""ctmr -- src layout package (issue #103 / ADR-0013; installable per ADR-0015 §3 / issue #130).
 
 ``pip install -e . --no-deps`` installs the package with the ``ctmr``
 console entry point (stdlib-only ``cli``, no heavy deps); until the pythonpath
 removal lands in M5, pytest keeps the dual track ``pythonpath = ["src", "."]``
 so uninstalled checkouts work unchanged, and sugon deployments keep syncing
 the ``src/`` tree with their own sys.path shim (rollout #102, story 30).
-The four deep modules land with their convergence-gate tests ("born with
-tests", ADR-0013 §5):
+The deep modules land with their convergence-gate tests ("born with
+tests", ADR-0013 §5); layout follows the ADR-0015 §2 layering:
 
-- ``ctmr.grid``       — instrument input geometry      (ADR-0008, #105)
-- ``ctmr.instrument`` — frozen instrument command       (ADR-0009, #107)
-- ``ctmr.measure``    — instrument measurement          (ADR-0010, #109)
-- ``ctmr.harness``    — phase script shells             (ADR-0011, #111)
+- ``ctmr.domain``      -- pure logic: instrument-grid geometry (ADR-0008),
+                          frozen instrument command spec (ADR-0009), instrument
+                          measurement (ADR-0010), pinned recipe guards (ADR-0011)
+                          and sha256 weight identity -- M2 batch (#133)
+- ``ctmr.instrument``  -- frozen-instrument argv execution side only since #133
+                          (predict entry + safe globals; moves to infrastructure in M3)
+- ``ctmr.harness``     -- phase script shells             (ADR-0011, #111; moves to application.shell in M4)
 """

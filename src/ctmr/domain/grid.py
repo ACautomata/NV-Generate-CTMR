@@ -9,13 +9,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Generic volume-grid geometry engine (ADR-0008, issue #105).
+"""Instrument-grid geometry (ADR-0008, issue #105; moved to the domain layer in #133).
 
-Pure transforms on in-memory ``sitk.Image`` -- no file IO, no cluster or
+``TargetGrid`` / ``GridResampler`` / ``CenterCropOrPad`` are the generic engine:
+pure transforms on in-memory ``sitk.Image`` -- no file IO, no cluster or
 controlled-path coupling (readers/writers stay with the callers). The frozen
 terminal-acceptance geometry (the ``GeneratedVolumeResampler`` private methods
 of ``scripts/nnunet_l2_final_acceptance_nifti.py``, pre-#105) is the
 convergence standard this engine was extracted from, verbatim.
+
+The instrument special case pins the frozen parameter table of ADR-0008
+decision 2: continuum volumes go B-spline with the
+``SetDefaultPixelValue(GetPixelIDValue())`` background, label volumes go nearest
+neighbour so no label values are invented; both centred crop/pad onto
+``INSTRUMENT_GRID``. Terminal-acceptance-only concerns (the DM RAS->LPS axis
+flip, file IO) stay with that caller, not here.
 """
 
 from dataclasses import dataclass
@@ -36,6 +44,8 @@ class TargetGrid:
 # 240x240x160 @ 1mm in xyz, realised by the generic engine composition
 # (linear resample onto the spacing, then centred crop/pad onto the size).
 TREND_FEATURE_GRID = TargetGrid(size=(240, 240, 160), spacing=(1.0, 1.0, 1.0))
+
+INSTRUMENT_GRID = TargetGrid(size=(240, 240, 155), spacing=(1.0, 1.0, 1.0))
 
 
 class GridResampler:
@@ -93,3 +103,33 @@ class CenterCropOrPad:
         result.SetOrigin(image.GetOrigin())
         result.SetDirection(np.eye(3).flatten().tolist())
         return result
+
+
+class InstrumentGridAdapter:
+    """Aligns a volume onto the instrument grid: resample + centred crop/pad.
+
+    The interpolation strategy is fixed by the two named factories -- this is
+    the frozen instrument contract, not a per-caller choice.
+    """
+
+    def __init__(self, interpolator: int):
+        if interpolator not in (sitk.sitkBSpline, sitk.sitkNearestNeighbor):  # the pinned parameter table
+            raise ValueError(
+                "the instrument contract pins B-spline (continuum) and nearest neighbour (label); other strategies belong to the generic GridResampler"
+            )
+        self._resampler = GridResampler(interpolator)
+        self._crop_or_pad = CenterCropOrPad()
+
+    def align(self, image: sitk.Image) -> sitk.Image:
+        resampled = self._resampler.resample(image, INSTRUMENT_GRID)
+        return self._crop_or_pad.crop_or_pad(resampled, INSTRUMENT_GRID)
+
+    @classmethod
+    def continuum(cls) -> "InstrumentGridAdapter":
+        """Continuum (generated) volumes: B-spline, the frozen standard."""
+        return cls(sitk.sitkBSpline)
+
+    @classmethod
+    def label(cls) -> "InstrumentGridAdapter":
+        """Label / condition masks: nearest neighbour -- invents no label values."""
+        return cls(sitk.sitkNearestNeighbor)

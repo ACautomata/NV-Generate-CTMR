@@ -23,7 +23,7 @@ import pytest
 
 import scripts.l2_synth_domain_sugon as sugon  # noqa: E402
 import scripts.nnunet_l2_final_acceptance as final_acceptance  # noqa: E402
-from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
 from scripts.nnunet_l2_final_acceptance import PredictScriptWriter  # noqa: E402
 from scripts.nnunet_l2_synthetic_domain_eval import InstrumentRunner  # noqa: E402
 
