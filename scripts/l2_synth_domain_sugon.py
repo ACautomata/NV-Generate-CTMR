@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Issue #38 合成域评估——sugon 端自包含执行脚本。
+"""Issue #38 合成域评估——sugon 端执行脚本（ADR-0008 收编后）。
 
-独立于仓库 module 结构，直接在 sugon 上运行。
+几何（1mm 重采样 + 居中 crop/pad 到 240×240×155）已收编进 ``ctmr.grid``
+（InstrumentGridAdapter，B-spline 连续体）；本脚本不再是单文件自包含，
+sugon 部署时须连同 ``src/`` 树一起同步，并把 ``src/`` 加入 ``sys.path``
+（脚本内已内嵌与 final_acceptance_nifti 相同的 shim 规则）。
+
 复制到 sugon: /root/private_data/l2-synth-eval/run_eval.py
 
 用法:
   python3 /root/private_data/l2-synth-eval/run_eval.py --mode p1
+  部署时同步: RSYNC src/ → /root/private_data/l2-synth-eval/src/
 """
 
 from __future__ import annotations
@@ -20,6 +25,12 @@ from pathlib import Path
 
 import numpy as np
 import SimpleITK as sitk
+
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python scripts/<this>.py
+sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
+
+from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
 
 # ── sugon 固定路径 ──────────────────────────────────────────────────────
 
@@ -47,9 +58,6 @@ SAMPLES = {"GLI": 20, "SSA": 14, "MEN": 20, "METS": 20, "PED": 14}
 # v1 DM 输出参数
 V1_SIZE = (256, 256, 128)
 V1_SPACING = (0.94, 0.94, 1.36)
-# nnU-Net 输入
-NN_SIZE = (240, 240, 155)
-NN_SPACING = (1.0, 1.0, 1.0)
 
 DATASET_IDS = {"GLI": 501, "SSA": 502, "MEN": 503, "METS": 504, "PED": 505}
 EXPECTED_COUNTS = {
@@ -214,41 +222,13 @@ def cmd_generate(args):
 # ── Step 2: 组装 nnU-Net 输入 ──────────────────────────────────────────
 
 
-def resample_to_1mm(img: sitk.Image) -> sitk.Image:
-    """重采样到 1mm isotropic。"""
-    orig_spacing = img.GetSpacing()
-    orig_size = img.GetSize()
-    new_size = [int(round(s * sp / 1.0)) for s, sp in zip(orig_size, orig_spacing)]
-    resampler = sitk.ResampleImageFilter()
-    resampler.SetOutputSpacing(NN_SPACING)
-    resampler.SetSize(new_size)
-    resampler.SetOutputDirection(img.GetDirection())
-    resampler.SetOutputOrigin(img.GetOrigin())
-    resampler.SetTransform(sitk.Transform())
-    resampler.SetDefaultPixelValue(float(img.GetPixelIDValue()))
-    resampler.SetInterpolator(sitk.sitkBSpline)
-    return resampler.Execute(img)
-
-
-def crop_or_pad(arr: np.ndarray, target: tuple) -> np.ndarray:
-    """居中裁剪或零填充。"""
-    result = np.zeros(target, dtype=arr.dtype)
-    src_slices, dst_slices = [], []
-    for s, t in zip(arr.shape, target):
-        if s >= t:
-            start = (s - t) // 2
-            src_slices.append(slice(start, start + t))
-            dst_slices.append(slice(0, t))
-        else:
-            start = (t - s) // 2
-            src_slices.append(slice(0, s))
-            dst_slices.append(slice(start, start + s))
-    result[tuple(dst_slices)] = arr[tuple(src_slices)]
-    return result
-
-
 def prep_one_case(entry: dict, sample_dir: Path, output_dir: Path) -> None:
-    """组装一个病例的 nnU-Net 输入。"""
+    """组装一个病例的 nnU-Net 输入。
+
+    ADR-0008 收编：几何（B-spline 重采样到 1mm + 居中 crop/pad 到 240×240×155）
+    由 ctmr.grid 的 continuum 适配器执行（修复了原 crop_or_pad 把 xyz target
+    直接作用于 zyx 数组的轴序 bug）。
+    """
     challenge = entry["challenge"]
     case_id = entry["case_id"]
     case_input_dir = output_dir / challenge
@@ -262,12 +242,8 @@ def prep_one_case(entry: dict, sample_dir: Path, output_dir: Path) -> None:
             continue
         src = Path(modality_paths[mod_name])
         img = sitk.ReadImage(str(src))
-        resampled = resample_to_1mm(img)
-        arr = sitk.GetArrayFromImage(resampled)
-        cropped = crop_or_pad(arr, NN_SIZE)
-        out_img = sitk.GetImageFromArray(cropped)
-        out_img.SetSpacing(NN_SPACING)
-        sitk.WriteImage(out_img, str(dst))
+        aligned = InstrumentGridAdapter.continuum().align(img)
+        sitk.WriteImage(aligned, str(dst))
 
 
 def cmd_prep_inputs(args):

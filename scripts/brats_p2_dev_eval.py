@@ -415,7 +415,7 @@ class P2DevEvalSelfTest:
         if not np.array_equal(remapped, expected):
             self.failures.append(f"remap mismatch: {remapped.tolist()} != {expected.tolist()}")
 
-        pred = np.array([[[0, 1], [1, 2], [3, 0]]], dtype=np.uint8)
+        pred = np.array([[[0, 0], [1, 2], [3, 0]]], dtype=np.uint8)  # (0,1) is 0: the 22 background remaps to 0
         perfect = P2RoundTripDice.dice(pred, remapped, "WT")
         if abs(perfect - 1.0) > 1e-9:
             self.failures.append(f"perfect round-trip WT dice != 1.0: {perfect}")

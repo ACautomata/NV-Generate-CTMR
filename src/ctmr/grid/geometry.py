@@ -32,6 +32,12 @@ class TargetGrid:
     spacing: tuple[float, float, float]
 
 
+# The trend-feature grid pinned by ADR-0008 decision 4 (MrTrendFeatures):
+# 240x240x160 @ 1mm in xyz, realised by the generic engine composition
+# (linear resample onto the spacing, then centred crop/pad onto the size).
+TREND_FEATURE_GRID = TargetGrid(size=(240, 240, 160), spacing=(1.0, 1.0, 1.0))
+
+
 class GridResampler:
     """Resamples a volume onto the grid's spacing, with the interpolation
     strategy injected at construction (B-spline / nearest neighbour / linear).

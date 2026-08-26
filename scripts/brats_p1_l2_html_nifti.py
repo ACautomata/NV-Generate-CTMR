@@ -31,17 +31,21 @@ import numpy as np
 import SimpleITK as sitk  # noqa: N813  (standard medical-imaging alias)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))  # repo src layout: python scripts/<this>.py
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon deployment: src/ synced next to the script
 
 from brats_p1_l2_html import CaseSampler, IndexSummarizer, L2HtmlReport  # noqa: E402
 from nnunet_l2_final_acceptance import MODALITIES  # noqa: E402
+
+from ctmr.grid.geometry import GridResampler, TargetGrid  # noqa: E402
 
 REAL_CANDIDATE_ROOTS = ("raw/ASNR-MICCAI-BraTS2023", "ASNR-MICCAI-BraTS2023", ".")
 VIEW_AXIS = {"axial": 0, "coronal": 1, "sagittal": 2}  # sitk array layout is zyx
 
 # Synthetic grid (x, y, z) the holdout generator samples onto: matches the
 # `GRID` used by brats_p1_holdout_generate (spacing_i = zooms_i * shape_i / GRID_i).
-# The generated NIfTI is written with an IDENTITY_AFFINE, so it carries a wrong
-# geometry -- the report side reconstructs the true one from the raw t1n instead.
+# The generated NIfTI is written with an IDENTITY_AFFINE, so the report side
+# reconstructs size/spacing from the raw t1n -- the per-case display TargetGrid.
 GRID = (256, 256, 128)
 
 DEFAULT_NOTE = (
@@ -89,24 +93,21 @@ class RealImageIndex:
 class SliceScene:
     """Produce 2D slices at a chosen axis for one case on the unified grid.
 
-    The reference grid is the generated t1n volume; every other image (real
-    modalities, gen/real predictions) is resampled onto it.  The representative
-    slice is chosen at the axis whose label centroid is the generated WT centre
-    (falling back to the middle slice when the prediction is empty).
+    The display grid is a per-case ``TargetGrid`` (GRID size, derived spacing,
+    reconstructed from the raw t1n), and every other image (real modalities,
+    gen/real predictions) is resampled onto it as a ctmr.grid engine client
+    (ADR-0008: strategy injected at construction, grid as input).  The
+    representative slice is chosen at the axis whose label centroid is the
+    generated WT centre (falling back to the middle slice when the prediction
+    is empty).
     """
 
     def __init__(self, gen_root, pred_root, case_index):
         self._gen_root = Path(gen_root)
         self._pred_root = Path(pred_root)
         self._case_index = case_index
-        self._resampler_linear = self._make_resampler(sitk.sitkBSpline)
-        self._resampler_label = self._make_resampler(sitk.sitkNearestNeighbor)
-
-    @staticmethod
-    def _make_resampler(interpolator):
-        filter = sitk.ResampleImageFilter()
-        filter.SetInterpolator(interpolator)
-        return filter
+        self._resampler_continuum = GridResampler(sitk.sitkBSpline)
+        self._resampler_label = GridResampler(sitk.sitkNearestNeighbor)
 
     def _find_gen(self, challenge, case, modality):
         case_dir = self._gen_root / challenge / case
@@ -114,14 +115,15 @@ class SliceScene:
         return matches[0] if matches else None
 
     def _synthetic_grid(self, case):
-        """Return the true synthetic grid (GRID size, derived spacing, raw affine).
+        """Return the per-case display TargetGrid (GRID size, derived spacing).
 
         The generated NIfTI was written with an IDENTITY_AFFINE, so its on-disk
         geometry is wrong (origin 0, identity direction, spacing 1).  The report
-        reconstructs the geometry the generator actually sampled onto: the raw
-        t1n origin/direction with the post-resize spacing ``zoom * shape / GRID``.
-        Every other image is resampled onto this grid so generated, real and the
-        instrument predictions align.
+        reconstructs the size/spacing the generator actually sampled onto: the
+        raw t1n spacing/size give the post-resize spacing ``zoom * shape / GRID``.
+        The raw origin/direction are deliberately not part of the grid -- as an
+        engine client the resample samples each input's own frame (#106; see the
+        cross-frame change note in tests/grid/test_call_sites.py).
         """
         info = self._case_index.get(case)
         if info is None:
@@ -132,12 +134,8 @@ class SliceScene:
         raw = sitk.ReadImage(str(raw_path))
         raw_size = raw.GetSize()
         raw_spacing = raw.GetSpacing()
-        derived = [raw_spacing[i] * raw_size[i] / GRID[i] for i in range(3)]
-        grid = sitk.Image(GRID, sitk.sitkFloat32)
-        grid.SetSpacing(derived)
-        grid.SetOrigin(raw.GetOrigin())
-        grid.SetDirection(raw.GetDirection())
-        return grid
+        derived = tuple(raw_spacing[i] * raw_size[i] / GRID[i] for i in range(3))
+        return TargetGrid(size=GRID, spacing=derived)
 
     def _load_generated(self, challenge, case, modalities):
         reference = None
@@ -168,14 +166,12 @@ class SliceScene:
         path = self._pred_root / challenge / f"{case}__{side}.nii.gz"
         return sitk.ReadImage(str(path)) if path.exists() else None
 
-    def _to_grid(self, reference, image, label):
+    def _to_grid(self, grid, image, label):
         if image is None:
             return None
-        self._resampler_linear.SetReferenceImage(reference)
-        self._resampler_label.SetReferenceImage(reference)
-        if label:
-            return sitk.GetArrayFromImage(self._resampler_label.Execute(image)).astype(np.int32)
-        return sitk.GetArrayFromImage(self._resampler_linear.Execute(image))
+        resampler = self._resampler_label if label else self._resampler_continuum
+        array = sitk.GetArrayFromImage(resampler.resample(image, grid))
+        return array.astype(np.int32) if label else array
 
     def center_index(self, label_array, view, fallback_center):
         """Return the slice index along ``view`` of the tumour label centroid."""
@@ -193,15 +189,16 @@ class SliceScene:
         _, gen_volumes = self._load_generated(challenge, case, MODALITIES)
         if all(vol is None for vol in gen_volumes.values()):
             return None
-        reference = self._synthetic_grid(case)
-        if reference is None:
+        grid = self._synthetic_grid(case)
+        if grid is None:
             return None
         _, real_volumes = self._load_real(case, MODALITIES)
-        gen_label = self._to_grid(reference, self._load_prediction(challenge, case, "gen"), label=True)
-        real_label = self._to_grid(reference, self._load_prediction(challenge, case, "real"), label=True)
+        gen_label = self._to_grid(grid, self._load_prediction(challenge, case, "gen"), label=True)
+        real_label = self._to_grid(grid, self._load_prediction(challenge, case, "real"), label=True)
         axis = VIEW_AXIS[view]
-        ref_array = sitk.GetArrayFromImage(reference)
-        center = self.center_index(gen_label if gen_label is not None else real_label, view, ref_array.shape[axis] // 2)
+        # fallback = middle slice; VIEW_AXIS indexes the zyx array while GRID is
+        # xyz, so the grid axis is mirrored (2 - array_axis).
+        center = self.center_index(gen_label if gen_label is not None else real_label, view, GRID[2 - VIEW_AXIS[view]] // 2)
 
         def _slice_at(arr):
             if arr is None:
@@ -211,7 +208,7 @@ class SliceScene:
         modality_slices = {}
         for modality in MODALITIES:
             gen_arr = sitk.GetArrayFromImage(gen_volumes[modality]) if gen_volumes[modality] is not None else None
-            real_arr = self._to_grid(reference, real_volumes.get(modality), label=False)
+            real_arr = self._to_grid(grid, real_volumes.get(modality), label=False)
             modality_slices[modality] = {"gen": _slice_at(gen_arr), "real": _slice_at(real_arr)}
 
         overlays = {"gen": _slice_at(gen_label), "real": _slice_at(real_label)}

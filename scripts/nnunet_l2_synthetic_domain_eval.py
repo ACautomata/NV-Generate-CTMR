@@ -57,11 +57,18 @@ import argparse
 import json
 import math
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import SimpleITK as sitk
+
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python -m scripts.<this>
+sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
+
+from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
 
 # ── 常量 ──────────────────────────────────────────────────────────────────
 
@@ -89,10 +96,6 @@ BRATS_LABELS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
 # v1 DM 输出参数（#10 P1 配方钉板）
 V1_DM_OUTPUT_SIZE = (256, 256, 128)
 V1_DM_SPACING = (0.94, 0.94, 1.36)  # mm
-
-# nnU-Net 输入期望
-NNUNET_TARGET_SIZE = (240, 240, 155)
-NNUNET_TARGET_SPACING = (1.0, 1.0, 1.0)  # mm isotropic
 
 # 每个子挑战用于合成域评估的样本数
 SAMPLES_PER_CHALLENGE = {
@@ -387,7 +390,12 @@ class InputPreparator:
         modality_paths: dict[str, Path],
         output_dir: Path,
     ) -> Path:
-        """组装一个病例的 nnU-Net 输入目录。"""
+        """组装一个病例的 nnU-Net 输入目录。
+
+        ADR-0008 收编：几何（B-spline 重采样到 1mm + 居中 crop/pad 到 240×240×155）
+        由 ctmr.grid 的 continuum 适配器执行（修复了原 ``_crop_or_pad`` 把 xyz target
+        直接作用于 zyx 数组的轴序 bug）。
+        """
         case_input_dir = output_dir / challenge
         case_input_dir.mkdir(parents=True, exist_ok=True)
 
@@ -398,58 +406,10 @@ class InputPreparator:
                 continue
 
             img = sitk.ReadImage(str(src_path))
-            # Step 1: 重采样到 1mm isotropic
-            resampled = self._resample_to_1mm(img)
-            # Step 2: 裁剪/填充到 240×240×155
-            cropped = self._crop_or_pad(resampled, NNUNET_TARGET_SIZE)
-            sitk.WriteImage(cropped, str(dst_path))
+            aligned = InstrumentGridAdapter.continuum().align(img)
+            sitk.WriteImage(aligned, str(dst_path))
 
         return case_input_dir
-
-    @staticmethod
-    def _resample_to_1mm(img: sitk.Image) -> sitk.Image:
-        """重采样到 1mm isotropic spacing。"""
-        original_spacing = img.GetSpacing()
-        original_size = img.GetSize()
-        new_spacing = [1.0, 1.0, 1.0]
-        new_size = [int(round(osz * ospc / nspc)) for osz, ospc, nspc in zip(original_size, original_spacing, new_spacing)]
-        resampler = sitk.ResampleImageFilter()
-        resampler.SetOutputSpacing(new_spacing)
-        resampler.SetSize(new_size)
-        resampler.SetOutputDirection(img.GetDirection())
-        resampler.SetOutputOrigin(img.GetOrigin())
-        resampler.SetTransform(sitk.Transform())
-        resampler.SetDefaultPixelValue(img.GetPixelIDValue())
-        resampler.SetInterpolator(sitk.sitkBSpline)
-        return resampler.Execute(img)
-
-    @staticmethod
-    def _crop_or_pad(img: sitk.Image, target_size: tuple[int, int, int]) -> sitk.Image:
-        """居中裁剪或零填充到目标尺寸。"""
-        size = img.GetSize()
-        arr = sitk.GetArrayFromImage(img)  # z, y, x
-
-        cropped = np.zeros(target_size, dtype=arr.dtype)
-        # 计算源和目标的裁剪/放置区间
-        src_slices = []
-        dst_slices = []
-        for s, t in zip(size, target_size):
-            if s >= t:
-                start = (s - t) // 2
-                src_slices.append(slice(start, start + t))
-                dst_slices.append(slice(0, t))
-            else:
-                start = (t - s) // 2
-                src_slices.append(slice(0, s))
-                dst_slices.append(slice(start, start + s))
-
-        cropped[tuple(dst_slices)] = arr[tuple(src_slices)]
-
-        result = sitk.GetImageFromArray(cropped)
-        result.SetSpacing(NNUNET_TARGET_SPACING)
-        result.SetOrigin(img.GetOrigin())
-        result.SetDirection(np.eye(3).flatten().tolist())
-        return result
 
 
 # ── 仪器推理 ────────────────────────────────────────────────────────────
