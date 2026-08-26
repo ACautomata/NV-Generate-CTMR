@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""P3 dev light-acceptance sidecar: fixed image-conditioned samples + FID trend (issue #61).
+"""P3 dev light-acceptance sidecar: fixed image-conditioned samples + PSNR/SSIM trend (issue #61).
 
 Runs beside the P3 ControlNet finetune on a reserved GPU. For every ``epoch_<N>.pt`` the
 trainer persists (N a multiple of ``--eval-every``), it:
@@ -18,15 +18,20 @@ trainer persists (N a multiple of ``--eval-every``), it:
    conditioned on the case's **src-image latent** (``src_image``, 4ch, no mask) with the
    target modality label and **CFG off** (``cfg_guidance_scale=0``, issue #61 acceptance
    criterion 1-2), fixed per-(case, src, tgt) seed;
-2. computes the 2.5D RadImageNet FID trend per target modality against the dev-side REAL
-   volume bank (the pinned L1 MR preprocessing) — the same selection trend P2 uses;
+2. scores every pair with 3D PSNR/SSIM against the case's REAL target volume (the paired
+   metric family the L1 acceptance uses): the real target is resampled onto the 256x256x128
+   generation grid (the same ``ReferenceGridWriter`` chain as the phase's reference_grid,
+   cached under ``reference_grid/``), both volumes run the pinned L1 [0,1] protocol
+   (per-volume 0-99.5 percentile, ``MRIntensityNormalizer``), then skimage PSNR and 3D SSIM
+   (``data_range=1.0``, ``win_size=7``) — identical parameters to ``P3PairMetricCalculator``;
 3. applies the PRE-RECORDED early-stop rule and, when it fires, writes
    ``<ckpt_dir>/.early_stop``; ``select`` emits the final dev-side checkpoint selection
-   (argmin mean FID) for the phase-run contract.
+   (argmax mean SSIM) for the phase-run contract.
 
 The early-stop rule (recorded verbatim in the run dir before training starts): metric
-m(N) = mean over the four target modalities of the plane-mean dev FID at epoch N; stop when
-N >= --min-epoch AND the last --patience consecutive evals produced no new best m.
+m(N) = mean over the four target modalities of the case-mean dev 3D SSIM at epoch N
+(PSNR recorded alongside); stop when N >= --min-epoch AND the last --patience consecutive
+evals produced no new best m (higher is better).
 
 The dev cohort / real bank / spacing / src-latent source are all filtered to the dev side:
 ``p3_pairs.json`` mixes train (fold=1) and dev (fold=0); this script uses only fold=0.
@@ -44,33 +49,44 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import multiprocessing as mp
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+import nibabel as nib
 import numpy as np
 import torch
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
+from .brats_l1_quantitative import MRIntensityNormalizer
 from .brats_p1_dev_eval import (
     COHORT_QUOTAS,
     MODALITY_TOKENS,
-    PLANES,
     STOP_FILE,
     CheckpointWatcher,
     EarlyStopRule,
-    MrTrendFeatures,
-    RealReferenceBank,
-    TrendFid,
     TrendLedger,
 )
 from .brats_p3_controlnet_manifest import P3CandidateInferenceConfig
+from .brats_p3_stage0_generate import ReferenceGridWriter
 from .brats_phase_prep import MODALITIES as PAIR_MODALITIES
 from .diff_model_setting import load_config
 from .utils_infer import load_image_models, run_controlnet_conditioned_image_dm
 
 LATENT = (4, 64, 64, 32)
 GRID = (256, 256, 128)
+SSIM_WIN = 7
+PSNR_CAP_DB = 100.0  # identical volumes (mse=0) are capped instead of inf so JSON stays finite
+P3_RULE_TEXT = (
+    "metric m(N) = mean over t1n/t1c/t2w/t2f of dev case-mean 3D SSIM (skimage, data_range=1.0, "
+    "win_size=7, per-volume 0-99.5 percentile [0,1] protocol) of candidates vs the real target "
+    "resampled onto the generation grid; PSNR (same protocol) is recorded alongside; stop when "
+    "N >= {min_epoch} and the last {patience} consecutive evals set no new best m; "
+    "hard cap = trainer n_epochs"
+)
 
 
 def read_src_latent(src_image_path, device):
@@ -153,6 +169,111 @@ class P3DevCohort:
         for entry in self._entries:
             if entry["case"] == case and entry["modality"] == PAIR_MODALITIES[tgt_suffix][0]:
                 return entry["image"]
+
+
+class P3PairwiseScorer:
+    """3D PSNR/SSIM of candidates vs real targets under the pinned L1 [0,1] protocol.
+
+    The real target is resampled onto the 256x256x128 generation grid (the same
+    ``ReferenceGridWriter`` chain the phase's reference_grid uses, cached under
+    ``<eval_root>/reference_grid/<CH>/<case>/<tgt>.nii.gz`` so each (case, tgt) is
+    resampled once across all eval points); each pair then runs the pinned L1
+    intensity protocol (per-volume 0-99.5 percentile -> [0,1]) and is scored with
+    skimage PSNR and 3D SSIM (``data_range=1.0``, ``win_size=7``) — the identical
+    parameters ``P3PairMetricCalculator`` uses for the final L1 judgment, so the
+    dev-selection trend stays predictive of the acceptance verdict.
+    """
+
+    def __init__(self, workers=32):
+        self._workers = max(1, int(workers))
+
+    @staticmethod
+    def reference_job(job):
+        ref_root, challenge, case, tgt, real_path, spacing = job
+        try:
+            out = ReferenceGridWriter(Path(ref_root)).write(challenge, case, tgt, real_path, spacing)
+            return {"error": None, "path": str(out)}
+        except Exception as error:
+            return {"error": f"reference {challenge}/{case}/{tgt}: {error}"}
+
+    @staticmethod
+    def score_arrays(reference, sample):
+        """PSNR/SSIM of two same-shape raw intensity arrays under the pinned L1 [0,1] protocol."""
+        normalizer = MRIntensityNormalizer()
+        scaled_reference = normalizer.normalize(reference, "reference")
+        scaled_sample = normalizer.normalize(sample, "candidate")
+        psnr = float(min(peak_signal_noise_ratio(scaled_reference, scaled_sample, data_range=1.0), PSNR_CAP_DB))
+        ssim = float(
+            structural_similarity(
+                scaled_reference, scaled_sample, data_range=1.0, channel_axis=None, win_size=SSIM_WIN
+            )
+        )
+        return {"error": None, "psnr": psnr, "ssim": ssim}
+
+    @staticmethod
+    def score_job(job):
+        reference_path, sample_path = job
+        try:
+            reference = np.asarray(nib.load(str(reference_path)).dataobj, dtype=np.float64)
+            sample = np.asarray(nib.load(str(sample_path)).dataobj, dtype=np.float64)
+            if reference.shape != sample.shape:
+                raise ValueError(f"shape mismatch reference {reference.shape} vs sample {sample.shape}")
+            return P3PairwiseScorer.score_arrays(reference, sample)
+        except Exception as error:
+            return {"error": str(error)}
+
+    def score_cohort(self, samples, cohort_source, raw_root, ref_root):
+        """Scores the generated cohort; returns per-target-modality mean PSNR/SSIM + m (mean SSIM).
+
+        ``samples`` is the ``generate_cohort`` output (one dict per pair, with
+        ``sub``, ``case``, ``target_modality``, ``path``). Real target paths are
+        resolved from the dev list via ``cohort_source.tgt_of`` (relative to
+        ``raw_root``); every (case, tgt) reference is resampled to the grid once.
+        Raises when any reference or pair fails (a partial trend would be
+        misleading for the patience rule).
+        """
+        raw_root = Path(raw_root)
+        ref_root = Path(ref_root)
+        references = {}
+        for sample in samples:
+            key = (sample["sub"], sample["case"], sample["target_modality"])
+            if key in references:
+                continue
+            real_path = raw_root / cohort_source.tgt_of(sample["case"], sample["target_modality"])
+            references[key] = (
+                ref_root,
+                sample["sub"],
+                sample["case"],
+                sample["target_modality"],
+                str(real_path),
+                cohort_source.spacing_of(sample["case"]),
+            )
+        with ProcessPoolExecutor(max_workers=self._workers, mp_context=mp.get_context("fork")) as pool:
+            reference_results = list(pool.map(P3PairwiseScorer.reference_job, references.values()))
+        reference_paths = {}
+        for key, result in zip(references, reference_results):
+            if result["error"] is not None:
+                raise RuntimeError(f"reference grid failed for {key}: {result['error']}")
+            reference_paths[key] = result["path"]
+        jobs = [(reference_paths[(s["sub"], s["case"], s["target_modality"])], s["path"]) for s in samples]
+        with ProcessPoolExecutor(max_workers=self._workers, mp_context=mp.get_context("fork")) as pool:
+            pair_results = list(pool.map(P3PairwiseScorer.score_job, jobs))
+        per_modality = {modality: {"psnr": [], "ssim": []} for modality in MODALITY_TOKENS}
+        for sample, result in zip(samples, pair_results):
+            if result["error"] is not None:
+                raise RuntimeError(f"pair score failed for {sample['case']} {sample['target_modality']}: {result['error']}")
+            per_modality[sample["target_modality"]]["psnr"].append(result["psnr"])
+            per_modality[sample["target_modality"]]["ssim"].append(result["ssim"])
+        report = {
+            modality: {
+                "psnr": float(np.mean(per_modality[modality]["psnr"])),
+                "ssim": float(np.mean(per_modality[modality]["ssim"])),
+            }
+            for modality in MODALITY_TOKENS
+        }
+        m = float(np.mean([report[modality]["ssim"] for modality in MODALITY_TOKENS]))
+        mean_psnr = float(np.mean([report[modality]["psnr"] for modality in MODALITY_TOKENS]))
+        return {"report": report, "m": m, "mean_psnr": mean_psnr}
 
 
 class P3CandidateSampler:
@@ -292,19 +413,37 @@ class P3DevEvalSelfTest:
         elif float(tensor[0, 0].mean()) != 1.0:
             self.failures.append("src-latent channel axis mis-read (channel 0 not the brain-modality slot)")
 
-        # early-stop rule + selection (shared with P1/P2)
-        rule = EarlyStopRule(patience=3, min_epoch=30, max_epoch=100)
-        improving = [{"epoch": e, "m": 1.0 - 0.01 * e} for e in (5, 10, 15, 20, 25, 30)]
+        # early-stop rule + selection: P3 pre-registered the max direction (PSNR/SSIM higher is better)
+        rule = EarlyStopRule(patience=3, min_epoch=30, max_epoch=100, direction="max")
+        improving = [{"epoch": e, "m": 0.1 + 0.01 * e} for e in (5, 10, 15, 20, 25, 30)]
         stop, _ = rule.should_stop(improving)
         if stop:
-            self.failures.append("rule stopped an improving trend")
-        plateau = improving + [{"epoch": e, "m": 0.75} for e in (35, 40, 45)]
+            self.failures.append("rule stopped an improving (max-direction) trend")
+        plateau = improving + [{"epoch": e, "m": 0.4} for e in (35, 40, 45)]
         stop, reason = rule.should_stop(plateau)
         if not stop:
             self.failures.append(f"rule failed to stop a 3-eval plateau ({reason})")
-        selection = EarlyStopRule.selection([{"epoch": 5, "m": 1.2}, {"epoch": 10, "m": 0.8}, {"epoch": 20, "m": 0.8}])
-        if selection["epoch"] != 10:
-            self.failures.append(f"selection picked {selection}, expected epoch 10")
+        selection = EarlyStopRule.selection(
+            [{"epoch": 5, "m": 1.2}, {"epoch": 10, "m": 0.8}, {"epoch": 20, "m": 0.8}], direction="max", metric_name="mean_ssim"
+        )
+        if selection["epoch"] != 5 or selection["mean_ssim"] != 1.2:
+            self.failures.append(f"max selection picked {selection}, expected epoch 5 m=1.2")
+
+        # pairwise scorer: identical volumes score ssim=1.0 and capped psnr; degraded ones score lower
+        rng = np.random.default_rng(0)
+        reference = (50 + 400 * rng.random((32, 32, 32))).astype(np.int16)
+        identical = P3PairwiseScorer.score_arrays(reference, reference)
+        if abs(identical["ssim"] - 1.0) > 1e-6 or identical["psnr"] != PSNR_CAP_DB:
+            self.failures.append(f"identical volumes scored {identical}, expected ssim=1.0 psnr=capped")
+        degraded = P3PairwiseScorer.score_arrays(
+            reference,
+            np.clip((reference.astype(np.float64) + rng.normal(0, 80, reference.shape)).round(), 0, None).astype(np.int16),
+        )
+        if degraded["ssim"] >= identical["ssim"] or degraded["psnr"] >= identical["psnr"]:
+            self.failures.append(f"degraded volume scored {degraded}, expected lower than identical")
+        shuffled = P3PairwiseScorer.score_arrays(reference, np.roll(reference, 8, axis=0))
+        if shuffled["ssim"] > 0.9:
+            self.failures.append(f"rolled volume scored ssim={shuffled['ssim']:.3f}, expected substantial degradation")
         return self.failures
 
 
@@ -312,10 +451,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("reference", help="build the dev real-feature bank once")
+    p = sub.add_parser("reference", help="pre-resample all dev real targets onto the generation grid")
     p.add_argument("--dev-list", required=True)
     p.add_argument("--raw-root", required=True)
     p.add_argument("--eval-root", required=True)
+    p.add_argument("--score-workers", type=int, default=32)
 
     p = sub.add_parser("watch", help="sidecar loop: evaluate epoch checkpoints as they land")
     p.add_argument("--ckpt-dir", required=True)
@@ -331,6 +471,7 @@ def main(argv=None):
     p.add_argument("--min-epoch", type=int, default=30)
     p.add_argument("--max-epoch", type=int, default=100)
     p.add_argument("--poll-seconds", type=float, default=60.0)
+    p.add_argument("--score-workers", type=int, default=32, help="parallel CPU workers for reference resampling + PSNR/SSIM")
     p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
@@ -354,24 +495,47 @@ def main(argv=None):
 
     if args.command == "reference":
         dev_list = P3DevList(args.dev_list, eval_root).build()
-        features = MrTrendFeatures(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-        RealReferenceBank(dev_list, args.raw_root, features, eval_root / "reference").build()
-        print(f"real reference bank -> {eval_root / 'reference' / 'real_reference_bank.pt'}")
+        cohort_source = P3DevCohort(dev_list)
+        raw_root, ref_root = Path(args.raw_root), eval_root / "reference_grid"
+        references = {}
+        for case in cohort_source.cases():
+            for tgt in MODALITY_TOKENS:
+                real = raw_root / cohort_source.tgt_of(case["case"], tgt)
+                references[(case["sub"], case["case"], tgt)] = (
+                    str(ref_root),
+                    case["sub"],
+                    case["case"],
+                    tgt,
+                    str(real),
+                    cohort_source.spacing_of(case["case"]),
+                )
+        with ProcessPoolExecutor(max_workers=args.score_workers, mp_context=mp.get_context("fork")) as pool:
+            results = list(pool.map(P3PairwiseScorer.reference_job, references.values()))
+        failures = [f"reference {key}: {r['error']}" for key, r in zip(references, results) if r["error"] is not None]
+        if failures:
+            print("\n".join(failures[:10]), file=sys.stderr)
+            return 1
+        print(f"real reference grids -> {ref_root} ({len(references)} (case, tgt) targets)")
         return 0
 
     if args.command == "select":
         trend = ledger.read()
-        selection = EarlyStopRule.selection(trend)
+        selection = EarlyStopRule.selection(trend, direction="max", metric_name="mean_ssim")
         if selection is None:
             print("no eval points; nothing to select", file=sys.stderr)
             return 1
-        selection["rule"] = "argmin mean dev FID over eval points (pre-recorded)"
+        best = next(point for point in trend if point["epoch"] == selection["epoch"] and point["m"] is not None)
+        selection["mean_psnr"] = best.get("mean_psnr")
+        selection["rule"] = "argmax mean dev 3D SSIM over eval points (pre-registered; PSNR recorded alongside)"
         selection["trend"] = trend
         selection["recorded_utc"] = datetime.now(UTC).isoformat()
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(selection, indent=2) + "\n")
-        print(f"selection -> {out} (epoch {selection['epoch']}, mean_fid {selection['mean_fid']:.4f})")
+        print(
+            f"selection -> {out} (epoch {selection['epoch']}, mean_ssim {selection['mean_ssim']:.4f}, "
+            f"mean_psnr {selection['mean_psnr']:.2f})"
+        )
         return 0
 
     # watch mode
@@ -380,16 +544,24 @@ def main(argv=None):
     cohort_source = P3DevCohort(dev_list)
     cohort = cohort_source.cases()
     phase_root = Path(args.phase_root)
-    rule = EarlyStopRule(args.patience, args.min_epoch, args.max_epoch)
+    rule = EarlyStopRule(args.patience, args.min_epoch, args.max_epoch, direction="max")
     (eval_root / "early_stop_rule.json").write_text(
-        json.dumps({"rule": rule.rule_text(), "patience": args.patience, "min_epoch": args.min_epoch, "max_epoch": args.max_epoch}, indent=2) + "\n"
+        json.dumps(
+            {
+                "rule": P3_RULE_TEXT.format(min_epoch=args.min_epoch, patience=args.patience),
+                "patience": args.patience,
+                "min_epoch": args.min_epoch,
+                "max_epoch": args.max_epoch,
+                "direction": "max",
+            },
+            indent=2,
+        )
+        + "\n"
     )
     merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
     merged.cfg_guidance_scale = 0.0
-    features = MrTrendFeatures(device)
-    bank = RealReferenceBank(dev_list, args.raw_root, features, eval_root / "reference").build()
-    fid = TrendFid(bank)
+    scorer = P3PairwiseScorer(workers=args.score_workers)
     sampler = P3CandidateSampler(merged, device, None)
     watcher = CheckpointWatcher(args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()})
     idle_since = None
@@ -411,14 +583,7 @@ def main(argv=None):
             epoch_dir = eval_root / f"epoch_{epoch}"
             try:
                 samples = sampler.generate_cohort(path, cohort, cohort_source, phase_root, epoch_dir / "samples")
-                plane_cache = {sample["path"]: features.volume_features(sample["path"]) for sample in samples}
-                generated = {modality: {plane: [] for plane in PLANES} for modality in MODALITY_TOKENS}
-                for sample in samples:
-                    for plane in PLANES:
-                        matrix = plane_cache[sample["path"]][plane]
-                        if matrix is not None:
-                            generated[sample["target_modality"]][plane].append(matrix.mean(axis=0))
-                report, mean_fid = fid.score(generated)
+                scored = scorer.score_cohort(samples, cohort_source, args.raw_root, eval_root / "reference_grid")
             except Exception as error:
                 print(f"[eval] epoch {epoch} skipped: {error}", file=sys.stderr, flush=True)
                 continue
@@ -426,15 +591,21 @@ def main(argv=None):
                 "eval_utc": datetime.now(UTC).isoformat(),
                 "epoch": epoch,
                 "checkpoint": str(path),
-                "fid": report,
-                "m": mean_fid,
+                "metric": "paired-psnr-ssim",
+                "report": scored["report"],
+                "m": scored["m"],
+                "mean_psnr": scored["mean_psnr"],
                 "cohort_file": str(dev_list),
             }
             ledger.append(record)
             (epoch_dir / "trend.json").write_text(json.dumps(record, indent=2) + "\n")
             watcher.mark_done(epoch)
             stop, reason = rule.should_stop(ledger.read())
-            print(f"[eval] epoch {epoch}: mean_fid={mean_fid} stop={stop} ({reason})", flush=True)
+            print(
+                f"[eval] epoch {epoch}: mean_ssim={scored['m']:.4f} mean_psnr={scored['mean_psnr']:.2f} "
+                f"stop={stop} ({reason})",
+                flush=True,
+            )
             if stop:
                 (Path(args.ckpt_dir) / STOP_FILE).write_text(json.dumps({"reason": reason, "epoch": epoch}) + "\n")
                 print(f"early-stop fired ({reason}); wrote {Path(args.ckpt_dir) / STOP_FILE}", flush=True)

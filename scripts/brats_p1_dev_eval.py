@@ -498,7 +498,12 @@ class L2TrendRunner:
 
 
 class EarlyStopRule:
-    """Pre-recorded rule: patience on the mean dev FID trend (never before min_epoch)."""
+    """Pre-recorded rule: patience on the mean dev trend (never before min_epoch).
+
+    ``direction`` selects whether the trend metric is minimized (``min``, the FID
+    rules P1/P2 pre-registered) or maximized (``max``, the paired PSNR/SSIM rule P3
+    pre-registered); the default keeps P1/P2 behavior byte-identical.
+    """
 
     RULE_TEXT = (
         "metric m(N) = mean over t1n/t1c/t2w/t2f of plane-mean dev 2.5D RadImageNet FID on the "
@@ -506,23 +511,27 @@ class EarlyStopRule:
         "the last {patience} consecutive evals set no new best m; hard cap = trainer n_epochs"
     )
 
-    def __init__(self, patience, min_epoch, max_epoch):
+    def __init__(self, patience, min_epoch, max_epoch, direction="min"):
+        if direction not in ("min", "max"):
+            raise ValueError(f"direction must be 'min' or 'max', got {direction!r}")
         self.patience = patience
         self.min_epoch = min_epoch
         self.max_epoch = max_epoch
+        self.direction = direction
 
     def rule_text(self):
         return self.RULE_TEXT.format(min_epoch=self.min_epoch, patience=self.patience)
 
     def should_stop(self, trend):
         """trend: list of {epoch, m} in epoch order; returns (stop, reason)."""
+        sign = -1 if self.direction == "max" else 1
         points = [point for point in trend if point["m"] is not None]
         if not points:
             return False, "no eval points yet"
         last_epoch = points[-1]["epoch"]
         if last_epoch < self.min_epoch:
             return False, f"before min_epoch {self.min_epoch}"
-        best_index = min(range(len(points)), key=lambda i: (points[i]["m"], i))
+        best_index = min(range(len(points)), key=lambda i: (sign * points[i]["m"], i))
         best = points[best_index]["m"]
         since_best = len(points) - 1 - best_index
         if since_best >= self.patience:
@@ -530,12 +539,13 @@ class EarlyStopRule:
         return False, f"best {best:.4f}, {since_best} evals since"
 
     @staticmethod
-    def selection(trend):
+    def selection(trend, direction="min", metric_name="mean_fid"):
         points = [point for point in trend if point["m"] is not None]
         if not points:
             return None
-        best = min(points, key=lambda point: (point["m"], point["epoch"]))
-        return {"epoch": best["epoch"], "mean_fid": best["m"], "checkpoint": best.get("checkpoint")}
+        sign = -1 if direction == "max" else 1
+        best = min(points, key=lambda point: (sign * point["m"], point["epoch"]))
+        return {"epoch": best["epoch"], metric_name: best["m"], "checkpoint": best.get("checkpoint")}
 
 
 class TrendLedger:
