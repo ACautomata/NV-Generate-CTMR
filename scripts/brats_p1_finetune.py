@@ -29,6 +29,10 @@ Deltas against the upstream ``diff_model_train.py`` loop, all pinned:
   pre-recorded early-stop rule (sidecar) can end the run without a kill;
 - bf16 autocast is the default (DCU), fp32 fallback via --no_amp.
 
+Thin entry since the harness consolidation (ADR-0011, #111): the domain kernel
+(``P1TrainKernel``, four-method injection) rides the shared
+``ctmr.harness.PhaseHarness`` shell; the CLI face is unchanged.
+
 Usage (torchrun on the DCU):
     torchrun --nproc_per_node=7 -m scripts.brats_p1_finetune \
         -e run/environment.json -c configs/config_brats_p1_train.json \
@@ -37,11 +41,8 @@ Usage (torchrun on the DCU):
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
-import subprocess
-from datetime import UTC, datetime
 from pathlib import Path
 
 import monai
@@ -49,14 +50,16 @@ import torch
 import torch.distributed as dist
 from monai.data import DataLoader, partition_dataset
 from monai.transforms import Compose
-from torch.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel
+
+from ctmr.harness.cli import TrainCli
+from ctmr.harness.recipe import P1RecipeSpec
+from ctmr.harness.train_shell import PhaseHarness, TrainContext, TrainProvenanceWriter
 
 from .diff_model_setting import initialize_distributed, load_config, setup_logging
 from .diff_model_train import augment_modality_label
 from .utils import define_instance
 
-STOP_FILE = ".early_stop"
 SCALE_FACTOR_RELATIVE_TOLERANCE = 0.5  # issue #10 §7: sanity assert, not a re-pin
 
 
@@ -123,14 +126,21 @@ class ScaleFactorPolicy:
             )
 
 
-class P1FinetuneJob:
-    """The pinned P1 continuation loop (upstream-equivalent except the pinned deltas)."""
+class P1TrainKernel:
+    """P1 kernel: data composition, full-param DM hook-up, bare L1, payload keys.
+
+    The four-method ``PhaseTrainKernel`` boundary. Recipe values live here, not
+    in the shell: Adam + lr + PolynomialLR power 2.0 (ADR-0005).
+    """
 
     def __init__(self, args, device, logger, local_rank):
         self._args = args
         self._device = device
         self._logger = logger
         self._local_rank = local_rank
+        self._unet = None
+        self._scale_factor = None
+        self._noise_scheduler = None
 
     def build_loader(self):
         args = self._args
@@ -181,11 +191,10 @@ class P1FinetuneJob:
         self._logger.info(f"base checkpoint loaded (full-param continuation): {args.existing_ckpt_filepath}")
         return unet, ScaleFactorPolicy(checkpoint["scale_factor"], self._logger)
 
-    def train(self):
+    def load_models(self, loader):
         args = self._args
-        loader = self.build_loader()
         unet, scale_policy = self.load_unet()
-        noise_scheduler = define_instance(args, "noise_scheduler")
+        self._noise_scheduler = define_instance(args, "noise_scheduler")
 
         with open(args.modality_mapping_path) as handle:
             args.modality_mapping = json.load(handle)
@@ -200,156 +209,39 @@ class P1FinetuneJob:
         optimizer = torch.optim.Adam(unet.parameters(), lr=args.diffusion_unet_train["lr"])
         total_steps = (args.diffusion_unet_train["n_epochs"] * len(loader.dataset)) / args.diffusion_unet_train["batch_size"]
         lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(optimizer, total_iters=total_steps, power=2.0)
-        loss_pt = torch.nn.L1Loss()
-        scaler = GradScaler("cuda")
-        torch.set_float32_matmul_precision("highest")
 
-        for epoch in range(args.diffusion_unet_train["n_epochs"]):
-            if self._stop_requested():
-                self._logger.info(f"early-stop file present; halting before epoch {epoch + 1}")
-                break
-            self._train_one_epoch(epoch, unet, loader, optimizer, lr_scheduler, loss_pt, scaler, scale_factor, noise_scheduler)
+        self._unet = unet
+        self._scale_factor = scale_factor
+        return TrainContext(trainable=unet, optimizer=optimizer, scheduler=lr_scheduler, scale=scale_factor, device=self._device)
 
-        if dist.is_initialized():
-            dist.destroy_process_group()
-
-    def _stop_requested(self):
-        return (Path(self._args.model_dir) / STOP_FILE).is_file()
-
-    def _train_one_epoch(self, epoch, unet, loader, optimizer, lr_scheduler, loss_pt, scaler, scale_factor, noise_scheduler):
-        args = self._args
-        if self._local_rank == 0:
-            self._logger.info(f"Epoch {epoch + 1}, lr {optimizer.param_groups[0]['lr']}.")
-        iteration = 0
-        loss_totals = torch.zeros(2, dtype=torch.float, device=self._device)
-        unet.train()
-        for train_data in loader:
-            if self._stop_requested():
-                self._logger.info(f"early-stop file present; halting mid-epoch {epoch + 1}")
-                return
-            iteration += 1
-            images = train_data["image"].to(self._device) * scale_factor
-            modality_tensor = augment_modality_label(train_data["modality"].to(self._device)).to(self._device)
-            spacing_tensor = train_data["spacing"].to(self._device)
-            optimizer.zero_grad(set_to_none=True)
-            with autocast("cuda", dtype=torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16, enabled=args.amp):
-                noise = torch.randn_like(images)
-                timesteps = noise_scheduler.sample_timesteps(images)
-                noisy_latent = noise_scheduler.add_noise(original_samples=images, noise=noise, timesteps=timesteps)
-                model_output = unet(
-                    x=noisy_latent,
-                    timesteps=timesteps,
-                    spacing_tensor=spacing_tensor,
-                    class_labels=modality_tensor,
-                )
-                loss = loss_pt(model_output.float(), (images - noise).float())
-            if args.amp and args.amp_dtype == "fp16":
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
-            lr_scheduler.step()
-            loss_totals[0] += loss.item()
-            loss_totals[1] += 1.0
-            if self._local_rank == 0 and iteration % 50 == 0:
-                self._logger.info(
-                    f"[{str(datetime.now())[:19]}] epoch {epoch + 1}, iter {iteration}/{len(loader)}, "
-                    f"loss: {loss.item():.4f}, lr: {optimizer.param_groups[0]['lr']:.12f}."
-                )
-        if dist.is_initialized():
-            dist.all_reduce(loss_totals, op=torch.distributed.ReduceOp.SUM)
-        if self._local_rank == 0:
-            self._save_checkpoint(epoch, unet, loss_totals, scale_factor)
-
-    def _save_checkpoint(self, epoch, unet, loss_totals, scale_factor):
-        unet_module = unet.module if isinstance(unet, DistributedDataParallel) else unet
-        path = Path(self._args.model_dir) / f"epoch_{epoch + 1}.pt"
-        tmp = path.with_name(path.name + ".tmp")
-        # Atomically publish the checkpoint: the dev sidecar polls epoch_*.pt and
-        # must never observe a partial write.
-        torch.save(
-            {
-                "epoch": epoch + 1,
-                "loss": (loss_totals[0] / loss_totals[1]).item(),
-                "num_train_timesteps": self._args.noise_scheduler["num_train_timesteps"],
-                "scale_factor": scale_factor,
-                "unet_state_dict": unet_module.state_dict(),
-            },
-            tmp,
+    def train_batch(self, batch):
+        images = batch["image"].to(self._device) * self._scale_factor
+        modality_tensor = augment_modality_label(batch["modality"].to(self._device)).to(self._device)
+        spacing_tensor = batch["spacing"].to(self._device)
+        noise = torch.randn_like(images)
+        timesteps = self._noise_scheduler.sample_timesteps(images)
+        noisy_latent = self._noise_scheduler.add_noise(original_samples=images, noise=noise, timesteps=timesteps)
+        model_output = self._unet(
+            x=noisy_latent,
+            timesteps=timesteps,
+            spacing_tensor=spacing_tensor,
+            class_labels=modality_tensor,
         )
-        tmp.replace(path)
-        (Path(self._args.model_dir) / "latest.json").write_text(json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n")
-        self._logger.info(f"epoch {epoch + 1} average loss: {(loss_totals[0] / loss_totals[1]).item():.4f} -> {path}")
+        return torch.nn.functional.l1_loss(model_output.float(), (images - noise).float())
 
-
-class TrainProvenanceWriter:
-    """Records what the training run consumed (feeds the phase-run contract)."""
-
-    def __init__(self, args, local_rank, logger):
-        self._args = args
-        self._local_rank = local_rank
-        self._logger = logger
-
-    def write(self, path):
-        if self._local_rank != 0:
-            return None
-        provenance = {
-            "written_utc": datetime.now(UTC).isoformat(),
-            "script": str(Path(__file__).resolve()),
-            "env_config": str(Path(self._args.env_config_path).resolve()),
-            "model_config": str(Path(self._args.model_config_path).resolve()),
-            "model_def": str(Path(self._args.model_def_path).resolve()),
-            "data_lists": {
-                "brats_train": self._args.json_data_list,
-                "replay": list(self._args.replay_list),
-            },
-            "base_ckpt": self._args.existing_ckpt_filepath,
-            "hyperparameters": self._args.diffusion_unet_train,
-            "amp_dtype": self._args.amp_dtype,
-            "world_size": dist.get_world_size() if dist.is_initialized() else 1,
-            "torch_version": torch.__version__,
-            "git_commit": self._git_commit(),
+    def checkpoint_payload(self, epoch, avg_loss, scale):
+        unet_module = self._unet.module if isinstance(self._unet, DistributedDataParallel) else self._unet
+        return {
+            "epoch": epoch,
+            "loss": avg_loss,
+            "num_train_timesteps": self._args.noise_scheduler["num_train_timesteps"],
+            "scale_factor": scale,
+            "unet_state_dict": unet_module.state_dict(),
         }
-        out = Path(path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(provenance, indent=2) + "\n")
-        self._logger.info(f"train provenance -> {out}")
-        return out
-
-    @staticmethod
-    def _git_commit():
-        try:
-            return subprocess.run(
-                ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, cwd=str(Path(__file__).parent)
-            ).stdout.strip()
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            return None
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("-e", "--env_config_path", required=True)
-    parser.add_argument("-c", "--model_config_path", required=True)
-    parser.add_argument("-t", "--model_def_path", required=True)
-    parser.add_argument("-g", "--num_gpus", type=int, default=1)
-    parser.add_argument(
-        "--replay-list",
-        dest="replay_list",
-        action="append",
-        required=True,
-        help="MR-RATE replay data list (spec: list-level 1:1 mix; append once per list)",
-    )
-    parser.add_argument("--no_amp", dest="amp", action="store_false")
-    parser.add_argument("--amp_dtype", default="bf16", choices=["fp16", "bf16"], help="bf16 default (DCU)")
-    args = parser.parse_args(argv)
-
-    # torchrun sets WORLD_SIZE when launched via torchrun; -g must agree or
-    # every worker would silently run as a world_size=1 replica on cuda:0.
-    torchrun_world = int(os.environ["WORLD_SIZE"]) if os.environ.get("WORLD_SIZE") else None
-    if torchrun_world is not None and torchrun_world != args.num_gpus:
-        raise ValueError(f"--num_gpus {args.num_gpus} disagrees with torchrun WORLD_SIZE {torchrun_world}")
+    args = TrainCli(__doc__, stage="p1").parse(argv)
 
     merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.replay_list = args.replay_list
@@ -361,11 +253,28 @@ def main(argv=None):
 
     local_rank, _world, device = initialize_distributed(args.num_gpus)
     logger = setup_logging("p1-finetune")
-    if local_rank == 0:
-        Path(merged.model_dir).mkdir(parents=True, exist_ok=True)
-        TrainProvenanceWriter(merged, local_rank, logger).write(Path(merged.model_dir) / "train_provenance.json")
-    P1FinetuneJob(merged, device, logger, local_rank).train()
-    return 0
+    kernel = P1TrainKernel(merged, device, logger, local_rank)
+    return PhaseHarness(
+        kernel=kernel,
+        model_dir=merged.model_dir,
+        n_epochs=merged.diffusion_unet_train["n_epochs"],
+        amp=args.amp,
+        amp_dtype=args.amp_dtype,
+        local_rank=local_rank,
+        logger=logger,
+        recipe_check=P1RecipeSpec(merged.diffusion_unet_train, merged.noise_scheduler, logger).check,
+        provenance=TrainProvenanceWriter(
+            merged,
+            local_rank,
+            logger,
+            domain_fields=lambda: {
+                "data_lists": {"brats_train": merged.json_data_list, "replay": list(merged.replay_list)},
+                "base_ckpt": merged.existing_ckpt_filepath,
+                "hyperparameters": merged.diffusion_unet_train,
+            },
+            script_path=Path(__file__),
+        ),
+    ).run()
 
 
 if __name__ == "__main__":

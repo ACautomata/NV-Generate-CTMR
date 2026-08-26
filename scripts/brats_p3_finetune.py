@@ -28,9 +28,13 @@ Deltas against ``brats_p2_finetune.py``, all pinned:
   binarized 8ch mask (``binarize_labels``); labels only enter the weighted loss;
 - the training list is the #52 ``p3_pairs.json`` (fold=1 train / fold=0 dev; the
   val split is DISCARDED — dev-eval selects the candidate, spec #51 decision 7);
-- ``P3RecipeGuard`` additionally pins cfg_guidance_scale=0 (the candidate is
+- ``P3RecipeSpec`` additionally pins cfg_guidance_scale=0 (the candidate is
   evaluated and selected with CFG off) and refuses to load a ControlNet checkpoint;
 - bf16 autocast default (DCU), fp32 fallback via ``--no_amp``.
+
+Thin entry since the harness consolidation (ADR-0011, #111): the domain kernel
+(``P3TrainKernel``, four-method injection) rides the shared
+``ctmr.harness.PhaseHarness`` shell; the CLI face is unchanged.
 
 Usage (torchrun on the DCU):
     torchrun --nproc_per_node=7 -m scripts.brats_p3_finetune \
@@ -40,12 +44,9 @@ Usage (torchrun on the DCU):
 
 from __future__ import annotations
 
-import argparse
 import copy
 import json
 import os
-import subprocess
-from datetime import UTC, datetime
 from pathlib import Path
 
 import monai
@@ -55,14 +56,15 @@ import torch.nn.functional as F
 from monai.data import CacheDataset
 from monai.networks.utils import copy_model_state
 from monai.transforms import Compose, EnsureTyped, Lambdad, LoadImaged, Orientationd
-from torch.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
+from ctmr.harness.cli import TrainCli
+from ctmr.harness.recipe import P3RecipeSpec
+from ctmr.harness.train_shell import PhaseHarness, TrainContext, TrainProvenanceWriter
+
 from .diff_model_setting import initialize_distributed, load_config, setup_logging
 from .utils import add_data_dir2path, define_instance, partition_dataset
-
-STOP_FILE = ".early_stop"
 
 
 def prepare_p3_controlnet_json_dataloader(
@@ -125,51 +127,6 @@ def prepare_p3_controlnet_json_dataloader(
     return train_loader, val_loader
 
 
-class P3RecipeGuard:
-    """Pinned-recipe guard: rejects any deviation from the frozen P3 image-conditioned recipe (issue #61).
-
-    The recipe is the P2 recipe verbatim (ADR-0007) plus CFG=0 and an explicit
-    no-warm-start-from-P2 clause.
-    """
-
-    PINNED_LR = 1e-5
-    PINNED_BATCH = 1
-    PINNED_WEIGHTED_LOSS = 100
-    PINNED_WEIGHTED_LABELS = [129, 130, 131]
-    PINNED_CACHE_RATE = 0
-    MAX_EPOCHS = 100
-    PINNED_CFG = 0.0
-
-    def __init__(self, train_config, inference_config, logger):
-        self._cfg = train_config
-        self._infer = inference_config or {}
-        self._logger = logger
-
-    def check(self):
-        cfg = self._cfg
-        if cfg.get("lr") != self.PINNED_LR:
-            raise ValueError(f"pinned P3 lr is {self.PINNED_LR}, got {cfg.get('lr')} (P2-equivalent recipe)")
-        if cfg.get("batch_size") != self.PINNED_BATCH:
-            raise ValueError(f"pinned P3 batch_size is {self.PINNED_BATCH}, got {cfg.get('batch_size')}")
-        if cfg.get("weighted_loss") != self.PINNED_WEIGHTED_LOSS:
-            raise ValueError(f"pinned P3 weighted_loss is {self.PINNED_WEIGHTED_LOSS}, got {cfg.get('weighted_loss')}")
-        if cfg.get("weighted_loss_label") != self.PINNED_WEIGHTED_LABELS:
-            raise ValueError(f"pinned P3 weighted_loss_label is {self.PINNED_WEIGHTED_LABELS}, got {cfg.get('weighted_loss_label')}")
-        if cfg.get("use_region_contrasive_loss", False) is not False:
-            raise ValueError("P3 recipe forbids use_region_contrasive_loss (must be OFF)")
-        if cfg.get("cache_rate") != self.PINNED_CACHE_RATE:
-            raise ValueError(f"pinned P3 cache_rate is {self.PINNED_CACHE_RATE}, got {cfg.get('cache_rate')}")
-        if cfg.get("n_epochs", self.MAX_EPOCHS) > self.MAX_EPOCHS:
-            raise ValueError(f"pinned P3 max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')}")
-        if self._infer.get("cfg_guidance_scale", 0.0) != self.PINNED_CFG:
-            raise ValueError(f"P3 candidate is evaluated/selected with CFG OFF (cfg_guidance_scale=0); got {self._infer.get('cfg_guidance_scale')}")
-        self._logger.info(
-            f"P3 recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} weighted_loss={self.PINNED_WEIGHTED_LOSS}"
-            f"@{self.PINNED_WEIGHTED_LABELS} RCL=off cfg={self.PINNED_CFG}"
-        )
-        return True
-
-
 class P3DataCatalog:
     """The P3 image-conditioned training list (pure BraTS, no replay) — one record per ordered (src,tgt) pair."""
 
@@ -217,14 +174,22 @@ class P3DataCatalog:
         return records
 
 
-class P3ControlNetJob:
-    """The pinned P3 ControlNet-only loop (upstream-equivalent except the pinned deltas)."""
+class P3TrainKernel:
+    """P3 kernel: src-image data, frozen-DM ControlNet hook-up, weighted L1, CFG=0.
+
+    The four-method ``PhaseTrainKernel`` boundary. Recipe values live here, not
+    in the shell: AdamW + lr + PolynomialLR power 2.0 (P2-equivalent recipe).
+    """
 
     def __init__(self, args, device, logger, local_rank):
         self._args = args
         self._device = device
         self._logger = logger
         self._local_rank = local_rank
+        self._controlnet = None
+        self._unet = None
+        self._scale_factor = None
+        self._noise_scheduler = None
 
     def build_loader(self):
         args = self._args
@@ -245,7 +210,7 @@ class P3ControlNetJob:
         # dev-eval sidecar, never by training/validation loss (spec #51 decision 7).
         return train_loader
 
-    def load_models(self):
+    def load_models(self, loader):
         args = self._args
         controlnet = define_instance(args, "controlnet_def").to(self._device)
         unet = define_instance(args, "diffusion_unet_def").to(self._device)
@@ -269,32 +234,17 @@ class P3ControlNetJob:
         controlnet.train()
         self._logger.info(f"DM frozen (requires_grad=False); ControlNet init from P1-DM encoder/mid -> {args.trained_diffusion_path}")
         self._logger.info(f"scale_factor reused from P1-DM checkpoint -> {scale_factor}")
-        return controlnet, unet, scale_factor
-
-    def train(self):
-        args = self._args
-        loader = self.build_loader()
-        controlnet, unet, scale_factor = self.load_models()
-        noise_scheduler = define_instance(args, "noise_scheduler")
         scale_tensor = torch.tensor(scale_factor, device=self._device)
 
         optimizer = torch.optim.AdamW(controlnet.parameters(), lr=args.controlnet_train["lr"])
         total_steps = (args.controlnet_train["n_epochs"] * len(loader.dataset)) / args.controlnet_train["batch_size"]
         lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(optimizer, total_iters=total_steps, power=2.0)
-        scaler = GradScaler("cuda")
-        torch.set_float32_matmul_precision("highest")
 
-        for epoch in range(args.controlnet_train["n_epochs"]):
-            if self._stop_requested():
-                self._logger.info(f"early-stop file present; halting before epoch {epoch + 1}")
-                break
-            self._train_one_epoch(epoch, controlnet, unet, loader, optimizer, lr_scheduler, scaler, scale_tensor, noise_scheduler)
-
-        if dist.is_initialized():
-            dist.destroy_process_group()
-
-    def _stop_requested(self):
-        return (Path(self._args.model_dir) / STOP_FILE).is_file()
+        self._controlnet = controlnet
+        self._unet = unet
+        self._scale_factor = scale_tensor
+        self._noise_scheduler = define_instance(args, "noise_scheduler")
+        return TrainContext(trainable=controlnet, optimizer=optimizer, scheduler=lr_scheduler, scale=scale_tensor, device=self._device)
 
     def _weighted_target(self, labels, images):
         """weights = 1, with weighted_loss on the tumour subregions {129,130,131}."""
@@ -309,143 +259,50 @@ class P3ControlNetJob:
         weights[roi.repeat(1, images.shape[1], 1, 1, 1) == 1] = args.controlnet_train["weighted_loss"]
         return weights
 
-    def _train_one_epoch(self, epoch, controlnet, unet, loader, optimizer, lr_scheduler, scaler, scale_tensor, noise_scheduler):
-        args = self._args
-        if self._local_rank == 0:
-            self._logger.info(f"Epoch {epoch + 1}, lr {optimizer.param_groups[0]['lr']}.")
-        iteration = 0
-        loss_totals = torch.zeros(2, dtype=torch.float, device=self._device)
-        for batch in loader:
-            if self._stop_requested():
-                self._logger.info(f"early-stop file present; halting mid-epoch {epoch + 1}")
-                return
-            iteration += 1
-            images = batch["image"].to(self._device) * scale_tensor
-            src_latent = batch["src_image"].to(self._device) * scale_tensor
-            labels = batch["label"].to(self._device)
-            if labels.shape[1] != 1:
-                raise ValueError(f"expected labels [B,1,X,Y,Z], got {labels.shape}")
-            spacing_tensor = batch["spacing"].to(self._device)
-            modality_tensor = batch["modality"].to(self._device)
-            optimizer.zero_grad(set_to_none=True)
-            with autocast("cuda", dtype=torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16, enabled=args.amp):
-                noise = torch.randn_like(images)
-                timesteps = noise_scheduler.sample_timesteps(images)
-                noisy_latent = noise_scheduler.add_noise(original_samples=images, noise=noise, timesteps=timesteps)
-                # The ONLY structural change vs P2: condition on the 4ch src latent,
-                # not the binarized mask. Labels never enter the condition.
-                controlnet_cond = src_latent
-                down, mid = controlnet(x=noisy_latent, timesteps=timesteps, controlnet_cond=controlnet_cond, class_labels=modality_tensor)
-                model_output = unet(
-                    x=noisy_latent,
-                    timesteps=timesteps,
-                    spacing_tensor=spacing_tensor,
-                    down_block_additional_residuals=down,
-                    mid_block_additional_residual=mid,
-                    class_labels=modality_tensor,
-                )
-                model_gt = images - noise
-                weights = self._weighted_target(labels, images)
-                if weights is not None:
-                    loss = (F.l1_loss(model_output.float(), model_gt.float(), reduction="none") * weights).mean()
-                else:
-                    loss = F.l1_loss(model_output.float(), model_gt.float())
-            if args.amp and args.amp_dtype == "fp16":
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
-            lr_scheduler.step()
-            loss_totals[0] += loss.item()
-            loss_totals[1] += 1.0
-            if self._local_rank == 0 and iteration % 50 == 0:
-                self._logger.info(
-                    f"[{str(datetime.now())[:19]}] epoch {epoch + 1}, iter {iteration}/{len(loader)}, "
-                    f"loss: {loss.item():.4f}, lr: {optimizer.param_groups[0]['lr']:.12f}."
-                )
-        if dist.is_initialized():
-            dist.all_reduce(loss_totals, op=torch.distributed.ReduceOp.SUM)
-        if self._local_rank == 0:
-            self._save_checkpoint(epoch, controlnet, loss_totals, scale_tensor)
+    def train_batch(self, batch):
+        images = batch["image"].to(self._device) * self._scale_factor
+        src_latent = batch["src_image"].to(self._device) * self._scale_factor
+        labels = batch["label"].to(self._device)
+        if labels.shape[1] != 1:
+            raise ValueError(f"expected labels [B,1,X,Y,Z], got {labels.shape}")
+        spacing_tensor = batch["spacing"].to(self._device)
+        modality_tensor = batch["modality"].to(self._device)
+        noise = torch.randn_like(images)
+        timesteps = self._noise_scheduler.sample_timesteps(images)
+        noisy_latent = self._noise_scheduler.add_noise(original_samples=images, noise=noise, timesteps=timesteps)
+        # The ONLY structural change vs P2: condition on the 4ch src latent,
+        # not the binarized mask. Labels never enter the condition.
+        controlnet_cond = src_latent
+        down, mid = self._controlnet(x=noisy_latent, timesteps=timesteps, controlnet_cond=controlnet_cond, class_labels=modality_tensor)
+        model_output = self._unet(
+            x=noisy_latent,
+            timesteps=timesteps,
+            spacing_tensor=spacing_tensor,
+            down_block_additional_residuals=down,
+            mid_block_additional_residual=mid,
+            class_labels=modality_tensor,
+        )
+        model_gt = images - noise
+        weights = self._weighted_target(labels, images)
+        if weights is not None:
+            return (F.l1_loss(model_output.float(), model_gt.float(), reduction="none") * weights).mean()
+        return F.l1_loss(model_output.float(), model_gt.float())
 
-    def _save_checkpoint(self, epoch, controlnet, loss_totals, scale_tensor):
-        path = Path(self._args.model_dir) / f"epoch_{epoch + 1}.pt"
-        tmp = path.with_name(path.name + ".tmp")
-        controlnet_state = controlnet.module.state_dict() if isinstance(controlnet, DistributedDataParallel) else controlnet.state_dict()
-        ckpt = {
-            "epoch": epoch + 1,
-            "loss": (loss_totals[0] / loss_totals[1]).item(),
+    def checkpoint_payload(self, epoch, avg_loss, scale):
+        controlnet_state = (
+            self._controlnet.module.state_dict() if isinstance(self._controlnet, DistributedDataParallel) else self._controlnet.state_dict()
+        )
+        return {
+            "epoch": epoch,
+            "loss": avg_loss,
             "num_train_timesteps": self._args.noise_scheduler["num_train_timesteps"],
-            "scale_factor": scale_tensor,
+            "scale_factor": scale,
             "controlnet_state_dict": controlnet_state,
         }
-        torch.save(ckpt, tmp)
-        tmp.replace(path)
-        (Path(self._args.model_dir) / "latest.json").write_text(json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n")
-        self._logger.info(f"epoch {epoch + 1} average loss: {(loss_totals[0] / loss_totals[1]).item():.4f} -> {path}")
-
-
-class P3TrainProvenanceWriter:
-    """Records what the P3 training run consumed (feeds the phase-run contract)."""
-
-    def __init__(self, args, local_rank, logger):
-        self._args = args
-        self._local_rank = local_rank
-        self._logger = logger
-
-    def write(self, path):
-        if self._local_rank != 0:
-            return None
-        provenance = {
-            "written_utc": datetime.now(UTC).isoformat(),
-            "script": str(Path(__file__).resolve()),
-            "env_config": str(Path(self._args.env_config_path).resolve()),
-            "model_config": str(Path(self._args.model_config_path).resolve()),
-            "model_def": str(Path(self._args.model_def_path).resolve()),
-            "data_list": self._args.json_data_list,
-            "trained_diffusion_path": self._args.trained_diffusion_path,
-            "replay": None,
-            "hyperparameters": self._args.controlnet_train,
-            "cfg_guidance_scale": self._args.diffusion_unet_inference.get("cfg_guidance_scale")
-            if hasattr(self._args, "diffusion_unet_inference")
-            else None,
-            "amp_dtype": self._args.amp_dtype,
-            "world_size": dist.get_world_size() if dist.is_initialized() else 1,
-            "torch_version": torch.__version__,
-            "git_commit": self._git_commit(),
-        }
-        out = Path(path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(provenance, indent=2) + "\n")
-        self._logger.info(f"train provenance -> {out}")
-        return out
-
-    @staticmethod
-    def _git_commit():
-        try:
-            return subprocess.run(
-                ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, cwd=str(Path(__file__).parent)
-            ).stdout.strip()
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            return None
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("-e", "--env_config_path", required=True)
-    parser.add_argument("-c", "--model_config_path", required=True)
-    parser.add_argument("-t", "--model_def_path", required=True)
-    parser.add_argument("-g", "--num_gpus", type=int, default=1)
-    parser.add_argument("--data-list", default=None, help="p3_pairs.json (defaults to env json_data_list)")
-    parser.add_argument("--no_amp", dest="amp", action="store_false")
-    parser.add_argument("--amp_dtype", default="bf16", choices=["fp16", "bf16"], help="bf16 default (DCU)")
-    args = parser.parse_args(argv)
-
-    torchrun_world = int(os.environ["WORLD_SIZE"]) if os.environ.get("WORLD_SIZE") else None
-    if torchrun_world is not None and torchrun_world != args.num_gpus:
-        raise ValueError(f"--num_gpus {args.num_gpus} disagrees with torchrun WORLD_SIZE {torchrun_world}")
+    args = TrainCli(__doc__, stage="p3").parse(argv)
 
     merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.amp = args.amp
@@ -460,20 +317,38 @@ def main(argv=None):
 
     local_rank, _world, device = initialize_distributed(args.num_gpus)
     logger = setup_logging("p3-finetune")
-    if local_rank == 0:
-        # A P3 run only ever reads the frozen P1-DM; it never loads a ControlNet
-        # checkpoint (no warm-start from P2). Guard rejects one if present.
-        if getattr(merged, "trained_controlnet_path", None) is not None:
-            raise ValueError("P3 recipe forbids warm-starting from a ControlNet checkpoint (P1-DM init only)")
-        P3RecipeGuard(
+    kernel = P3TrainKernel(merged, device, logger, local_rank)
+    infer_cfg = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else None
+    return PhaseHarness(
+        kernel=kernel,
+        model_dir=merged.model_dir,
+        n_epochs=merged.controlnet_train["n_epochs"],
+        amp=args.amp,
+        amp_dtype=args.amp_dtype,
+        local_rank=local_rank,
+        logger=logger,
+        recipe_check=P3RecipeSpec(
             merged.controlnet_train,
-            merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else None,
+            infer_cfg,
             logger,
-        ).check()
-        Path(merged.model_dir).mkdir(parents=True, exist_ok=True)
-        P3TrainProvenanceWriter(merged, local_rank, logger).write(Path(merged.model_dir) / "train_provenance.json")
-    P3ControlNetJob(merged, device, logger, local_rank).train()
-    return 0
+            trained_controlnet_path=getattr(merged, "trained_controlnet_path", None),
+        ).check,
+        provenance=TrainProvenanceWriter(
+            merged,
+            local_rank,
+            logger,
+            domain_fields=lambda: {
+                "data_list": merged.json_data_list,
+                "trained_diffusion_path": merged.trained_diffusion_path,
+                "replay": None,
+                "hyperparameters": merged.controlnet_train,
+                "cfg_guidance_scale": merged.diffusion_unet_inference.get("cfg_guidance_scale")
+                if hasattr(merged, "diffusion_unet_inference")
+                else None,
+            },
+            script_path=Path(__file__),
+        ),
+    ).run()
 
 
 if __name__ == "__main__":
