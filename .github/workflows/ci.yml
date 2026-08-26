@@ -32,3 +32,23 @@ jobs:
 
       - name: Run pre-commit
         run: pre-commit run --all-files
+
+  # Light sci-stack test job (ADR-0013 §4): explicit pip list, NOT requirements.txt
+  # (which pulls the full torch stack). torch-level tests skip themselves via
+  # pytest.importorskip; GPU/cluster chains stay out of CI (sugon integration gate).
+  test:
+    name: test (light sci stack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install pytest numpy nibabel scikit-image Pillow SimpleITK
+
+      - name: Run tests
+        run: pytest
