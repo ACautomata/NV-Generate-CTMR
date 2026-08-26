@@ -36,9 +36,9 @@ src/ctmr/
 │   └── acceptance.py          # 终验裁决核：非补偿 AND、undecided 态、层级违反常量镜像侧
 ├── application/               # 编排：用例、外壳、生成链驱动；一律功能命名，阶段代号不入代码
 │   ├── generation/
-│   │   ├── modality_label/    # 原 P1（模态标签条件）：train/dev_eval/批量生成用例（内核注入 shell）
-│   │   ├── mask/              # 原 P2（掩码条件）：ControlNet-only 用例
-│   │   └── cross_modal/       # 原 P3（影像条件跨模态）：stage0/controlnet 用例与 manifest
+│   │   ├── modality_label/    # 原 P1（模态标签条件）：train/monitor/sample 等单词模块（内核注入 shell）
+│   │   ├── mask/              # 原 P2（掩码条件）：ControlNet-only 同构单词模块
+│   │   └── cross_modal/       # 原 P3（影像条件跨模态）：train＋monitor＋baseline(零训练 img2img 基线)＋candidate(ControlNet 受训对照)
 │   ├── shell.py               # ← ctmr/harness/train_shell＋dev_eval 外壳引擎（argparse 公共集并入）
 │   ├── vae_train.py           # 自 train_vae_tutorial.ipynb cell 24-30 抽取的 GAN 训练循环（全仓唯一实现）
 │   └── acceptance/
@@ -95,7 +95,7 @@ CLAUDE.md 的实验记录段同步改址。其余 10 个 .sh 按 §2/§3 吸收�
 
 ### 7. 命名精简规则
 
-**包路径承义，文件名减负**：上下文信息（阶段、层、子域）由包路径携带，文件名只保留用例动词/资源名。具体：① 禁止包内同名前缀复读（`…/mask/mask_train.py` ✗ → `train.py` ✓）；② 文件名超过约 24 字符须给出更短名词或拆分；③ `utils.py` 这类无名库名禁止在新位置复活——按真实职责命名（losses/transforms/plotting…）；④ 连字符文件名借迁移之机消灭（compute_fid_2-5d_ct.py → fid_2d5.py），per-file-ignores 相应清空；⑤ 阶段/验收代号（P1/P2/P3/L1/L2/L3）禁止用作包名、模块名与 CLI 子命令——代码命名一律用功能词（§2 映射），代号的合法居所是 CONTEXT.md 词条、issue 标题与 ADR/研究史料；⑥ 外部契约名单豁免：`nnUNetTrainer250Epochs`（nnunetv2 注册名）、MONAI/torch API 名。
+**包路径承义，文件名减负**：上下文信息（阶段、层、子域）由包路径携带，文件名只保留用例动词/资源名。具体：① 禁止包内同名前缀复读（`…/mask/mask_train.py` ✗ → `train.py` ✓）；② 文件名超过约 24 字符须给出更短名词或拆分；③ `utils.py` 这类无名库名禁止在新位置复活——按真实职责命名（losses/transforms/plotting…）；④ 连字符文件名借迁移之机消灭（compute_fid_2-5d_ct.py → fid_2d5.py），per-file-ignores 相应清空；⑤ 阶段/验收代号（P1/P2/P3/L1/L2/L3）禁止用作包名、模块名与 CLI 子命令——代码命名一律用功能词（§2 映射），代号的合法居所是 CONTEXT.md 词条、issue 标题与 ADR/研究史料；⑥ 复合流程名以单词承载于代码（dev_eval→watch/select/monitor；stage0→baseline、controlnet→candidate），连字符复合词仅允许出现在 CLI 动词层（`dev-eval`）——运行工件内的冻结契约标记串（如 `variant=stage0-baseline`）不属于命名范围，保持原值兼容既有产物与判定链；⑦ 外部契约名单豁免：`nnUNetTrainer250Epochs`（nnunetv2 注册名）、MONAI/torch API 名。
 
 ### 8. notebook 处置
 

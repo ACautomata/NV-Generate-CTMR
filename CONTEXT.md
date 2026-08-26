@@ -25,9 +25,11 @@ _Avoid_: 跨序列生成、模态合成、模态翻译(translation)
 
 **阶段 0 img2img 基线(stage-0 baseline)**:
 零训练比较下限——以冻结 P1-DM、src latent 与 tgt 模态标签执行 RF 插值起点(`x_t=(1-t)·src_latent+t·noise`)的 img2img 推理;契约中以 P3 run 的 `variant=stage0-baseline` 显式标记,四锚轮覆盖每病例 12 个有序模态对。它不训练任何权重(selection 钉 upstream P1-DM checkpoint)、不可挂 L1/L2/L3 正式报告、不可 conclude 终验——只作 P3 训练候选 L1 paired MAE/SSIM 的 baseline 侧与 L2 四锚轮参照,绝不冒充经 ControlNet 训练或终验通过的候选。
+落地名:`ctmr.application.generation.cross_modal.baseline`(纯代码用词;工件契约标记串 `variant=stage0-baseline` 为冻结兼容值不改,[ADR-0015](docs/adr/0015-ddd-layered-endstate.md) 命名规则⑥)。
 
 **P3 跨模态候选(controlnet-candidate)**:
 stage-0 的受训对照——冻结 P1-DM + 独立从 DM encoder 重新初始化的 image-conditioned ControlNet 旁路,以 4 通道 src latent 为条件、tgt 模态标签经 `class_labels` 同时进 DM 与 ControlNet,从纯噪声去噪且 CFG=0(默认关闭 CFG,零 latent unconditional 分支——issue #61 验收 1-2)。训练钉 P2 同等配置、条件嵌入形状为 4 通道(区别于 P2 掩码的 8 通道)、不沿用 P2 ControlNet 权重,`variant=controlnet-candidate` 显式标记。它与 stage-0 基线合流为 L1 `brats-l1-pairs/1` 三元组(reference+baseline+candidate)供 paired MAE/SSIM 判定,并可挂 L1/L2/L3 正式报告、走 conclude 终验——但候选与基线是「受训对照 vs 比较下限」的关系:候选经整体 FID/配对误差/L2/L3 检验才判通过,绝不因相对基线占优而免于终验,也绝不冒充基线(反方向防混淆:候选 selection 钉自己的 ControlNet checkpoint,不是 upstream P1-DM)。
+落地名:`ctmr.application.generation.cross_modal.candidate`。
 _Avoid_: 把候选当基线、给候选贴 stage0 标记、让候选 selection 选 upstream DM、在候选侧沿用 P2 掩码条件或 8 通道条件嵌入
 _Avoid_: 把阶段 0 称作 P3 候选、给基线做终验裁决、无 variant 标记的 P3 img2img run
 
@@ -118,6 +120,8 @@ _Avoid_: 用真实通道补缺生成体(真实通道主导测量)、以生成模
 
 **仪器输入几何(InstrumentGridGeometry)**:
 把体数据重采样到 1mm 各向同性并居中 crop/pad 到目标网格的纯几何变换——连续体用 B-spline、label 用最近邻、背景填体数据默认像素值；仪器网格 240×240×155@1mm 为其标准实例。它是 L2 仪器输入与终验测量网格的唯一几何来源,其仪器口径经 ADR-0002/0004 冻结、不得偏离;B-spline 为冻结标准而非刻意最优。
+落地名:`ctmr.domain.grid`。
+
 _Avoid_: 以线性插值喂仪器(已统一收敛为 B-spline)、非居中裁剪、把 xyz 轴序作用于 zyx 数组、在各脚本中散落重写此几何
 
 **冻结仪器调用(FrozenInstrumentCommand)**:
