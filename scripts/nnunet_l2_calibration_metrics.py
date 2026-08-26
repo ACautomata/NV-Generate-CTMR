@@ -28,13 +28,30 @@ CHALLENGE_SEED_OFFSET = {"GLI": 1, "SSA": 2, "MEN": 3, "METS": 4, "PED": 5}
 Z95 = 1.959963984540054
 
 CSV_FIELDS = [
-    "challenge", "case", "source", "rep", "region",
-    "input_fail", "run_fail", "hier_viol", "detected",
-    "dice", "sensitivity", "precision",
-    "vol_gt_ml", "vol_pred_ml", "signed_bias_ml", "abs_err_ml", "rel_vol_err",
-    "et_wt_ratio_gt", "et_wt_ratio_pred",
-    "hd95_mm", "centroid_mm",
-    "n_comp_gt", "n_comp_pred", "n_fp_comp",
+    "challenge",
+    "case",
+    "source",
+    "rep",
+    "region",
+    "input_fail",
+    "run_fail",
+    "hier_viol",
+    "detected",
+    "dice",
+    "sensitivity",
+    "precision",
+    "vol_gt_ml",
+    "vol_pred_ml",
+    "signed_bias_ml",
+    "abs_err_ml",
+    "rel_vol_err",
+    "et_wt_ratio_gt",
+    "et_wt_ratio_pred",
+    "hd95_mm",
+    "centroid_mm",
+    "n_comp_gt",
+    "n_comp_pred",
+    "n_fp_comp",
 ]
 
 
@@ -67,8 +84,7 @@ def hd95_mm(gt: np.ndarray, pred: np.ndarray, spacing_zyx) -> float:
     dist_to_pred = ndimage.distance_transform_edt(~pred, sampling=spacing_zyx)
     d_gt_to_pred = dist_to_pred[gt_surf]
     d_pred_to_gt = dist_to_gt[pred_surf]
-    return float(max(np.quantile(d_gt_to_pred, 0.95),
-                     np.quantile(d_pred_to_gt, 0.95)))
+    return float(max(np.quantile(d_gt_to_pred, 0.95), np.quantile(d_pred_to_gt, 0.95)))
 
 
 def centroid_distance_mm(gt: np.ndarray, pred: np.ndarray, spacing_zyx) -> float:
@@ -101,14 +117,10 @@ def measure_case(job: dict) -> list[dict]:
     spacing_zyx = None
 
     try:
-        inputs = [sitk.ReadImage(str(job["inputs_dir"] / f"{case}_{s}.nii.gz"))
-                  for s in ("0000", "0001", "0002", "0003")]
+        inputs = [sitk.ReadImage(str(job["inputs_dir"] / f"{case}_{s}.nii.gz")) for s in ("0000", "0001", "0002", "0003")]
         gt_img = sitk.ReadImage(str(gt_path))
         reference = (inputs[0].GetSize(), inputs[0].GetSpacing(), inputs[0].GetOrigin())
-        consistent = all(
-            (img.GetSize(), img.GetSpacing(), img.GetOrigin()) == reference
-            for img in inputs[1:] + [gt_img]
-        )
+        consistent = all((img.GetSize(), img.GetSpacing(), img.GetOrigin()) == reference for img in inputs[1:] + [gt_img])
         isotropic = all(abs(s - 1.0) < 1e-3 for s in inputs[0].GetSpacing())
         input_fail = not (consistent and isotropic)
 
@@ -117,16 +129,19 @@ def measure_case(job: dict) -> list[dict]:
         if pred_arr.shape != gt_arr.shape:
             run_fail = True
     except (RuntimeError, OSError):  # sitk 读失败 = 输出/输入缺失或损坏
-        input_fail = input_fail or not all(
-            (job["inputs_dir"] / f"{case}_{s}.nii.gz").is_file()
-            for s in ("0000", "0001", "0002", "0003")) or not gt_path.is_file()
+        input_fail = (
+            input_fail
+            or not all((job["inputs_dir"] / f"{case}_{s}.nii.gz").is_file() for s in ("0000", "0001", "0002", "0003"))
+            or not gt_path.is_file()
+        )
         run_fail = True
 
     rows = []
     for region, labels in REGIONS.items():
         row = dict.fromkeys(CSV_FIELDS, None)
-        row.update(challenge=challenge, case=case, source=source, rep=rep, region=region,
-                   input_fail=input_fail, run_fail=run_fail, hier_viol=hier_viol)
+        row.update(
+            challenge=challenge, case=case, source=source, rep=rep, region=region, input_fail=input_fail, run_fail=run_fail, hier_viol=hier_viol
+        )
         if gt_arr is None or pred_arr is None:
             rows.append(row)  # 失败占位行：计 R_fail 分母，各量为空
             continue
@@ -138,10 +153,8 @@ def measure_case(job: dict) -> list[dict]:
 
         row["detected"] = bool(region_mask(pred_arr, REGIONS["WT"]).sum() > 0)
         row["dice"] = 0.0 if pred_mask.sum() == 0 and gt_mask.sum() > 0 else dice_of(gt_mask, pred_mask)
-        row["sensitivity"] = 0.0 if pred_mask.sum() == 0 else (
-            intersection / float(gt_mask.sum()) if gt_mask.sum() > 0 else math.nan)
-        row["precision"] = 0.0 if pred_mask.sum() == 0 else (
-            intersection / float(pred_mask.sum()) if intersection > 0 else 0.0)
+        row["sensitivity"] = 0.0 if pred_mask.sum() == 0 else (intersection / float(gt_mask.sum()) if gt_mask.sum() > 0 else math.nan)
+        row["precision"] = 0.0 if pred_mask.sum() == 0 else (intersection / float(pred_mask.sum()) if intersection > 0 else 0.0)
         row["vol_gt_ml"], row["vol_pred_ml"] = vol_gt, vol_pred
         row["signed_bias_ml"] = vol_pred - vol_gt
         row["abs_err_ml"] = abs(vol_pred - vol_gt)
@@ -152,9 +165,7 @@ def measure_case(job: dict) -> list[dict]:
         row["n_comp_gt"], row["n_comp_pred"] = n_gt, n_pred
         row["n_fp_comp"] = n_fp if region == "WT" else None  # 假阳性病灶组件只对整瘤定义
         if region == "WT":  # 值域/GT 空防御检查（协议 §5 层级行）
-            row["hier_viol"] = bool(not np.isin(gt_arr, (0, 1, 2, 3)).all()
-                                    or not np.isin(pred_arr, (0, 1, 2, 3)).all()
-                                    or gt_mask.sum() == 0)
+            row["hier_viol"] = bool(not np.isin(gt_arr, (0, 1, 2, 3)).all() or not np.isin(pred_arr, (0, 1, 2, 3)).all() or gt_mask.sum() == 0)
         rows.append(row)
 
     # ET/WT 比值逐病例仅算一次（region 循环外补）
@@ -180,8 +191,7 @@ def wilson_upper(k: int, n: int) -> float:
     return min(1.0, center + half)
 
 
-def bootstrap_envelope(values: np.ndarray, quantile: float, upper: bool,
-                       seed: int) -> tuple[float, float, float]:
+def bootstrap_envelope(values: np.ndarray, quantile: float, upper: bool, seed: int) -> tuple[float, float, float]:
     """点估计、单侧 95% bootstrap 界（percentile 法，B=10,000，病例级重采样）。"""
     values = values[~np.isnan(values)]
     n = len(values)
@@ -198,8 +208,7 @@ def bootstrap_envelope(values: np.ndarray, quantile: float, upper: bool,
 
 def summarize_region(region_rows: list[dict], seed: int) -> dict:
     def col(name):
-        return np.array([r[name] if r[name] is not None else math.nan for r in region_rows],
-                        dtype=float)
+        return np.array([r[name] if r[name] is not None else math.nan for r in region_rows], dtype=float)
 
     dice = col("dice")
     rel_err = col("rel_vol_err")
@@ -253,8 +262,17 @@ def main() -> None:
     for rep in args.reps:
         pred_dir = root / "predictions" / challenge / f"rep{rep}"
         for entry in manifest["cases"]:
-            jobs.append({"challenge": challenge, "case": entry["case"], "source": entry["source"],
-                         "rep": rep, "inputs_dir": inputs_dir, "gt_dir": gt_dir, "pred_dir": pred_dir})
+            jobs.append(
+                {
+                    "challenge": challenge,
+                    "case": entry["case"],
+                    "source": entry["source"],
+                    "rep": rep,
+                    "inputs_dir": inputs_dir,
+                    "gt_dir": gt_dir,
+                    "pred_dir": pred_dir,
+                }
+            )
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         for rows in pool.map(measure_case, jobs, chunksize=4):
             all_rows.extend(rows)
@@ -273,23 +291,29 @@ def main() -> None:
     for r in all_rows:
         by_case_region.setdefault((r["case"], r["source"], r["region"]), []).append(r)
     for (case, source, region), rows in sorted(by_case_region.items()):
+
         def rng_of(name):
             vals = [r[name] for r in rows if r[name] is not None and not math.isnan(r[name])]
             return max(vals) - min(vals) if len(vals) == len(rows) and vals else math.nan
-        repeatability.append({
-            "case": case, "source": source, "region": region,
-            "vol_ml_range": rng_of("vol_pred_ml"), "dice_range": rng_of("dice"),
-            "centroid_mm_range": rng_of("centroid_mm"), "hd95_mm_range": rng_of("hd95_mm"),
-        })
+
+        repeatability.append(
+            {
+                "case": case,
+                "source": source,
+                "region": region,
+                "vol_ml_range": rng_of("vol_pred_ml"),
+                "dice_range": rng_of("dice"),
+                "centroid_mm_range": rng_of("centroid_mm"),
+                "hd95_mm_range": rng_of("hd95_mm"),
+            }
+        )
     with (metrics_dir / f"repeatability_{challenge}.csv").open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["case", "source", "region", "vol_ml_range",
-                                                    "dice_range", "centroid_mm_range", "hd95_mm_range"])
+        writer = csv.DictWriter(handle, fieldnames=["case", "source", "region", "vol_ml_range", "dice_range", "centroid_mm_range", "hd95_mm_range"])
         writer.writeheader()
         writer.writerows(repeatability)
 
     def rep_p95(name):
-        vals = [r[name] for r in repeatability if r["region"] == "WT"
-                and r[name] is not None and not math.isnan(r[name])]
+        vals = [r[name] for r in repeatability if r["region"] == "WT" and r[name] is not None and not math.isnan(r[name])]
         return float(np.quantile(vals, 0.95)) if vals else math.nan
 
     # R_fail 与 R_miss 按（病例 × rep）；R_miss 只在非失败观测上计（协议 §5：
@@ -297,18 +321,15 @@ def main() -> None:
     case_level = {}
     for r in all_rows:
         key = (r["case"], r["rep"])
-        c = case_level.setdefault(key, {"input_fail": False, "run_fail": False,
-                                        "hier_viol": False, "detected": True})
+        c = case_level.setdefault(key, {"input_fail": False, "run_fail": False, "hier_viol": False, "detected": True})
         c["input_fail"] |= bool(r["input_fail"])
         c["run_fail"] |= bool(r["run_fail"])
         c["hier_viol"] |= bool(r["hier_viol"])
         c["detected"] &= bool(r["detected"])
     n_obs = len(case_level)
     k_fail = sum(c["input_fail"] or c["run_fail"] or c["hier_viol"] for c in case_level.values())
-    k_breakdown = {name: sum(c[name] for c in case_level.values())
-                   for name in ("input_fail", "run_fail", "hier_viol")}
-    k_miss = sum(not c["detected"] and not (c["input_fail"] or c["run_fail"] or c["hier_viol"])
-                 for c in case_level.values())
+    k_breakdown = {name: sum(c[name] for c in case_level.values()) for name in ("input_fail", "run_fail", "hier_viol")}
+    k_miss = sum(not c["detected"] and not (c["input_fail"] or c["run_fail"] or c["hier_viol"]) for c in case_level.values())
 
     et_gt_by_case = {r["case"]: r["vol_gt_ml"] for r in all_rows if r["region"] == "ET"}
 
@@ -317,37 +338,53 @@ def main() -> None:
         "n_cases": len(manifest["cases"]),
         "n_reps": len(args.reps),
         "n_observations": n_obs,
-        "bootstrap": {"B": B, "method": "病例级重采样 percentile 法（协议 §6）",
-                      "seed": GLOBAL_SEED, "seed_offset": CHALLENGE_SEED_OFFSET[challenge]},
-        "R_fail": {"k": k_fail, "n": n_obs, "point": k_fail / n_obs if n_obs else math.nan,
-                   "wilson_95_upper": wilson_upper(k_fail, n_obs), "breakdown": k_breakdown},
+        "bootstrap": {
+            "B": B,
+            "method": "病例级重采样 percentile 法（协议 §6）",
+            "seed": GLOBAL_SEED,
+            "seed_offset": CHALLENGE_SEED_OFFSET[challenge],
+        },
+        "R_fail": {
+            "k": k_fail,
+            "n": n_obs,
+            "point": k_fail / n_obs if n_obs else math.nan,
+            "wilson_95_upper": wilson_upper(k_fail, n_obs),
+            "breakdown": k_breakdown,
+        },
         "R_miss": {"k": k_miss, "n": n_obs, "point": k_miss / n_obs if n_obs else math.nan},
-        "repeatability_p95": {"vol_ml_range": rep_p95("vol_ml_range"),
-                              "dice_range": rep_p95("dice_range"),
-                              "centroid_mm_range": rep_p95("centroid_mm_range"),
-                              "hd95_mm_range": rep_p95("hd95_mm_range")},
+        "repeatability_p95": {
+            "vol_ml_range": rep_p95("vol_ml_range"),
+            "dice_range": rep_p95("dice_range"),
+            "centroid_mm_range": rep_p95("centroid_mm_range"),
+            "hd95_mm_range": rep_p95("hd95_mm_range"),
+        },
         "per_region": {},
-        "et_lt_1ml_stratum": {"n_cases": sum(v is not None and not math.isnan(v) and v < 1.0
-                                             for v in et_gt_by_case.values()),
-                              "per_region": {}},
+        "et_lt_1ml_stratum": {"n_cases": sum(v is not None and not math.isnan(v) and v < 1.0 for v in et_gt_by_case.values()), "per_region": {}},
     }
     for region in REGIONS:
         region_rows = [r for r in all_rows if r["region"] == region]
         summary["per_region"][region] = summarize_region(region_rows, seed=seed)
-        stratum_cases = {c for c, v in et_gt_by_case.items()
-                         if v is not None and not math.isnan(v) and v < 1.0}
+        stratum_cases = {c for c, v in et_gt_by_case.items() if v is not None and not math.isnan(v) and v < 1.0}
         stratum_rows = [r for r in region_rows if r["case"] in stratum_cases]
-        summary["et_lt_1ml_stratum"]["per_region"][region] = (
-            summarize_region(stratum_rows, seed=seed) if stratum_rows else None)
+        summary["et_lt_1ml_stratum"]["per_region"][region] = summarize_region(stratum_rows, seed=seed) if stratum_rows else None
 
     protocol_sums = root / "protocol" / "SHA256SUMS"
     summary["protocol_sha256s_head"] = protocol_sums.read_text().splitlines()[0] if protocol_sums.is_file() else None
     out_path = root / "metrics" / f"summary_{challenge}.json"
     out_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
-    print(json.dumps({"challenge": challenge, "R_fail": summary["R_fail"], "R_miss": summary["R_miss"],
-                      "D_r_low": {r: summary["per_region"][r]["D_r_low"] for r in REGIONS},
-                      "E_r_vol": {r: summary["per_region"][r]["E_r_vol"] for r in REGIONS}},
-                     indent=2, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "challenge": challenge,
+                "R_fail": summary["R_fail"],
+                "R_miss": summary["R_miss"],
+                "D_r_low": {r: summary["per_region"][r]["D_r_low"] for r in REGIONS},
+                "E_r_vol": {r: summary["per_region"][r]["E_r_vol"] for r in REGIONS},
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@
 
 | 调用点 | 形式 | TTA 状态 |
 |---|---|---|
-| `scripts/nnunet_l2_synthetic_domain_eval.py:498` | 生成的 predict 脚本字符串 `--disable_tta False ` | 若原样执行 → 见 §2.2 |
+| `scripts/nnunet_l2_synthetic_domain_eval.py:498` | 生成的 predict 脚本字符串 `--disable_tta False` | 若原样执行 → 见 §2.2 |
 | `scripts/run_l2_synth_domain_eval.sh:94` | 编排脚本直接调 `nnUNetv2_predict_from_raw_data … --disable_tta False` | 同上(注:`nnUNetv2_predict_from_raw_data` 并非 nnUNetv2 2.x 标准入口名,标准为 `nnUNetv2_predict`) |
 | `scripts/l2_synth_domain_sugon.py:326-335` | sugon 自包含副本,subprocess 传 `["--disable_tta", "False"]` 给 `scripts.l2_calibration_predict_entry`(argv 原样透传给 nnUNetv2 原生 `predict_entry_point`,见 `scripts/l2_calibration_predict_entry.py:21-24`) | 若原样执行 → 见 §2.2 |
 | `scripts/p1_predict_all.sh`(P1 回放,#57/#58)| 显式不传 flag,注释「TTA 保持默认开启」 | **TTA on** |
@@ -70,7 +70,7 @@ args = parser.parse_args()
 
 ### 2.3 #38 实际执行形态的三个分支与结论稳健性
 
-#38 有完整预测输出且 run_fail=0(report_p1/p3.md),与「该 token 原样执行必 fatal」并存,只有三种解释:
+Issue #38 有完整预测输出且 run_fail=0(report_p1/p3.md),与「该 token 原样执行必 fatal」并存,只有三种解释:
 
 - **分支 A**:sugon 环境下该 token 组合以某种途径被解析为 `disable_tta=True`(如 DCU 侧打包差异),预测产出且 TTA **off**——即 ticket 前设的状态;
 - **分支 B**:原样命令 fatal(exit 2)后被执行者发现并修正重跑(去掉 token 或不传 flag),最终读数产生于 TTA **on**,与报告声明一致;
@@ -103,7 +103,7 @@ ADR-0002 的全部包络数值(含 R_fail_real=0)产生于 #36 校准,其编排�
 
 ### 3.3 范围澄清:TOST / 分布对齐不属 #38
 
-#38 报告不含 GT 对照、不含 TOST(报告只有 R_fail 与空 pred)。TOST 边界(E_r,vol / E_r,centroid)是 ADR-0004 为 #58 终验预注册的判定量,其执行侧(`nnunet_l2_final_acceptance.py:445-471` 生成的 predict 脚本与 `p1_predict_all.sh`)**均不带该 flag、TTA on**,与 ADR-0002 校准同状态——**终验 TOST 判定不受本 bug 影响**。#58 的 L2 报告数字在 sugon 受控存储,本地不可达,但与本 bug 无关,无需为它拉取。
+Issue #38 报告不含 GT 对照、不含 TOST(报告只有 R_fail 与空 pred)。TOST 边界(E_r,vol / E_r,centroid)是 ADR-0004 为 #58 终验预注册的判定量,其执行侧(`nnunet_l2_final_acceptance.py:445-471` 生成的 predict 脚本与 `p1_predict_all.sh`)**均不带该 flag、TTA on**,与 ADR-0002 校准同状态——**终验 TOST 判定不受本 bug 影响**。#58 的 L2 报告数字在 sugon 受控存储,本地不可达,但与本 bug 无关,无需为它拉取。
 
 ## 4. 翻转分析:判定量对 TTA 的结构性不敏感
 

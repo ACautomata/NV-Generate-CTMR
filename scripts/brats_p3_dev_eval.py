@@ -44,10 +44,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import os
 import sys
 import time
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -60,7 +59,6 @@ from .brats_p1_dev_eval import (
     STOP_FILE,
     CheckpointWatcher,
     EarlyStopRule,
-    L2TrendRunner,
     MrTrendFeatures,
     RealReferenceBank,
     TrendFid,
@@ -218,9 +216,7 @@ class P3CandidateSampler:
                     out = Path(out_dir) / case["sub"] / f"{case['case']}_{src}_to_{tgt}_seed{seed}.nii.gz"
                     if not out.is_file():
                         out.parent.mkdir(parents=True, exist_ok=True)
-                        data = self.sample_one(
-                            autoencoder, unet, controlnet, scale_factor, spacing, MODALITY_TOKENS[tgt], seed, src_latent
-                        )
+                        data = self.sample_one(autoencoder, unet, controlnet, scale_factor, spacing, MODALITY_TOKENS[tgt], seed, src_latent)
                         nib.save(nib.Nifti1Image(data, np.diag([spacing[0], spacing[1], spacing[2], 1.0])), out)
                     samples.append({"sub": case["sub"], "case": case["case"], "src_modality": src, "target_modality": tgt, "path": str(out)})
         del autoencoder, unet, controlnet

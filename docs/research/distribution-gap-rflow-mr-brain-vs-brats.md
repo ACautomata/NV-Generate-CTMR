@@ -14,7 +14,7 @@
 ## 1. 微调距离评估（P1：image-only 带肿瘤生成）
 
 **MR-RATE 是否含肿瘤样本？含。**
-MR-RATE 是临床诊断数据（非健康志愿者）：705,254 个体积、98,334 个检查、83,425 名患者，每个检查配放射报告；报告 findings 经 LLM 分为 **37 类 SNOMED CT 病理标签**（含脑/脊髓病理，肿瘤在其中）。证据：HF 数据卡 https://huggingface.co/datasets/Forithmus/MR-RATE 与数据指南 https://github.com/forithmus/MR-RATE/blob/main/data-preprocessing/docs/dataset_guide.md （「705,254 non-contrast and contrast-enhanced brain and spine MRI volumes」「classified into 37 brain and spine MRI pathology categories」）。
+MR-RATE 是临床诊断数据（非健康志愿者）：705,254 个体积、98,334 个检查、83,425 名患者，每个检查配放射报告；报告 findings 经 LLM 分为 **37 类 SNOMED CT 病理标签**（含脑/脊髓病理，肿瘤在其中）。证据：HF 数据卡 <https://huggingface.co/datasets/Forithmus/MR-RATE> 与数据指南 <https://github.com/forithmus/MR-RATE/blob/main/data-preprocessing/docs/dataset_guide.md> （「705,254 non-contrast and contrast-enhanced brain and spine MRI volumes」「classified into 37 brain and spine MRI pathology categories」）。
 
 **是否含 post-contrast T1（t1ce）？含，但不可分。**
 MR-RATE 的 T1w 采集「可以是**非增强或钆增强**，元数据**目前没有对比增强标签**」（数据指南原文）。即增强 T1 混在 T1w 桶里，无标签可拆。证据：同上 dataset_guide.md（「T1-weighted acquisitions in MR-RATE can be either non-contrast or contrast-enhanced (gadolinium-based). The metadata does not currently include a contrast-enhancement label.」）。
@@ -22,6 +22,7 @@ MR-RATE 的 T1w 采集「可以是**非增强或钆增强**，元数据**目前�
 **DM 训练用的序列**：rflow-mr-brain v1 用 MR-RATE（batches 0–27）的 T1w/T2w/FLAIR/SWI/MRA 五类，whole-brain 与 skull-stripped 两种预处理。证据：`data/README.md` §3.4（L166–174）。官方 NV-Generate-MR-Brain 亦只列 T1/FLAIR/T2/SWI（无独立 t1c 条件）。
 
 **对 P1 的含义**：
+
 1. 模型在训练中**见过**脑肿瘤与（混杂的）增强 T1 外观 → 这部分**在分布内**，P1 不是从零学新外观。
 2. 但 DM 是 **image-only、仅以 modality code 为条件** 训练（`scripts/diff_model_train.py` L322 `class_labels: modality_tensor`）；**肿瘤不是条件**。模型不能「被要求」生成肿瘤，P1 需要让肿瘤外观在 BraTS 数据分布下被稳定重现。
 3. **增强 T1 不可条件化**：MR-RATE 无 t1c 标签，模型学的是混合 T1w；BraTS 的 t1c 是明确的钆增强 T1。要稳定生成 BraTS t1c 需新增独立条件（见 §2）。
@@ -67,6 +68,7 @@ MR-RATE 的 T1w 采集「可以是**非增强或钆增强**，元数据**目前�
 BraTS：240×240×155 voxel @ 1mm 各向同性 → **FOV ≈ 240×240×155 mm**，axial 采集。
 
 mr-brain 推荐 FOV（MR-RATE 训练分布，`docs/inference.md` L136–160）：
+
 - T1 axial：240 × 240 × 174
 - T2 axial：240 × 240 × 158
 - FLAIR axial：250 × 250 × 175
@@ -79,17 +81,20 @@ mr-brain 推荐 FOV（MR-RATE 训练分布，`docs/inference.md` L136–160）�
 
 **正面证据：VAE 训练含 skull-stripped 带肿瘤脑 MR。**
 `data/README.md` §2.1：autoencoder_v1 的 MRI 训练数据（17,887 体积）来自「brain, **skull-stripped brain**, chest, below-abdomen」（L38），其中：
+
 - L61：**TCIA Upenn GBM Brain MR（skull-stripped）2550 体积** —— GBM = 胶质母细胞瘤，即 VAE **见过带高级别胶质瘤的 skull-stripped 脑 MR**；
 - L66、L67：Aomic / QTIM Brain MR skull-stripped 各 2630 / 1275。
 
 这对 BraTS（skull-stripped 胶质瘤）的 VAE 适用性是直接正面证据。
 
 **归一化方式（冒烟需重点复核的强度映射）**：
+
 - 训练/预处理：MRI 用 `ScaleIntensityRangePercentilesd(lower=0.0, upper=99.5, b_min=0.0, b_max=1, clip=False)`（`scripts/transforms.py` L64）→ 按 0–99.5 百分位线性映射到 [0,1]，**clip=False**（超出 99.5 的体素不截断，会 >1）。
 - 推理反归一化：[0,1] → [0,1000]，且 `np.clip(data, a_min=0, None)`（`scripts/diff_model_infer.py` L226–227）。
 - `configs/config_maisi_vae_train.json` 的 `data_option` 未显式给出额外归一化，强度归一化在 data-prep 的 `define_fixed_intensity_transform` 完成。
 
 **冒烟原型应重点验证**：
+
 1. **增强肿瘤的高信号强度保真**：t1c 增强灶是极端高信号，恰落在 99.5 百分位上限之外（clip=False 会保留 >1，但反归一化后分布是否漂移需实测）。验证增强核心重建后强度/对比是否被压缩。
 2. **肿瘤边界重建**：增强核心 / 水肿（edema）/ 坏死核心的边界清晰度，编码–解码后是否模糊（L1 recon + KL，patch 64³，`configs/config_maisi_vae_train.json`）。
 3. **skull-stripped 脑掩码边缘**：背景为 0 的硬边界重建是否产生振铃/渗漏。
@@ -107,5 +112,5 @@ mr-brain 推荐 FOV（MR-RATE 训练分布，`docs/inference.md` L136–160）�
 - `configs/config_maisi_vae_train.json`（patch_size、recon_loss=l1、kl_weight）
 - `data/README.md` §2.1 L38、L61、L66、L67；§3.4 L166–174
 - `docs/inference.md` L136–160（mr-brain FOV 表）、L162–180（Modality codes）、L140（稀疏组合告警）
-- https://huggingface.co/datasets/Forithmus/MR-RATE
-- https://github.com/forithmus/MR-RATE/blob/main/data-preprocessing/docs/dataset_guide.md
+- <https://huggingface.co/datasets/Forithmus/MR-RATE>
+- <https://github.com/forithmus/MR-RATE/blob/main/data-preprocessing/docs/dataset_guide.md>

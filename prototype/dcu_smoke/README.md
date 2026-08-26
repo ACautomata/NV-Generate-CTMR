@@ -17,6 +17,7 @@
 ## bf16 patch（`scripts/diff_model_train.py`，本冒烟唯一源码改动）
 
 `autocast("cuda")` 原本未指定 dtype → 默认 fp16 + GradScaler。patch 新增 `--amp_dtype {fp16,bf16}`（默认 `fp16`，行为不变）：
+
 - `bf16`：`autocast("cuda", dtype=torch.bfloat16)`，且**跳过 GradScaler**(bf16 动态范围够，无需梯度缩放）——#10 锁定的 DCU 路径。
 - `fp16`：维持原 fp16 + GradScaler，用于对照清单第 4 项（ROCm 上 fp16+GradScaler 有 NaN 报告）。
 
@@ -80,5 +81,6 @@ python -m scripts.diff_model_train -e prototype/dcu_smoke/environment_dcu_smoke.
 | 11 | monai | ✅ 1.6.0 + RFlowScheduler 可导入 |
 
 **两个上游发现(与 DCU 无关，NVIDIA 卡同样存在)**：
+
 1. **伴侣 json 缺口**：训练要读 `<emb>.json`(spacing/modality),但本仓与上游 create_training_data 都不写 → 冒烟用 `write_emb_metadata.py` 补;spec 全量数据管线需含此步。
 2. **多卡 DDP 属性 bug**：DDP 包装后读 `include_top_region_index_input`/`num_class_embeds` 崩 → 已按 `.module` 既有模式修复(本分支);spec 若用多卡需带上。

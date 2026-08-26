@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 
 import nibabel as nib
@@ -66,7 +65,8 @@ def main() -> None:
     top_ri, bottom_ri, spacing_tensor, _modality_tensor = prepare_tensors(args, device)
 
     # 每 job 需要独立的 modality tensor（目标模态不同）
-    modality_of = lambda label: (label * torch.ones((len(spacing_tensor)), dtype=torch.long)).to(device)
+    def modality_of(label):
+        return (label * torch.ones((len(spacing_tensor)), dtype=torch.long)).to(device)
 
     cached_key, anchor_latent = None, None
     n_done, n_skip, n_fail = 0, 0, 0
@@ -77,17 +77,25 @@ def main() -> None:
             continue
         try:
             if job["anchor_key"] != cached_key:
-                anchor_latent = load_anchor_latent(
-                    job["anchor"], autoencoder, device, output_size, logger)
+                anchor_latent = load_anchor_latent(job["anchor"], autoencoder, device, output_size, logger)
                 cached_key = job["anchor_key"]
             # 每个 job 独立 seed（噪声与截断起点一致性由 set_determinism 控制）
             set_determinism(job["seed"])
 
             modality_tensor = modality_of(job["tgt_label"])
             data = run_img2img(
-                args, device, autoencoder, unet, scale_factor, anchor_latent,
-                top_ri, bottom_ri, spacing_tensor, modality_tensor,
-                args_cli.strength, logger,
+                args,
+                device,
+                autoencoder,
+                unet,
+                scale_factor,
+                anchor_latent,
+                top_ri,
+                bottom_ri,
+                spacing_tensor,
+                modality_tensor,
+                args_cli.strength,
+                logger,
             )
             out_affine = np.eye(4)
             for k in range(3):

@@ -14,8 +14,10 @@ import torch
 
 torch.serialization.add_safe_globals(
     [numpy.core.multiarray.scalar, numpy.dtype]
-    + [type(numpy.dtype(name)) for name in ("bool", "uint8", "int8", "int16", "int32", "int64",
-                                            "float16", "float32", "float64", "complex64", "complex128")]
+    + [
+        type(numpy.dtype(name))
+        for name in ("bool", "uint8", "int8", "int16", "int32", "int64", "float16", "float32", "float64", "complex64", "complex128")
+    ]
 )
 
 from nnunetv2.inference.predict_from_raw_data import predict_entry_point  # noqa: E402

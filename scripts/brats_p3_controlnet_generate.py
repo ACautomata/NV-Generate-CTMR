@@ -60,7 +60,6 @@ import json
 import sys
 from pathlib import Path
 
-import monai.transforms as monai_t
 import nibabel as nib
 import numpy as np
 import torch
@@ -125,7 +124,11 @@ class P3CandidateSampleWriter:
     @torch.inference_mode()
     def write(self, cohort, layout, stage0_records):
         autoencoder, unet, controlnet, scale_factor, noise_scheduler, top_ri, bottom_ri = load_candidate_models(
-            self._merged, self._run_record["upstream"]["checkpoint"]["path"], self._run_record["selection"]["checkpoint"]["path"], self._device, self._logger
+            self._merged,
+            self._run_record["upstream"]["checkpoint"]["path"],
+            self._run_record["selection"]["checkpoint"]["path"],
+            self._device,
+            self._logger,
         )
         builder = P3CandidateSamplePlanBuilder(
             self._run_record["run_id"],
@@ -212,7 +215,9 @@ def main(argv=None):
     parser.add_argument("-c", "--model_config_path", required=True)
     parser.add_argument("-t", "--model_def_path", required=True)
     parser.add_argument("--infer-config", required=True, help="the official P3 candidate inference config pinned by the run")
-    parser.add_argument("--side", default="holdout", choices=("dev", "holdout"), help="dev smoke validates the pipeline only; the contract freeze uses holdout")
+    parser.add_argument(
+        "--side", default="holdout", choices=("dev", "holdout"), help="dev smoke validates the pipeline only; the contract freeze uses holdout"
+    )
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--limit", type=int, default=None, help="max cases per challenge (dev smoke)")

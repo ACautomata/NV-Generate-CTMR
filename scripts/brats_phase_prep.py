@@ -59,13 +59,13 @@ import numpy as np
 from monai.transforms import Compose, EnsureChannelFirst, LoadImage, Orientation, Resize
 
 from .brats2023_nnunet_prep import (
-    BraTSSplitPlanner,
     CHANNELS,
     DATASET_IDS,
     DIR_SUFFIX,
     EXCLUSIONS,
     QUOTAS,
     SPLIT_ID,
+    BraTSSplitPlanner,
 )
 
 # BraTS file suffix -> (modality_mapping key, class-label token). Pinned by
@@ -101,8 +101,7 @@ MODALITY_KEYS = {key for _suffix, (key, _token) in MODALITIES.items()}
 # pipeline is re-run for that case (new manifest versions per the split rules).
 PIPELINE_EXCLUSIONS = {
     ("METS", "BraTS-MET-00232-000"): (
-        "source t2w corrupt in the authoritative copy (gzip breaks at 59%); "
-        "excluded from generative artifacts pending a pristine re-download"
+        "source t2w corrupt in the authoritative copy (gzip breaks at 59%); " "excluded from generative artifacts pending a pristine re-download"
     )
 }
 
@@ -433,9 +432,7 @@ class PhaseListBuilder:
         }
         for name, payload in lists.items():
             (out_dir / name).write_text(json.dumps(payload, indent=1) + "\n")
-        print(
-            f"lists: p1_train={len(p1_train)} p1_dev={len(p1_dev)} p2={len(p2)} p3={len(p3)} -> {out_dir}"
-        )
+        print(f"lists: p1_train={len(p1_train)} p1_dev={len(p1_dev)} p2={len(p2)} p3={len(p3)} -> {out_dir}")
         return out_dir
 
 
@@ -582,9 +579,7 @@ class PhaseVerifier:
         """Every case of the current manifest must keep its side in a future (incremental) manifest."""
         newer = json.loads(Path(manifest_v2_path).read_text())
         for ch, info in self._manifest["challenges"].items():
-            new_sides = {
-                side: set(cases) for side, cases in newer["challenges"].get(ch, {}).get("cases", {}).items()
-            }
+            new_sides = {side: set(cases) for side, cases in newer["challenges"].get(ch, {}).get("cases", {}).items()}
             for side in ("train", "dev", "holdout"):
                 for case in info["cases"][side]:
                     for other_side, case_set in new_sides.items():
@@ -691,9 +686,7 @@ class PhaseSelfTest:
         nnunet_root = self.build_fixture_nnunet_view(manifest, sources)
         view_root = self._workdir / "view"
         LinkViewBuilder(manifest, nnunet_root, sources, view_root).build_all()
-        remapped = PhaseManifestProvider(self.FIXTURE_QUOTAS).load(
-            phase_root / "phase_manifest.json", raw_root=view_root / "ASNR-MICCAI-BraTS2023"
-        )
+        remapped = PhaseManifestProvider(self.FIXTURE_QUOTAS).load(phase_root / "phase_manifest.json", raw_root=view_root / "ASNR-MICCAI-BraTS2023")
         link_failures = []
         for ch, info in remapped["challenges"].items():
             for side in SIDES:

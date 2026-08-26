@@ -3,8 +3,6 @@ import sys
 import time
 from pathlib import Path
 
-import torch
-
 sys.path.insert(0, ".")
 sys.path.insert(0, "prototype/vae_recon_brats")
 
@@ -14,9 +12,8 @@ from vae_recon_smoke import (  # noqa: E402
     AutoencoderRunner,
     VolumeLoader,
     make_plans,
+    pick_device,  # noqa: E402
 )
-
-from vae_recon_smoke import pick_device  # noqa: E402
 
 device = pick_device()
 t0 = time.time()

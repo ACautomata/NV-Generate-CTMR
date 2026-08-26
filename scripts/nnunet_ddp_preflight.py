@@ -14,7 +14,6 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-
 PERSISTENT_ROOT = Path("/root/private_data")
 DATASET_NAME = "Dataset502_BraTS2023SSA"
 PLANS_IDENTIFIER = "nnUNetPlans_SSA_bs16_v1"

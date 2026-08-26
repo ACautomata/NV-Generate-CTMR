@@ -150,7 +150,7 @@ The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-C
 
 `scripts/brats_p1_dev_eval.py` runs beside the trainer on a reserved GPU. Every 5 epochs it generates the fixed 16-case dev cohort (4 modalities x fixed seeds, cfg=10, 30 steps), records the per-modality 2.5D RadImageNet FID trend against the dev real bank, and runs the frozen L2 instruments on the generated pseudo-four-modality volumes (WT/TC/ET volume medians + failure counts; trend only). The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100) halts the trainer through `<ckpt_dir>/.early_stop`; the candidate is the `argmin` mean-FID epoch. See ADR-0005 for the exact rule text.
 
-### Launch (sugon DCU)
+### Launch (sugon DCU, P2)
 
 ```bash
 REPO=/root/nv-phase-57 bash scripts/brats_p1_launch_train.sh   # 7-GPU DDP + 1-GPU sidecar, nohup
@@ -171,9 +171,10 @@ The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-C
 
 ### Dev light acceptance, round-trip Dice and early stopping
 
-`scripts/brats_p2_dev_eval.py` runs beside the trainer on a reserved GPU. Every 5 epochs it generates the fixed 16-case dev cohort (4 modalities × fixed seed, cfg=10, 30 steps) **from the case's combined condition mask**, records the per-modality 2.5D RadImageNet FID trend against the dev real bank, runs the frozen L2 instruments on the generated four-modality volumes (WT/TC/ET volume medians + failure counts; trend only), and computes the **P2 condition round-trip Dice trend** (instrument-predicted mask vs the combined condition, nearest-neighbour aligned + remapped 0/1/2/3). The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100) halts the trainer through `<ckpt_dir>/.early_stop`; the candidate is the `argmin` mean-FID epoch. See ADR-0007 for the rule text and the round-trip Dice semantics.
+`scripts/brats_p2_dev_eval.py` runs beside the trainer on a reserved GPU. Every 5 epochs it generates the fixed 16-case dev cohort (4 modalities × fixed seed, cfg=10, 30 steps) **from the case's combined condition mask**, records the per-modality 2.5D RadImageNet FID trend against the dev real bank, runs the frozen L2 instruments on the generated four-modality volumes (WT/TC/ET volume medians + failure counts; trend only), and computes the **P2 condition round-trip Dice trend** (instrument-predicted mask vs the combined condition, nearest-neighbour aligned + remapped 0/1/2/3).
+The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100) halts the trainer through `<ckpt_dir>/.early_stop`; the candidate is the `argmin` mean-FID epoch. See ADR-0007 for the rule text and the round-trip Dice semantics.
 
-### Launch (sugon DCU)
+### Launch (sugon DCU, P1)
 
 ```bash
 REPO=/root/nv-phase-59 \

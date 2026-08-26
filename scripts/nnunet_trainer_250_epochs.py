@@ -12,14 +12,12 @@ nnunetv2 自带 ``nnUNetTrainer_Xepochs`` variants 的写法一致。
 """
 
 import torch
-
 from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
 
 
 class nnUNetTrainer250Epochs(nnUNetTrainer):
     """恰好运行 250 个 epoch，同时保留 upstream nnU-Net 其余训练配方。"""
 
-    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
-                 device: torch.device = torch.device('cuda')):
+    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict, device: torch.device = torch.device("cuda")):
         super().__init__(plans, configuration, fold, dataset_json, device)
         self.num_epochs = 250

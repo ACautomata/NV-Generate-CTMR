@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from p3_common import GRID, LATENT, MODALITIES, OUT_DIR, VolumeLoader  # noqa: E402
+
 from scripts.utils_infer import load_image_models, run_controlnet_conditioned_image_dm  # noqa: E402
 
 SLIDING_WINDOW_SIZE = (80, 80, 32)  # configs/config_maisi_controlnet_train_rflow-mr.json controlnet_infer
@@ -71,7 +72,7 @@ def generate_from_image(
     src = loader.image(src_nifti)  # [1,X,Y,Z] in [0,1] on GRID
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
         z = autoencoder.encode_stage_2_inputs(src.unsqueeze(0).to(device))
-        if isinstance(z, (tuple, list)):
+        if isinstance(z, tuple | list):
             z = z[0]
     src_latent = z.float() * float(scale_factor)  # [1,4,64,64,32]
 

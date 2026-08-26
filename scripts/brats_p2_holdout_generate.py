@@ -94,11 +94,7 @@ class HoldoutMaskSource:
 
     def __init__(self, label_root, manifest):
         self._label_root = Path(label_root)
-        self._challenge_of = {
-            case: challenge
-            for challenge, info in manifest["challenges"].items()
-            for case in info["cases"]["holdout"]
-        }
+        self._challenge_of = {case: challenge for challenge, info in manifest["challenges"].items() for case in info["cases"]["holdout"]}
 
     def path_of(self, case):
         challenge = self._challenge_of[case]
@@ -161,8 +157,14 @@ class P2HoldoutSampleWriter:
                     out = case_dir / f"{case}_{modality}_seed{seed}.nii.gz"
                     if not out.is_file():
                         data = sampler.sample_one(
-                            autoencoder, unet, controlnet, scale,
-                            MODALITY_TOKENS[modality], spacing, seed, condition,
+                            autoencoder,
+                            unet,
+                            controlnet,
+                            scale,
+                            MODALITY_TOKENS[modality],
+                            spacing,
+                            seed,
+                            condition,
                         )
                         self._logger(f"[gen] {challenge}/{case}/{modality} seed={seed}")
                         nib.save(nib.Nifti1Image(data, affine=IDENTITY_AFFINE), out)
@@ -175,8 +177,7 @@ class P2HoldoutSampleWriter:
                         "condition_mask": str(masks.path_of(case).resolve()),
                         "samples": sample_paths,
                         "real_paths": {
-                            m: str((self._raw_root / spacings.directory_of(case) / f"{case}-{m}.nii.gz").resolve())
-                            for m in TARGET_MODALITIES
+                            m: str((self._raw_root / spacings.directory_of(case) / f"{case}-{m}.nii.gz").resolve()) for m in TARGET_MODALITIES
                         },
                     }
                 )
@@ -209,9 +210,7 @@ def main(argv=None):
         return 1
     manifest = json.loads(Path(args.manifest).read_text())
     merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
-    merged.diffusion_unet_inference = (
-        merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
-    )
+    merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
     merged.cfg_guidance_scale = 10.0
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cohort = HoldoutCohortBuilder(manifest, args.shard, args.num_shards, args.limit, args.challenge, args.only_cases).build()

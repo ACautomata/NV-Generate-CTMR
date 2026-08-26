@@ -39,10 +39,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import subprocess
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import monai
@@ -71,15 +70,14 @@ class P1TrainDataCatalog:
     def load_entries(self):
         entries = []
         counts = []
-        for label, path in (("brats train list", self._args.json_data_list), * (("replay list", p) for p in self._args.replay_list)):
+        for label, path in (("brats train list", self._args.json_data_list), *(("replay list", p) for p in self._args.replay_list)):
             payload = json.loads(Path(path).read_text())["training"]
             self._logger.info(f"[data] {label}: {len(payload)} entries from {path}")
             counts.append(len(payload))
             entries += payload
         if counts and len(counts) > 1 and counts[0] != counts[1]:
             raise ValueError(
-                f"1:1 replay mix violated: brats train {counts[0]} vs replay {counts[1]} "
-                "(spec #51 decision 6 requires strict 1:1 mixing)"
+                f"1:1 replay mix violated: brats train {counts[0]} vs replay {counts[1]} " "(spec #51 decision 6 requires strict 1:1 mixing)"
             )
         return entries
 
@@ -141,9 +139,7 @@ class P1FinetuneJob:
         if self._local_rank == 0:
             self._logger.info(f"num_files_train (brats + replay): {len(records)}")
         if dist.is_initialized():
-            records = partition_dataset(
-                data=records, shuffle=True, num_partitions=dist.get_world_size(), even_divisible=True
-            )[self._local_rank]
+            records = partition_dataset(data=records, shuffle=True, num_partitions=dist.get_world_size(), even_divisible=True)[self._local_rank]
         transforms = Compose(
             [
                 monai.transforms.LoadImaged(keys=["image"]),
@@ -154,9 +150,7 @@ class P1FinetuneJob:
                 monai.transforms.EnsureTyped(keys=["modality"], dtype=torch.long),
             ]
         )
-        dataset = monai.data.CacheDataset(
-            data=records, transform=transforms, cache_rate=args.diffusion_unet_train["cache_rate"], num_workers=2
-        )
+        dataset = monai.data.CacheDataset(data=records, transform=transforms, cache_rate=args.diffusion_unet_train["cache_rate"], num_workers=2)
         return DataLoader(dataset, num_workers=6, batch_size=args.diffusion_unet_train["batch_size"], shuffle=True)
 
     @staticmethod
@@ -181,9 +175,7 @@ class P1FinetuneJob:
         target = unet.module if dist.is_initialized() else unet
         state = target.load_state_dict(checkpoint["unet_state_dict"], strict=False)
         if state.missing_keys:
-            raise ValueError(
-                f"base checkpoint missing keys for full-parameter continuation: {state.missing_keys}"
-            )
+            raise ValueError(f"base checkpoint missing keys for full-parameter continuation: {state.missing_keys}")
         if state.unexpected_keys:
             self._logger.warning(f"base checkpoint unexpected keys (ignored): {state.unexpected_keys}")
         self._logger.info(f"base checkpoint loaded (full-param continuation): {args.existing_ckpt_filepath}")
@@ -216,9 +208,7 @@ class P1FinetuneJob:
             if self._stop_requested():
                 self._logger.info(f"early-stop file present; halting before epoch {epoch + 1}")
                 break
-            self._train_one_epoch(
-                epoch, unet, loader, optimizer, lr_scheduler, loss_pt, scaler, scale_factor, noise_scheduler
-            )
+            self._train_one_epoch(epoch, unet, loader, optimizer, lr_scheduler, loss_pt, scaler, scale_factor, noise_scheduler)
 
         if dist.is_initialized():
             dist.destroy_process_group()
@@ -228,7 +218,6 @@ class P1FinetuneJob:
 
     def _train_one_epoch(self, epoch, unet, loader, optimizer, lr_scheduler, loss_pt, scaler, scale_factor, noise_scheduler):
         args = self._args
-        unet_module = unet.module if isinstance(unet, DistributedDataParallel) else unet
         if self._local_rank == 0:
             self._logger.info(f"Epoch {epoch + 1}, lr {optimizer.param_groups[0]['lr']}.")
         iteration = 0
@@ -291,9 +280,7 @@ class P1FinetuneJob:
             tmp,
         )
         tmp.replace(path)
-        (Path(self._args.model_dir) / "latest.json").write_text(
-            json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n"
-        )
+        (Path(self._args.model_dir) / "latest.json").write_text(json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n")
         self._logger.info(f"epoch {epoch + 1} average loss: {(loss_totals[0] / loss_totals[1]).item():.4f} -> {path}")
 
 
@@ -348,7 +335,10 @@ def main(argv=None):
     parser.add_argument("-t", "--model_def_path", required=True)
     parser.add_argument("-g", "--num_gpus", type=int, default=1)
     parser.add_argument(
-        "--replay-list", dest="replay_list", action="append", required=True,
+        "--replay-list",
+        dest="replay_list",
+        action="append",
+        required=True,
         help="MR-RATE replay data list (spec: list-level 1:1 mix; append once per list)",
     )
     parser.add_argument("--no_amp", dest="amp", action="store_false")

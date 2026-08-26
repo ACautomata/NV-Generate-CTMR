@@ -258,7 +258,9 @@ def main(argv=None):
     parser.add_argument("-c", "--model_config_path", required=True)
     parser.add_argument("-t", "--model_def_path", required=True)
     parser.add_argument("--infer-config", required=True, help="the official stage-0 inference config pinned by the run")
-    parser.add_argument("--side", default="holdout", choices=("dev", "holdout"), help="dev smoke validates the pipeline only; the contract freeze uses holdout")
+    parser.add_argument(
+        "--side", default="holdout", choices=("dev", "holdout"), help="dev smoke validates the pipeline only; the contract freeze uses holdout"
+    )
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--limit", type=int, default=None, help="max cases per challenge (dev smoke)")

@@ -16,6 +16,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from nnunet_l2_instrument import (  # noqa: E402
@@ -90,8 +91,7 @@ class TrainingArtifactAudit:
         live = self.dataset.verify_raw()
         for key in ("dataset_json", "splits_final_json"):
             ok = live[key]["sha256"] == manifest["raw_contract"][key]["sha256"]
-            self._record(f"raw.{key}", ok,
-                         f"live {live[key]['sha256'][:16]}… vs manifest {manifest['raw_contract'][key]['sha256'][:16]}…")
+            self._record(f"raw.{key}", ok, f"live {live[key]['sha256'][:16]}… vs manifest {manifest['raw_contract'][key]['sha256'][:16]}…")
         channels_ok = manifest["raw_contract"]["channels"] == {"0000": "t1n", "0001": "t1c", "0002": "t2w", "0003": "t2f"}
         self._record("raw.channels", channels_ok, "t1n/t1c/t2w/t2f → 0000..0003")
         counts_ok = (
@@ -99,8 +99,7 @@ class TrainingArtifactAudit:
             and live["fold_0_train_cases"] == self.challenge.fold_train_cases
             and live["fold_0_validation_cases"] == self.challenge.fold_val_cases
         )
-        self._record("raw.counts", counts_ok,
-                     f"{self.challenge.training_cases}/{self.challenge.fold_train_cases}/{self.challenge.fold_val_cases}")
+        self._record("raw.counts", counts_ok, f"{self.challenge.training_cases}/{self.challenge.fold_train_cases}/{self.challenge.fold_val_cases}")
 
     def _check_preprocessed(self, manifest: dict) -> None:
         live = self.dataset.verify_preprocessed(self.protocol)
@@ -108,15 +107,13 @@ class TrainingArtifactAudit:
         for key in ("dataset_fingerprint", "source_plans", "derived_plans"):
             if key in recorded:
                 ok = live[key]["sha256"] == recorded[key]["sha256"]
-                self._record(f"preprocessed.{key}", ok,
-                             f"live {live[key]['sha256'][:16]}… vs manifest {recorded[key]['sha256'][:16]}…")
+                self._record(f"preprocessed.{key}", ok, f"live {live[key]['sha256'][:16]}… vs manifest {recorded[key]['sha256'][:16]}…")
 
     def _check_trainer(self, manifest: dict) -> None:
         live = TrainerContract().verify()
         for key in ("trainer_source", "upstream_trainer_source"):
             ok = live[key]["sha256"] == manifest["trainer"][key]["sha256"]
-            self._record(f"trainer.{key}", ok,
-                         f"live {live[key]['sha256'][:16]}… vs manifest {manifest['trainer'][key]['sha256'][:16]}…")
+            self._record(f"trainer.{key}", ok, f"live {live[key]['sha256'][:16]}… vs manifest {manifest['trainer'][key]['sha256'][:16]}…")
         ok = live["num_epochs"] == 250 and live["num_iterations_per_epoch"] == 250
         self._record("trainer.recipe", ok, "250 epochs x 250 iterations")
 
@@ -130,8 +127,7 @@ class TrainingArtifactAudit:
         checkpoint = fold_dir / "checkpoint_final.pth"
         live_hash = self.hasher.sha256(checkpoint)
         ok = live_hash == completion["checkpoint_final"]["sha256"]
-        self._record("checkpoint_final.hash", ok,
-                     f"live {live_hash[:16]}… vs completion {completion['checkpoint_final']['sha256'][:16]}…")
+        self._record("checkpoint_final.hash", ok, f"live {live_hash[:16]}… vs completion {completion['checkpoint_final']['sha256'][:16]}…")
         ok = manifest["dataset"] == self.challenge.dataset_name and manifest["fold"] == 0
         self._record("checkpoint_final.run_identity", ok, f"{self.challenge.dataset_name} fold_0")
 
@@ -195,8 +191,7 @@ class AuditLedgerAnchor:
     def verify(self, specs: list[ChallengeFreezeSpec], version_lock_dir: Path) -> dict:
         anchors: dict[str, dict] = {}
         for path in (
-            *(spec.audit_dir() / name for spec in specs
-              for name in ("run-manifest.json", "completion-audit.json", "closing-verification.json")),
+            *(spec.audit_dir() / name for spec in specs for name in ("run-manifest.json", "completion-audit.json", "closing-verification.json")),
             version_lock_dir / "version-lock.json",
             version_lock_dir / "trainer-install.json",
             PERSISTENT_ROOT / "l2-instrument-audit" / "ssa-bs16-v1" / "plans-variant-audit.json",
@@ -226,10 +221,7 @@ class FreezeAudit:
         ]
         raw_root = PERSISTENT_ROOT / "brats2023_nnunet"
         preprocessed_root = PERSISTENT_ROOT / "nnUNet_preprocessed"
-        challenges = [
-            TrainingArtifactAudit(spec, raw_root, preprocessed_root).verify()
-            for spec in specs
-        ]
+        challenges = [TrainingArtifactAudit(spec, raw_root, preprocessed_root).verify() for spec in specs]
         calibration = CalibrationFreezeAudit(self.calibration_root).verify()
         anchors = AuditLedgerAnchor().verify(specs, self.version_lock_dir)
         verdict = {
@@ -251,12 +243,9 @@ class FreezeAudit:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, required=True,
-                        help="受控 freeze-audit 输出目录（verdict 拒绝覆盖）")
-    parser.add_argument("--calibration-root", type=Path, required=True,
-                        help="校准受控目录（含 protocol/SHA256SUMS）")
-    parser.add_argument("--version-lock-dir", type=Path, required=True,
-                        help="版本锁 version-lock.json / trainer-install.json 所在目录")
+    parser.add_argument("--output-dir", type=Path, required=True, help="受控 freeze-audit 输出目录（verdict 拒绝覆盖）")
+    parser.add_argument("--calibration-root", type=Path, required=True, help="校准受控目录（含 protocol/SHA256SUMS）")
+    parser.add_argument("--version-lock-dir", type=Path, required=True, help="版本锁 version-lock.json / trainer-install.json 所在目录")
     args = parser.parse_args()
     verdict = FreezeAudit(args.output_dir, args.calibration_root, args.version_lock_dir).verify()
     summary = {

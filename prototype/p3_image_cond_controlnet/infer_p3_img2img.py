@@ -28,7 +28,8 @@ from monai.networks.schedulers import RFlowScheduler
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from p3_common import GRID, LATENT, MODALITIES, ModelBundle, OUT_DIR, VolumeLoader  # noqa: E402
+from p3_common import LATENT, MODALITIES, OUT_DIR, ModelBundle, VolumeLoader  # noqa: E402
+
 from scripts.utils import define_instance  # noqa: E402
 
 V1_SUPPORTED = {"t1n", "t2w", "t2f"}  # modality 34 (t1c) never seen by the v1 DM

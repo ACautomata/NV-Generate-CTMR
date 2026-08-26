@@ -29,12 +29,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from p3_common import (  # noqa: E402
-    GRID,
     LABEL_REMAP,
     MODALITIES,
-    ModelBundle,
     OUT_DIR,
     SAMPLES_DIR,
+    ModelBundle,
     VolumeLoader,
     list_cases,
 )

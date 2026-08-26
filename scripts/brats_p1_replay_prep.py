@@ -219,16 +219,14 @@ class HttpRangeFile:
         self._cache = b""
 
     def _fetch(self, start, end):
-        response = self._session.get(
-            self._url, headers={"Range": f"bytes={start}-{end}"}, timeout=self._timeout
-        )
+        response = self._session.get(self._url, headers={"Range": f"bytes={start}-{end}"}, timeout=self._timeout)
         response.raise_for_status()
         data = response.content
         wanted = end - start + 1
         if len(data) != wanted:
             # A proxy that truncates a Range response yields a partial file that
             # zipfile cannot distinguish from a short read at member EOF.
-            raise IOError(f"short ranged read: requested {wanted} bytes, got {len(data)}")
+            raise OSError(f"short ranged read: requested {wanted} bytes, got {len(data)}")
         return data
 
     def seek(self, offset, whence=0):
@@ -286,11 +284,7 @@ class ReplayDownloader:
         """shard: optional (index, total) — only entries with pos % total == index."""
         shard_index, shard_total = shard if shard else (0, 1)
         failures = []
-        todo = [
-            (index, entry)
-            for index, entry in enumerate(self._selection["entries"])
-            if index % shard_total == shard_index
-        ]
+        todo = [(index, entry) for index, entry in enumerate(self._selection["entries"]) if index % shard_total == shard_index]
         for done, (index, entry) in enumerate(todo):
             target = self.target_path(entry)
             if target.is_file() and target.stat().st_size > 0:
@@ -489,7 +483,7 @@ class ReplayPrepSelfTest:
             with open(meta_dir / f"{batch}_metadata.csv", "w", newline="") as handle:
                 writer = csv.DictWriter(handle, fieldnames=ReplayMetadataReader.SERIES_FIELDS)
                 writer.writeheader()
-                for (b, patient, study, series, modality, derived, localizer, shape, _brain, _split) in batch_rows:
+                for b, patient, study, series, modality, derived, localizer, shape, _brain, _split in batch_rows:
                     writer.writerow(
                         {
                             "patient_uid": patient,
@@ -547,7 +541,6 @@ class ReplayPrepSelfTest:
         self.failures += [f"verify positive: {problem}" for problem in problems]
 
         # A manifest-colliding study id must be flagged.
-        tampered = json.loads(list_path.read_text())
         colliding_study = selection["entries"][0]["study"]
         manifest = json.loads((root / "phase_manifest.json").read_text())
         manifest["challenges"]["GLI"]["cases"]["train"].append(colliding_study)

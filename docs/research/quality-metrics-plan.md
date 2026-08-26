@@ -67,6 +67,7 @@ repo 内**唯一的分布距离工具**（已全仓 grep 确认：无 MR 版 FID
 MAISI 掩码生成**本身就以 10 维 `anatomy_size` 向量为条件**（`scripts/sample_mask.py:16,52`），并区分 `available_controllable_tumor` 与 `available_controllable_organ`（`sample_mask.py:237-239`）——**器官/肿瘤尺寸是模型显式可控的条件维度**。故「生成体的肿瘤/器官尺寸分布是否与真实一致」直接检验模型是否学到正确尺寸先验，是天然验收轴。
 
 **BraTS 标签双套对应**（算体积/位置前必须统一）：
+
 - **原生 BraTS seg 标签**：0=背景，1=NCR/NETC（坏死/非强化核心），2=ED/SNFH（水肿/FLAIR 高信号），3=ET（强化肿瘤）；**2023 起 ET 由 4 改为 3**。子区 **WT=1+2+3、TC=1+3、ET=3**。成人胶质瘤用 NCR/ED，脑膜瘤/转移瘤改叫 NETC/SNFH（仅命名不同）。证据：<https://www.synapse.org/Synapse:syn51156910/discussion/threadId=10189>、<https://arxiv.org/pdf/2305.07642>。
 - **MAISI combined-label（本仓 ControlNet 训练用）**：`brain tumor NCR/NETC=401`、`ED=402`、`ET=403`、`body=500`（`configs/label_dict_ctmr.json:347-350`，NV-Segment 解剖区占 1–345）。验收脚本按所用数据格式选其中一套映射到 WT/TC/ET。
 
@@ -83,6 +84,7 @@ MAISI 掩码生成**本身就以 10 维 `anatomy_size` 向量为条件**（`scri
 | **分区强度离群率**：ET/ED/正常脑区中位强度是否在 mean±3σ / 0.5–99.5 百分位内 | 比例 | 复用 `quality_check.py` | 离群率 ≤ 真实集离群率 + 裕量 |
 
 **通过线先例与依据**：
+
 - 肺癌 GAN 统计验证用 **KS（连续）+ 卡方（分类）、α=0.05，「p>0.05 判分布一致」**，82.76% 特征通过。证据：<https://www.mdpi.com/2079-9292/11/20/3277>。
 - 但「p>0.05」只是「无法拒绝≠等价」；更严谨用 **TOST 等价检验（90% CI 落在 ±δ，δ≈0.2–0.5×SD）+ bootstrap CI**。证据：<https://aaroncaldwell.us/TOSTERpkg/articles/robustTOST.html>。
 - 连续量还可用 Levene（方差齐性）、Spearman（保序）；多维联合用 Mahalanobis/Hotelling T²、QQ R²（前列腺合成 MRI 即用此组合评估影像组学分布）。证据：<https://www.mdpi.com/2313-433X/12/3/130>。
@@ -93,6 +95,7 @@ MAISI 掩码生成**本身就以 10 维 `anatomy_size` 向量为条件**（`scri
 ### 2.3 影像-标签一致性（P2 掩码→影像专用）
 
 生成影像的肿瘤应确实长在给定 mask 位置：
+
 - **轻量（进最小集，无需分割器）**：比较 ET/WT mask 区**内 vs 外**的强度差是否落在真实数据分布内（复用 `quality_check.py` 思路，`quality_check.py:69-148`）。
 - **较强（可选加分，需分割器）**：用现成分割器（nnU-Net/TotalSegmentator）回切生成影像、与输入 mask 算 **Dice + HD95**。MAISI-v2/CoPeDiT 均用此管线；ControlNet 对小肿瘤回切 Dice 仅约 0.57，说明该检查必要。证据：<https://arxiv.org/html/2508.05772v1>、<https://arxiv.org/html/2504.04532v2>。
   - **注意与地图 #2 约束的关系**：此「回切 Dice」是 **P2 一致性检查**（肿瘤是否长在 mask 处），与地图里「下游分割器验证 = 可选加分、不设门槛」不同——后者指用分割任务性能代理影像效用。门槛侧只用无需分割器的强度一致性；回切 Dice 列可选。
@@ -188,6 +191,7 @@ issue 写「MSD-器官与肿瘤尺寸分布」，与 MMD、FDD（均为分布距
 ## 6. 证据索引
 
 ### 仓库文件（file:line）
+
 - `scripts/compute_fid_2-5d_ct.py:498-503`（特征网络 radimagenet/squeezenet）、`:250-349`（2.5D 三平面）、`:570`/`:565`/`:258`（CT 专用预处理）、`:115,710`（MONAI FIDMetric）
 - `scripts/transforms.py:64-65`（MR 百分位归一化 vs CT HU 窗——MR 适配依据）
 - `scripts/quality_check.py:69-148`（分区强度 mean±3σ/百分位离群检测，L2 复用）
@@ -197,6 +201,7 @@ issue 写「MSD-器官与肿瘤尺寸分布」，与 MMD、FDD（均为分布距
 - `docs/evaluation.md`（FID 工具说明 + MAISI 在 autoPET 上的 FID 基线表）
 
 ### 文献 / 外部
+
 - RadImageNet：<https://github.com/Warvito/radimagenet-models>、<https://pmc.ncbi.nlm.nih.gov/articles/PMC9530758/>
 - MONAI FIDMetric：<https://monai.readthedocs.io/en/1.3.0/_modules/monai/metrics/fid.html>；MMDMetric（仅线性核）：<https://monai.readthedocs.io/en/1.3.0/_modules/monai/metrics/mmd.html>
 - 脑 MR 生成评估 / 解剖合理性：<https://arxiv.org/html/2409.08463v1>

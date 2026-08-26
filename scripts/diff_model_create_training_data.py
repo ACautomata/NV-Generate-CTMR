@@ -248,7 +248,8 @@ def diff_model_create_training_data(env_config_path: str, model_config_path: str
         try:
             # Compute rounded target dims (multiples of 128) from the original image metadata.
             new_dim = tuple(
-                round_number(int(plain_transforms({"image": os.path.join(args.data_base_dir, filepath)})["image"].meta["dim"][_i])) for _i in range(1, 4)
+                round_number(int(plain_transforms({"image": os.path.join(args.data_base_dir, filepath)})["image"].meta["dim"][_i]))
+                for _i in range(1, 4)
             )
 
             # Build the transform pipeline that includes resizing to new_dim.

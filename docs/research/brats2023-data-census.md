@@ -39,15 +39,16 @@
 **关于 "MENA"**：经核 **2023 / 2024 / 2025 官方清单均无 "BraTS-MENA" 子挑战**（对照 BrainLesion/BraTS 官方仓库按年份列出的 task 清单）；这三年唯一的区域性子挑战都是 **BraTS-Africa（Sub-Saharan Africa，SSA）**。MENA 区域仅以埃及一家机构向 METS 贡献数据的形式出现。故 issue 中列举的 "MENA" 不纳入本普查（按非 2023 处理；若未来确需，再核实其归属年份）。
 
 来源：
-- 集群结构（2023 = 5 分割 + 3 非分割任务）、各子挑战标签映射、ET 4→3、计数：MDPI Sensors 综述《A Comprehensive Review of MRI Segmentation Datasets from BraTS Challenges (2012–2025)》§4.10 — https://www.mdpi.com/1424-8220/25/6/1838 （PMC 版：https://pmc.ncbi.nlm.nih.gov/articles/PMC11945730/ ）
-- GLI（1251/219/570、复用 BraTS 2021、SRI24、1mm、240×240×155、skull-stripped）：BraTS 2023 GLI — https://pmc.ncbi.nlm.nih.gov/articles/PMC10441440/ ；BraSyn 论文（注明复用 2021 数据 + ET 4→3）— https://arxiv.org/html/2305.09011v6
-- SSA / BraTS-Africa（60/15/30、NETC/SNFH/ET）— https://arxiv.org/abs/2305.19369 ；PMC https://pmc.ncbi.nlm.nih.gov/articles/PMC10312814/
-- MEN（1000/141/283、syn51514106、TC/WT 定义）— https://arxiv.org/html/2405.09787v2 ；MELBA https://www.melba-journal.org/papers/2025:003.html
-- METS（402/31/59、3076 病灶、238 vs 402 口径、syn51514107、WT/TC/ET 公式、ET 4→3 声明）— https://arxiv.org/html/2306.00838v3 ；PMC https://pmc.ncbi.nlm.nih.gov/articles/PMC10312806/
-- PED（挑战口径 98/44/24：结果论文 https://arxiv.org/html/2407.08855 ；大队列 99/45/84、228 患者、NC 含囊变：设计论文 https://arxiv.org/html/2305.17033v7 ）
-- 获取与许可：Synapse 门户 https://www.synapse.org/Synapse:syn51156910 ；CC BY-NC + 需先完成官方 data-access 申请 — https://arxiv.org/html/2607.22135v2
-- MENA 不属于 2023/2024/2025（BrainLesion/BraTS 官方仓库按年份列 task）— https://github.com/BrainLesion/BraTS
-- 社区事实表（辅助核对）：https://github.com/openmedlab/Awesome-Medical-Dataset （BraTS2023-SSA / -MET / -PED 等资源页）
+
+- 集群结构（2023 = 5 分割 + 3 非分割任务）、各子挑战标签映射、ET 4→3、计数：MDPI Sensors 综述《A Comprehensive Review of MRI Segmentation Datasets from BraTS Challenges (2012–2025)》§4.10 — <https://www.mdpi.com/1424-8220/25/6/1838> （PMC 版：<https://pmc.ncbi.nlm.nih.gov/articles/PMC11945730/> ）
+- GLI（1251/219/570、复用 BraTS 2021、SRI24、1mm、240×240×155、skull-stripped）：BraTS 2023 GLI — <https://pmc.ncbi.nlm.nih.gov/articles/PMC10441440/> ；BraSyn 论文（注明复用 2021 数据 + ET 4→3）— <https://arxiv.org/html/2305.09011v6>
+- SSA / BraTS-Africa（60/15/30、NETC/SNFH/ET）— <https://arxiv.org/abs/2305.19369> ；PMC <https://pmc.ncbi.nlm.nih.gov/articles/PMC10312814/>
+- MEN（1000/141/283、syn51514106、TC/WT 定义）— <https://arxiv.org/html/2405.09787v2> ；MELBA <https://www.melba-journal.org/papers/2025:003.html>
+- METS（402/31/59、3076 病灶、238 vs 402 口径、syn51514107、WT/TC/ET 公式、ET 4→3 声明）— <https://arxiv.org/html/2306.00838v3> ；PMC <https://pmc.ncbi.nlm.nih.gov/articles/PMC10312806/>
+- PED（挑战口径 98/44/24：结果论文 <https://arxiv.org/html/2407.08855> ；大队列 99/45/84、228 患者、NC 含囊变：设计论文 <https://arxiv.org/html/2305.17033v7> ）
+- 获取与许可：Synapse 门户 <https://www.synapse.org/Synapse:syn51156910> ；CC BY-NC + 需先完成官方 data-access 申请 — <https://arxiv.org/html/2607.22135v2>
+- MENA 不属于 2023/2024/2025（BrainLesion/BraTS 官方仓库按年份列 task）— <https://github.com/BrainLesion/BraTS>
+- 社区事实表（辅助核对）：<https://github.com/openmedlab/Awesome-Medical-Dataset> （BraTS2023-SSA / -MET / -PED 等资源页）
 
 ---
 
@@ -55,13 +56,13 @@
 
 | 维度 | 事实 | 来源 |
 |---|---|---|
-| 文件格式 | 全部 **NIfTI（`.nii.gz`）**；每例 5 个文件：`{id}-t1n.nii.gz`（native T1）、`-t1c`（增强 T1/T1Gd）、`-t2w`（T2）、`-t2f`（T2-FLAIR）、`-seg`（GT，仅训练集） | https://www.mdpi.com/1424-8220/25/6/1838 |
+| 文件格式 | 全部 **NIfTI（`.nii.gz`）**；每例 5 个文件：`{id}-t1n.nii.gz`（native T1）、`-t1c`（增强 T1/T1Gd）、`-t2w`（T2）、`-t2f`（T2-FLAIR）、`-seg`（GT，仅训练集） | <https://www.mdpi.com/1424-8220/25/6/1838> |
 | 解剖空间 | 统一**刚性配准到 SRI24 atlas** | 同上 |
 | 分辨率 | **1mm 各向同性**（1×1×1 mm）重采样 | 同上 |
 | 网格 | **240×240×155** voxels | 同上 |
 | skull-strip | **已 skull-stripped**（DL 方法，兼作去标识化防面部重建） | 同上 |
 | 方向 | 配准到 SRI24（社区常以 LPS 描述；本仓管线会再 `Orientationd(..., "RAS")` 统一） | 本仓 `scripts/diff_model_create_training_data.py:58` |
-| **强度归一化** | **官方不做**任何强度归一化/标准化——提供的是 skull-stripped + 配准 + 重采样后的**原始强度**；z-score 等由参赛者自行施加（惯例：脑掩膜内、逐模态 z-score） | https://www.mdpi.com/1424-8220/25/6/1838 及多处文献 |
+| **强度归一化** | **官方不做**任何强度归一化/标准化——提供的是 skull-stripped + 配准 + 重采样后的**原始强度**；z-score 等由参赛者自行施加（惯例：脑掩膜内、逐模态 z-score） | <https://www.mdpi.com/1424-8220/25/6/1838> 及多处文献 |
 
 > **对本仓的含义**：BraTS 原始强度可直接喂入本仓 embedding 脚本——脚本按 JSON 里的 `modality` 字段自动做 MR 强度变换：`ScaleIntensityRangePercentilesd(lower=0, upper=99.5, b_min=0, b_max=1)`（0–99.5 百分位 → [0,1]，**非 z-score**），见 `scripts/transforms.py:64`。**为对齐 base 模型 `rflow-mr-brain v1` 的训练分布，应采用本仓自己的百分位归一化，而不要预先对 BraTS 做 z-score**（那会与 base 模型训练时用的归一化不一致）。
 
@@ -79,23 +80,26 @@
 - **WT/TC/ET 派生结构在 5 个分割子挑战一致**（METS/PED/MEN 论文均有逐字公式）：WT = 1∪2∪3（全肿瘤）；TC = 1∪3（肿瘤核心）；ET = 3（增强肿瘤）。即无论各子挑战对 1/2 的具体命名如何（NCR/NETC/NC、ED/SNFH），派生规则相同。
 - **最实质的语义差异在 PED**：其 label 1（NC）把**囊变成分（cystic component, CC）**并入非增强成分（原始 4 亚区 ET/NET/CC/ED 合并为 3），而成人 GLI 的 label 1（NCR）不含独立囊变标注。混训 PED 与 GLI 时 label 1 的解剖含义略有偏移（对生成建模影响有限，但做精确亚区条件时需注意）。label 2（ED vs SNFH）与 label 3（ET）各子挑战语义基本对应，仅命名不同。
 - **数据准备实战 gotcha**：若把 ≤2022 旧 BraTS（ET=4）与 2023（ET=3）混用，ET 索引会错位；本普查只用 2023，统一按 1/2/3 处理即可。
-- 来源：MDPI 综述 §4.10 — https://www.mdpi.com/1424-8220/25/6/1838 ；METS（含 ET 4→3 逐字声明 + WT/TC/ET 公式）https://arxiv.org/html/2306.00838v3 ；PED（NC 含囊变）https://arxiv.org/html/2407.08855
+- 来源：MDPI 综述 §4.10 — <https://www.mdpi.com/1424-8220/25/6/1838> ；METS（含 ET 4→3 逐字声明 + WT/TC/ET 公式）<https://arxiv.org/html/2306.00838v3> ；PED（NC 含囊变）<https://arxiv.org/html/2407.08855>
 
 ---
 
 ## 3. 获取渠道、门槛与许可
 
-**主渠道：Synapse 平台**（https://www.synapse.org/）。BraTS 2023 全集群统一经 Synapse 分发，门户父项目 `syn51156910`；各子挑战下载入口见 §1 表（SSA `syn51514109` / MEN `syn51514106` / METS `syn51514107`；GLI 与 PED 经父项目子页面）。来源：https://www.synapse.org/Synapse:syn51156910
+**主渠道：Synapse 平台**（<https://www.synapse.org/）。BraTS> 2023 全集群统一经 Synapse 分发，门户父项目 `syn51156910`；各子挑战下载入口见 §1 表（SSA `syn51514109` / MEN `syn51514106` / METS `syn51514107`；GLI 与 PED 经父项目子页面）。来源：<https://www.synapse.org/Synapse:syn51156910>
+
 - **门槛**：注册 Synapse 账号 → 在官方门户完成 **data-access application / 接受 DUA（Data Use Agreement）** → 组织者审批通过后方可下载。审批为人工/机构流程，**非即时**，执行 issue #8 时应预留数天审批时间。
 - **许可**：**CC BY-NC 4.0（非商业研究用途）**，**禁止再分发**（每位使用者须自行完成申请，不可替代签署）。本项目据此产出（embeddings、合成数据、下游模型）的对外再分发同样受限。
 
 **其他渠道**：
-- **CBICA / UPenn**（成人胶质瘤 GLI 的历史分发口，CaPTk/IPP）。来源：https://www.med.upenn.edu/cbica/captk/
-- **Kaggle 社区镜像**（如 ASNR-MICCAI BraTS 2023 GLI 训练数据）——下载快但非官方，须注意合规。来源：https://www.kaggle.com/datasets/luumsk/asnr-miccai-brats-2023-gli-challenge-training-data
+
+- **CBICA / UPenn**（成人胶质瘤 GLI 的历史分发口，CaPTk/IPP）。来源：<https://www.med.upenn.edu/cbica/captk/>
+- **Kaggle 社区镜像**（如 ASNR-MICCAI BraTS 2023 GLI 训练数据）——下载快但非官方，须注意合规。来源：<https://www.kaggle.com/datasets/luumsk/asnr-miccai-brats-2023-gli-challenge-training-data>
 - **Hugging Face**：**无官方 BraTS 数据集**。存在社区镜像——`MedOtter/brats2023-gli-dataset`、`MedOtter/brats2023-men-dataset`、`MedOtter/brats2023-ssa`、`MedOtter/brats2023-ped-dataset`（标称 CC-BY-4.0）、`obi77/brats23-first-10-examples`（前 10 例小集）、`sohonjit/brats2023_multidomain_i2i`（仅 2D 中间层切片，非完整体积）。
   - ⚠️ **合规警示**：BraTS DUA 明确禁止再分发，上述 HF/Kaggle 镜像很可能**不合规**。**正式获取（尤其用于本项目交付）应走 Synapse + 自有 DUA**；HF 的 `obi77/brats23-first-10-examples` 之类仅可作一次性冒烟参考，且须先确认许可，不应作为正式数据来源。
 
 **获取步骤（建议，供 issue #8）**：
+
 1. 注册 Synapse 账号，定位 BraTS 2023 门户（`syn51156910`）与目标子挑战页面。
 2. 提交 DUA，等待审批（预留数天）。
 3. 用 Synapse CLI/客户端批量下载目标子挑战训练集（含 seg）。
@@ -123,11 +127,13 @@
 ### 4.1 目标格式速查
 
 **P1（image-only 扩散微调，`diff_model_train.py`）**——每个 (病例 × 模态) 一条样本：
+
 - 主 JSON `training` 列表：`image` 指向**原始**影像相对路径（脚本自动把 `.nii.gz` 换成 `_emb.nii.gz`），见 `scripts/diff_model_train.py:82`。
 - **每例 sidecar `<emb>.nii.gz.json`**：含 `spacing`（3 floats）、`modality`（字符串）；若为 ddpm 还需 `top/bottom_region_index`。加载器从 sidecar 读取（`_load_data_from_file`），见 `scripts/diff_model_train.py:450-456,120-133`。
 - **无需 `label`**（image-only）。`modality` 经 `modality_mapping.json` 转 int，作为 U-Net 的 class 条件（`num_class_embeds=128`），训练时还有 modality dropout（CFG）。
 
 **P2（肿瘤掩码→影像 ControlNet，`train_controlnet.py` / §4.3）**——每个病例一条样本：
+
 - 单文件内联 JSON：`image`=`*_emb.nii.gz`、`label`=`mask_combined_label*.nii.gz`、`spacing`、`dim`（informational）、`modality`、`fold`；`top/bottom_region_index` 仅 ddpm-ct 需要（rflow 忽略）。
 - combined label 的实际体素网格必须 = **4× latent**（最近邻重采样，勿用线性），见 `skills/finetune_image-from-mask_data-prep.md` Step 4。
 - `fold` 切分：等于配置 `fold` 者作验证，其余训练（默认 fold 0=验证），见 `data/README.md` §4.3。
@@ -157,6 +163,7 @@
   - 注意：**此词表的 body envelope 是 `body=500`**（非 released 词表的 200）。
 
 **配套脚手架已存在**：
+
 - `scripts/augmentation.py` 的 `augmentation()` 有专门 `augmenting brats tumor` 分支，按 **401/402/403** 做肿瘤弹性形变合成；`remove_tumors()` 把 401/402/403/176 映射回 `brain=22`（healthy 路径）。见 `scripts/augmentation.py:455-470,506,519`。
 - `configs/environment_maisi_controlnet_train_rflow-mr.json`（`exp_name:"controlnet_brats"`）是 NVIDIA 内部 MR 脑瘤 ControlNet 实验配置：数据用 MSD `Task01_BrainTumour_t1`、`autoencoder_v2.pt`、通用 `diff_unet_3d_rflow-mr.pt`（**非** brain_v1）、`weighted_loss_label:[129]`。⚠️ 该配置自我矛盾（用 401/402/403 增广却 weighted_loss 129），是**未完成的脚手架**，仅供参考。
 
@@ -174,6 +181,7 @@
 ## 5. 240×240×155 网格方案候选
 
 **约束来源（本仓架构事实）**：
+
 - VAE（`AutoencoderKlMaisi`，`num_channels=[64,128,256]`，3 级 → **4× 空间下采样**，`latent_channels=4`）：image 边长须 **÷4** 才能得整数 latent。155÷4=38.75 ✗；240÷4=60 ✓。见 `configs/config_network_rflow.json`。
 - 扩散 U-Net（`DiffusionModelUNetMaisi`，`num_channels=[64,128,256,512]`，4 级 → 3 次下采样）：latent 边长须 **÷8** 以保证编/解码跳跃连接尺寸匹配。即 image 边长须 **÷(4×8)=÷32**。240→latent 60，60÷8=7.5 ✗。
 - **所有已发布配置 latent 均为 8 的倍数**（512→128、256→64、128→32，皆 ÷8），对应 image 边长为 128 的倍数（`round_number` 按 128 取整，`scripts/diff_model_create_training_data.py:77-90`）。MONAI 对非整除输入的惯用解法是 `DivisiblePad`。

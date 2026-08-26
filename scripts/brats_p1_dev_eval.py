@@ -50,7 +50,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import nibabel as nib
@@ -66,9 +66,7 @@ MODALITY_TOKENS = {"t1n": 29, "t1c": 34, "t2w": 30, "t2f": 31}
 
 # The run-local reference bank payload holds numpy arrays; weights_only rejects
 # them by default, so allowlist numpy reconstruction (bank is a local artifact).
-torch.serialization.add_safe_globals(
-    [np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.Float64DType]
-)
+torch.serialization.add_safe_globals([np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.Float64DType])
 TARGET_MODALITIES = ("t1n", "t1c", "t2w", "t2f")
 PLANES = ("xy", "yz", "zx")
 COHORT_QUOTAS = {"GLI": 4, "SSA": 2, "MEN": 4, "METS": 3, "PED": 3}
@@ -226,9 +224,7 @@ class CandidateSampler:
                 else:
                     model_output = unet(**unet_inputs)
                 image, _ = noise_scheduler.step(model_output, t, image, next_t)
-        inferer = SlidingWindowInferer(
-            roi_size=[96, 96, 96], sw_batch_size=1, overlap=0.25, sw_device=self._device, device=torch.device("cpu")
-        )
+        inferer = SlidingWindowInferer(roi_size=[96, 96, 96], sw_batch_size=1, overlap=0.25, sw_device=self._device, device=torch.device("cpu"))
         with torch.amp.autocast("cuda", enabled=True, dtype=torch.float16):
             synthetic = dynamic_infer(inferer, recon_model, image).squeeze().float().cpu().numpy()
         data = synthetic * 1000.0  # [0,1] -> MR 0..1000 scale, upstream int16 convention
@@ -261,12 +257,19 @@ class MrTrendFeatures:
 
     def network(self):
         if self._network is None:
-            self._network = torch.hub.load(
-                # Explicit ":main" ref: torch.hub probes github.com for the default
-                # branch when no ref is given; on the sugon the probe dies with
-                # RemoteDisconnected (not URLError) before the cache fallback.
-                "Warvito/radimagenet-models:main", model="radimagenet_resnet50", trust_repo=True, verbose=False
-            ).to(self._device).eval()
+            self._network = (
+                torch.hub.load(
+                    # Explicit ":main" ref: torch.hub probes github.com for the default
+                    # branch when no ref is given; on the sugon the probe dies with
+                    # RemoteDisconnected (not URLError) before the cache fallback.
+                    "Warvito/radimagenet-models:main",
+                    model="radimagenet_resnet50",
+                    trust_repo=True,
+                    verbose=False,
+                )
+                .to(self._device)
+                .eval()
+            )
         return self._network
 
     @staticmethod
@@ -328,7 +331,12 @@ class RealReferenceBank:
             return torch.load(bank_path, weights_only=True)
         bank = {modality: {plane: [] for plane in PLANES} for modality in TARGET_MODALITIES}
         for entry in self._entries:
-            modality = {"mri_t1_skull_stripped": "t1n", "mri_t2_skull_stripped": "t2w", "mri_flair_skull_stripped": "t2f", "mri_t1c_skull_stripped": "t1c"}[entry["modality"]]
+            modality = {
+                "mri_t1_skull_stripped": "t1n",
+                "mri_t2_skull_stripped": "t2w",
+                "mri_flair_skull_stripped": "t2f",
+                "mri_t1c_skull_stripped": "t1c",
+            }[entry["modality"]]
             path = self._raw_root / entry["image"]
             planes = self._features.volume_features(path)
             for plane, matrix in planes.items():
@@ -414,13 +422,20 @@ class L2TrendRunner:
         command = [
             sys.executable,
             str(self._entry),
-            "-i", str(input_dir),
-            "-o", str(output_dir),
-            "-d", INSTRUMENT_DATASETS[challenge],
-            "-c", spec["config"],
-            "-p", spec["plans"],
-            "-tr", "nnUNetTrainer250Epochs",
-            "-f", "0",
+            "-i",
+            str(input_dir),
+            "-o",
+            str(output_dir),
+            "-d",
+            INSTRUMENT_DATASETS[challenge],
+            "-c",
+            spec["config"],
+            "-p",
+            spec["plans"],
+            "-tr",
+            "nnUNetTrainer250Epochs",
+            "-f",
+            "0",
         ]
         env = {
             **os.environ,
@@ -684,9 +699,7 @@ def main(argv=None):
     sampler = CandidateSampler(merged, device, None)
     instrument_results = dict(item.split("=", 1) for item in args.instrument_results)
     l2 = L2TrendRunner(instrument_results, args.instrument_entry, args.nnunet_raw, args.nnunet_preprocessed)
-    watcher = CheckpointWatcher(
-        args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()}
-    )
+    watcher = CheckpointWatcher(args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()})
     idle_since = None
 
     while True:

@@ -58,17 +58,10 @@ def load_case_lists(nnunet_root: Path) -> dict[str, dict[str, list[str]]]:
     cases: dict[str, dict[str, list[str]]] = {}
     for code in DATASET_IDS:
         dev = sorted(manifest["challenges"][code]["cases"]["dev"])
-        fold_val = sorted(
-            (nnunet_root / SPLITS_DIRNAME / f"fold0_val_cases_{code}.txt")
-            .read_text()
-            .split()
-        )
+        fold_val = sorted((nnunet_root / SPLITS_DIRNAME / f"fold0_val_cases_{code}.txt").read_text().split())
         expected = EXPECTED_COUNTS[code]
         if len(dev) != expected["dev"] or len(fold_val) != expected["fold_val"]:
-            sys.exit(
-                f"{code}: 计数不符协议钉板 dev={len(dev)}/{expected['dev']} "
-                f"fold_val={len(fold_val)}/{expected['fold_val']}"
-            )
+            sys.exit(f"{code}: 计数不符协议钉板 dev={len(dev)}/{expected['dev']} " f"fold_val={len(fold_val)}/{expected['fold_val']}")
         overlap = set(dev) & set(fold_val)
         if overlap:
             sys.exit(f"{code}: dev 与 fold_val 存在交集 {sorted(overlap)}")
@@ -101,12 +94,11 @@ def link_case_inputs(case: str, source: str, layout: ChallengeLayout, inputs_dir
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--calibration-root", type=Path, required=True)
-    parser.add_argument("--nnunet-root", type=Path, required=True,
-                        help="brats2023_nnunet 根（含 Dataset50X 与 splits/）")
-    parser.add_argument("--protocol-src", type=Path, required=True,
-                        help="入库协议文档 l2-instrument-calibration-protocol.md")
-    parser.add_argument("--dev-raw", action="append", required=True, metavar="CH=DIR",
-                        help="dev 病例原始数据目录（<case>/<case>-t1n.nii.gz 布局），每挑战一次")
+    parser.add_argument("--nnunet-root", type=Path, required=True, help="brats2023_nnunet 根（含 Dataset50X 与 splits/）")
+    parser.add_argument("--protocol-src", type=Path, required=True, help="入库协议文档 l2-instrument-calibration-protocol.md")
+    parser.add_argument(
+        "--dev-raw", action="append", required=True, metavar="CH=DIR", help="dev 病例原始数据目录（<case>/<case>-t1n.nii.gz 布局），每挑战一次"
+    )
     args = parser.parse_args()
 
     dev_raw_map: dict[str, Path] = {}
@@ -149,10 +141,12 @@ def main() -> None:
         total += len(manifest_rows)
 
         manifest_path = protocol_dir / f"calibration_cases_{code}.json"
-        manifest_path.write_text(json.dumps(
-            {"challenge": code, "cases": manifest_rows,
-             "counts": {k: len(v) for k, v in cases[code].items()}},
-            indent=2, ensure_ascii=False) + "\n")
+        manifest_path.write_text(
+            json.dumps(
+                {"challenge": code, "cases": manifest_rows, "counts": {k: len(v) for k, v in cases[code].items()}}, indent=2, ensure_ascii=False
+            )
+            + "\n"
+        )
         frozen.append(f"{sha256_file(manifest_path)}  protocol/{manifest_path.name}")
 
         # 输入与 GT 的逐文件 hash：防组装后篡改（符号链接解析到实体文件）。

@@ -13,7 +13,6 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-
 PLANS_IDENTIFIER = "nnUNetPlans_SSA_bs16_v1"
 PARENT_CONFIGURATION = "3d_fullres"
 VARIANT_CONFIGURATION = "3d_fullres_bs16"

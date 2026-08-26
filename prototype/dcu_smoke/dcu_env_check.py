@@ -59,7 +59,7 @@ class DcuEnvChecker:
             default = dist.get_default_backend_for_device("cuda")
         except Exception as exc:  # older torch lacks this helper
             default = f"<unavailable: {exc}>"
-        detail = f"is_nccl_available={nccl} default_backend_for_cuda={default} (keep backend=\"nccl\" -> RCCL/HCCL)"
+        detail = f'is_nccl_available={nccl} default_backend_for_cuda={default} (keep backend="nccl" -> RCCL/HCCL)'
         return CheckResult(2, "distributed backend", bool(nccl), detail)
 
     def check_sdpa(self) -> CheckResult:
