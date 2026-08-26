@@ -203,11 +203,7 @@ class P3PairwiseScorer:
         scaled_reference = normalizer.normalize(reference, "reference")
         scaled_sample = normalizer.normalize(sample, "candidate")
         psnr = float(min(peak_signal_noise_ratio(scaled_reference, scaled_sample, data_range=1.0), PSNR_CAP_DB))
-        ssim = float(
-            structural_similarity(
-                scaled_reference, scaled_sample, data_range=1.0, channel_axis=None, win_size=SSIM_WIN
-            )
-        )
+        ssim = float(structural_similarity(scaled_reference, scaled_sample, data_range=1.0, channel_axis=None, win_size=SSIM_WIN))
         return {"error": None, "psnr": psnr, "ssim": ssim}
 
     @staticmethod
@@ -532,10 +528,7 @@ def main(argv=None):
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(selection, indent=2) + "\n")
-        print(
-            f"selection -> {out} (epoch {selection['epoch']}, mean_ssim {selection['mean_ssim']:.4f}, "
-            f"mean_psnr {selection['mean_psnr']:.2f})"
-        )
+        print(f"selection -> {out} (epoch {selection['epoch']}, mean_ssim {selection['mean_ssim']:.4f}, " f"mean_psnr {selection['mean_psnr']:.2f})")
         return 0
 
     # watch mode
@@ -602,8 +595,7 @@ def main(argv=None):
             watcher.mark_done(epoch)
             stop, reason = rule.should_stop(ledger.read())
             print(
-                f"[eval] epoch {epoch}: mean_ssim={scored['m']:.4f} mean_psnr={scored['mean_psnr']:.2f} "
-                f"stop={stop} ({reason})",
+                f"[eval] epoch {epoch}: mean_ssim={scored['m']:.4f} mean_psnr={scored['mean_psnr']:.2f} " f"stop={stop} ({reason})",
                 flush=True,
             )
             if stop:
