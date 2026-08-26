@@ -244,15 +244,14 @@ class P3PairwiseScorer:
                 str(real_path),
                 cohort_source.spacing_of(sample["case"]),
             )
-        with ProcessPoolExecutor(max_workers=self._workers, mp_context=mp.get_context("fork")) as pool:
+        with ProcessPoolExecutor(max_workers=self._workers, mp_context=mp.get_context("spawn")) as pool:
             reference_results = list(pool.map(P3PairwiseScorer.reference_job, references.values()))
-        reference_paths = {}
-        for key, result in zip(references, reference_results):
-            if result["error"] is not None:
-                raise RuntimeError(f"reference grid failed for {key}: {result['error']}")
-            reference_paths[key] = result["path"]
-        jobs = [(reference_paths[(s["sub"], s["case"], s["target_modality"])], s["path"]) for s in samples]
-        with ProcessPoolExecutor(max_workers=self._workers, mp_context=mp.get_context("fork")) as pool:
+            reference_paths = {}
+            for key, result in zip(references, reference_results):
+                if result["error"] is not None:
+                    raise RuntimeError(f"reference grid failed for {key}: {result['error']}")
+                reference_paths[key] = result["path"]
+            jobs = [(reference_paths[(s["sub"], s["case"], s["target_modality"])], s["path"]) for s in samples]
             pair_results = list(pool.map(P3PairwiseScorer.score_job, jobs))
         per_modality = {modality: {"psnr": [], "ssim": []} for modality in MODALITY_TOKENS}
         for sample, result in zip(samples, pair_results):
@@ -505,7 +504,7 @@ def main(argv=None):
                     str(real),
                     cohort_source.spacing_of(case["case"]),
                 )
-        with ProcessPoolExecutor(max_workers=args.score_workers, mp_context=mp.get_context("fork")) as pool:
+        with ProcessPoolExecutor(max_workers=args.score_workers, mp_context=mp.get_context("spawn")) as pool:
             results = list(pool.map(P3PairwiseScorer.reference_job, references.values()))
         failures = [f"reference {key}: {r['error']}" for key, r in zip(references, results) if r["error"] is not None]
         if failures:
