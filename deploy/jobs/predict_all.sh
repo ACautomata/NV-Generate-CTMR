@@ -1,6 +1,6 @@
 #!/bin/bash
 # Issue #38 仪器推理：五挑战并行 nnUNetv2 预测（每挑战一卡）。
-# 用法：bash p1_predict_all.sh [p1|p3]（默认 p1）
+# 用法：bash predict_all.sh [p1|p3]（默认 p1）
 # TTA 保持默认开启（与 ADR-0002 校准包络一致；不传 --disable_tta）。
 # 调用点已收编 ADR-0009：canonical 入口 python -m ctmr.instrument.predict，
 # 每挑战 spec 与 FrozenInstrumentCommand 的 INSTRUMENT_SPECS 一致。
