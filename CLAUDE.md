@@ -10,9 +10,9 @@ NVIDIA NV-Generate-CTMR(MAISI 3D 潜扩散 / Rectified Flow 医学影像生成)�
 
 每阶段经 L1 定量、L2 分布对齐、L3 专家目检三层验收,非补偿 AND——任一层不过即不过。
 
-## 实验记录(`Experiments/`)
+## 实验记录(`deploy/experiments/`)
 
-在服务器(sugon 集群)上跑完实验后,把结果记录到仓库 `Experiments/` 目录:一次实验一个 Markdown 文件,命名 `YYYYMMDD-<主题>.md`,内容含目的与关联 issue、运行配置或 run_id、关键读数与产物路径、结论与后续动作。实验以记录落盘为完成标志。
+在服务器(sugon 集群)上跑完实验后,把结果记录到仓库 `deploy/experiments/` 目录:一次实验一个 Markdown 文件,命名 `YYYYMMDD-<主题>.md`,内容含目的与关联 issue、运行配置或 run_id、关键读数与产物路径、结论与后续动作。实验以记录落盘为完成标志。(运维面职责边界见 docs/adr/0015-ddd-layered-endstate.md)
 
 ## Agent skills
 
