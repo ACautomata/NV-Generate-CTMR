@@ -33,7 +33,7 @@ Run order: ``--side dev`` first as a small smoke that only validates the
 inference pipeline (its samples are a dev cot; they are not bound to the
 contract). The run's freeze, and the L1/L2 deliverables it must be auditable
 against, use the ``--side holdout`` samples manifest — the final-acceptance
-holdout side the ``nnunet_l2_final_acceptance assemble --phase P3`` plan and the
+holdout side the ``ctmr.application.acceptance.distribution.final_acceptance assemble --phase P3`` plan and the
 ``brats-l1-pairs/1`` stage-0 records are built from.
 
 Usage::

@@ -1,4 +1,4 @@
-"""Issue #38 L2 仪器合成域适用性评估——v1 DM 直出样本生成与仪器评估管线（自 scripts/nnunet_l2_synthetic_domain_eval 平移，ticket #140；旧 sugon 版运行器 scripts/l2_synth_domain_sugon.py 已由 deploy/jobs/run_l2_synth_domain_eval.sh 配方取代退役）。
+"""Issue #38 L2 仪器合成域适用性评估——v1 DM 直出样本生成与仪器评估管线（自顶层历史脚本平移，ticket #140；旧 sugon 版运行器已由 deploy 配方取代退役）。
 
 在 v1 DM 基模直出样本（不依赖任何微调产物、零循环）上跑冻结的五子挑战
 L2 测量仪器，测输入契约失败率与层级违反率（ET⊆TC⊆WT），对照真实校准
@@ -441,7 +441,7 @@ class InstrumentRunner:
         cmd = FrozenInstrumentCommand(INSTRUMENT_SPECS[challenge]).build(input_dir, pred_dir)
 
         # 生成脚本在独立 shell 里跑 canonical 入口:src 树自举到 PYTHONPATH
-        # (与 nnunet_l2_final_acceptance 的 writer 同族,ADR-0009 决定 6)。
+        # (与本包 final_acceptance 的 writer 同族,ADR-0009 决定 6)。
         # 生成脚本在独立 shell 里跑 canonical 入口:本检出的 src 树自举到 PYTHONPATH
         # (#140 迁家后 repo 与 flat 部署两种形态同源——包根即 <checkout>/src)。
         package_src = Path(__file__).resolve().parents[4]

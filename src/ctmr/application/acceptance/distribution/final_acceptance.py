@@ -19,7 +19,7 @@ docs/calibration/l2-final-acceptance-protocol.md; every number comes from
 ADR-0002 (calibration envelopes) and ADR-0003 (frozen-artifact audit).
 
 Pipeline (judgement chain in this file is stdlib-only; NIfTI execution side
-lives in nnunet_l2_final_acceptance_nifti.py and runs on sugon):
+lives in ``measurement_run``, the NIfTI execution side of this package):
 
   assemble    samples manifest + holdout phase manifest -> assembly plan JSON
               (unique obs_id per observation: <case>__real / <case>__gen[__a<anchor>];
@@ -1003,7 +1003,7 @@ def main(argv=None):
 
     p = sub.add_parser("evaluate", help="measurement CSV -> per-challenge verdicts and the report")
     p.add_argument("--phase", required=True, choices=PHASES)
-    p.add_argument("--table", required=True, help="measurement CSV (see nnunet_l2_final_acceptance_nifti measure)")
+    p.add_argument("--table", required=True, help="measurement CSV (see measurement_run measure)")
     p.add_argument("--freeze-audit", required=True, help="ADR-0003 §6 freeze-audit verdict JSON")
     p.add_argument("--any-verdict", action="store_true", help="accept a fresh re-run verdict (all_passed checked, pinned hash not)")
     p.add_argument(

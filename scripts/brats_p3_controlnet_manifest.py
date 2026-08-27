@@ -22,7 +22,7 @@ Outputs two controlled manifests per run side:
 
 - ``samples.json``: a top-level list whose entries match the L2 final-acceptance
   ``P3FourAnchorPlan`` layout (``phase=P3`` + per-anchor ``real``/``generated``
-  channels) so ``nnunet_l2_final_acceptance assemble --phase P3`` consumes it
+  channels) so ``ctmr.application.acceptance.distribution.final_acceptance assemble --phase P3`` consumes it
   directly. Each entry carries the explicit ``variant`` / ``run_id`` /
   ``candidate_checkpoint_sha256`` / ``dm_checkpoint_sha256`` markers so a trained
   candidate manifest can never be mistaken for a stage-0 baseline manifest.

@@ -20,12 +20,12 @@ unconditional image-only generation (per-modality sampling, no tumour conditioni
 while L2 TOST tests generated-vs-real tumour-volume equivalence.
 
 This module is the stdlib + Pillow half of the two-file pipeline (mirroring
-``nnunet_l2_final_acceptance.py`` / ``nnunet_l2_final_acceptance_nifti.py``):
+``final_acceptance`` / ``measurement_run``, this package):
 
-  brats_p1_l2_html.py        this renderer -- pixel synthesis + HTML assembly,
-                             no NIfTI / numpy; ``selftest`` runs locally
-  brats_p1_l2_html_nifti.py  sugon execution side -- NIfTI read, unified-space
-                             resample, slice selection, then calls this renderer
+  html_report.py        this renderer -- pixel synthesis + HTML assembly
+                        (no NIfTI / numpy)
+  html_report_nifti.py  execution side -- NIfTI read, unified-space resample,
+                        slice selection, then calls this renderer
 
 The renderer consumes already-sliced 2D grayscale / label arrays; it never opens
 a NIfTI file, so it runs anywhere with Pillow (stdlib + Pillow). Output is a

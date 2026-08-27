@@ -22,7 +22,7 @@ nearest neighbour so no label values are invented; both centred crop/pad onto
 ``INSTRUMENT_GRID``. Terminal-acceptance-only concerns (the DM RAS->LPS axis
 flip, file IO) stay with that caller, not here. The frozen terminal-acceptance
 geometry (the ``GeneratedVolumeResampler`` private methods of
-``scripts/nnunet_l2_final_acceptance_nifti.py``, pre-#105) is the convergence
+the terminal-acceptance shell (``measurement_run``), pre-#105) is the convergence
 standard this engine was extracted from, verbatim.
 """
 

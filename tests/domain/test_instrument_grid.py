@@ -19,7 +19,7 @@ class FinalAcceptanceReferenceGeometry:
     """Byte-for-byte snapshot of the pre-#105 terminal-acceptance geometry.
 
     The frozen convergence standard of ADR-0008: the private methods of
-    ``GeneratedVolumeResampler`` in ``scripts/nnunet_l2_final_acceptance_nifti.py``
+    ``GeneratedVolumeResampler`` in the distribution ``measurement_run``
     before the ``ctmr.domain.grid`` extraction. Do not edit -- drift here is exactly
     what this gate exists to catch.
     """

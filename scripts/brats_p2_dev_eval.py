@@ -302,7 +302,7 @@ class P2RoundTripDice:
 
     def align_condition(self, condition_path):
         """Aligns the combined mask onto the instrument grid (reuse L2 resampler)."""
-        from .nnunet_l2_final_acceptance_nifti import GeneratedVolumeResampler
+        from ctmr.application.acceptance.distribution.measurement_run import GeneratedVolumeResampler
 
         array = GeneratedVolumeResampler().label_to_grid(str(condition_path))
         if array is None:

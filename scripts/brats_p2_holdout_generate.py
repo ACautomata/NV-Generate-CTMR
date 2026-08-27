@@ -42,7 +42,7 @@ Usage::
         -t configs/config_network_rflow.json \
         [--shard 0 --num-shards 8] [--limit N] [--challenge GLI] [--only-cases ...]
 
-The merged ``samples.json`` is structured for ``nnunet_l2_final_acceptance
+The merged ``samples.json`` is structured for ``ctmr.application.acceptance.distribution.final_acceptance
 assemble --phase P2 --samples`` (one condition mask, four modalities per case).
 """
 

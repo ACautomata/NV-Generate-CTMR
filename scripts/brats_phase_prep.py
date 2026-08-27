@@ -58,7 +58,7 @@ import nibabel as nib
 import numpy as np
 from monai.transforms import Compose, EnsureChannelFirst, LoadImage, Orientation, Resize
 
-from .brats2023_nnunet_prep import (
+from ctmr.infrastructure.provisioning.dataset_prep import (
     CHANNELS,
     DATASET_IDS,
     DIR_SUFFIX,

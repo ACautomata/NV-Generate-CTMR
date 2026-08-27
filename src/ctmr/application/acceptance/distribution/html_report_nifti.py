@@ -4,7 +4,7 @@ Reads the L2-acceptance data (generated four modalities, real four modalities,
 L2 instrument predictions, measurements.csv) on the sugon host, resamples
 everything onto the generated image grid (the unified display space), picks a
 representative slice per case, and hands the sliced arrays to
-``brats_p1_l2_html`` (stdlib + Pillow) to produce a single self-contained HTML
+``html_report`` (stdlib + Pillow) to produce a single self-contained HTML
 report.  Runs where numpy + SimpleITK + Pillow are available; the rendered HTML
 is written to a controlled path -- subject ids and per-case measurements never
 land in git.
@@ -16,7 +16,7 @@ Two commands:
              is ``<real-root>/raw/ASNR-MICCAI-BraTS2023/<challenge-dir>/<case>/``;
              the challenge-dir stem is resolved here, not hard-coded.
   render     measurements.csv -> sampled cases -> slices -> HTML report.
-             Reuses ``brats_p1_l2_html.CaseSampler`` (sampling),
+             Reuses ``html_report.CaseSampler`` (sampling),
              ``MeasurementPresenter`` (volumes) and ``L2HtmlReport`` (page).
 """
 

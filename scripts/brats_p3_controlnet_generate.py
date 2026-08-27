@@ -28,7 +28,7 @@ Outputs (controlled storage, shard-suffixed when ``--num-shards > 1``):
   onto the generation grid (RAS + trilinear 256x256x128, raw intensity domain),
   shared with the stage-0 run so reference/baseline/candidate triplets align;
 - ``samples<...>.json`` — L2 ``P3FourAnchorPlan``-compatible candidate entries
-  (variant=controlnet-candidate); ``nnunet_l2_final_acceptance assemble --phase P3``
+  (variant=controlnet-candidate); ``ctmr.application.acceptance.distribution.final_acceptance assemble --phase P3``
   consumes it directly;
 - ``pairs<...>.json`` — L1-side flat candidate records. The full
   ``brats-l1-pairs/1`` triplets are merged by the manifest ``pairs`` builder from

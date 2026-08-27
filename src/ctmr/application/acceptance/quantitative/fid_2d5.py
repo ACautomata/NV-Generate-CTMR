@@ -21,7 +21,7 @@ SHELL Usage Example:
     export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
     NUM_GPUS=7
 
-    torchrun --nproc_per_node=${NUM_GPUS} compute_fid_2-5d_ct.py \
+    torchrun --nproc_per_node=${NUM_GPUS} -m ctmr.application.acceptance.quantitative.fid_2d5 \
         --model_name "radimagenet_resnet50" \
         --real_dataset_root "path/to/datasetA" \
         --real_filelist "path/to/filelistA.txt" \

@@ -69,7 +69,7 @@ def test_input_preparation_is_axis_order_correct_and_centred(tmp_path):
     assert array.any()  # the blob survives the centred z-crop (the bug's z-pad-to-240 buried it)
 
 
-# ── nnunet_l2_synthetic_domain_eval.InputPreparator (same-family axis fix) ─────────────
+# ── synthetic_domain.InputPreparator (same-family axis fix) ─────────────
 
 
 def test_synthetic_domain_eval_prepare_case_matches_the_instrument_adapter(tmp_path):
@@ -117,7 +117,7 @@ def test_synthetic_domain_eval_prepare_case_handles_all_four_channels(tmp_path):
         assert sitk.ReadImage(str(path)).GetSize() == (240, 240, 155)
 
 
-# ── brats_p1_l2_html_nifti.SliceScene (engine client, per-case TargetGrid) ─────────────
+# ── html_report_nifti.SliceScene (engine client, per-case TargetGrid) ─────────────
 
 
 def _reference_grid():
