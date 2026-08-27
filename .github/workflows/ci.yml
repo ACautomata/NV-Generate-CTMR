@@ -52,7 +52,7 @@ jobs:
       - name: Install test dependencies (CPU torch + monai + non-GPU stack)
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install pytest numpy nibabel scikit-image Pillow SimpleITK monai tqdm scipy matplotlib huggingface_hub
+          pip install pytest numpy nibabel scikit-image Pillow SimpleITK monai tqdm scipy matplotlib huggingface_hub nnunetv2
 
       - name: Run tests
         run: pytest
