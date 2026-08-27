@@ -19,7 +19,7 @@ the ``RegionMasks`` per-region boolean extraction.
 
 import numpy as np
 
-from ctmr.measure.regions import LABEL_DOMAIN, REGION_NAMES, REGIONS, RegionMasks
+from ctmr.domain.measurement.regions import LABEL_DOMAIN, REGION_NAMES, REGIONS, RegionMasks
 
 # The drift anchor: the literal of every pre-#109 copy, verbatim. Do not edit --
 # drift here is exactly what this gate exists to catch.

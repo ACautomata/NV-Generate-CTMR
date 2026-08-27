@@ -20,7 +20,7 @@ and observation identity are caller bookkeeping, passed in at serialization.
 
 import pytest
 
-from ctmr.measure.measurement import CALIBRATION_FIELDS, FINAL_ACCEPTANCE_FIELDS, CaseMeasurement, GtRegionMetrics
+from ctmr.domain.measurement.measurement import CALIBRATION_FIELDS, FINAL_ACCEPTANCE_FIELDS, CaseMeasurement, GtRegionMetrics
 
 
 def _sample_measurement(**overrides):

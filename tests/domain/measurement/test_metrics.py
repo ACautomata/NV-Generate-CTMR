@@ -27,7 +27,7 @@ import math
 import numpy as np
 import pytest
 
-from ctmr.measure.metrics import DiceScore, WilsonUpper
+from ctmr.domain.measurement.metrics import DiceScore, WilsonUpper
 
 
 def test_dice_of_perfect_overlap_is_one():

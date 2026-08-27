@@ -1,4 +1,4 @@
-"""Convergence-gate unit tests for ctmr.grid.geometry (ADR-0008, issue #105).
+"""Convergence-gate unit tests for ctmr.domain.grid (ADR-0008, issue #105).
 
 The generic engine's public surface -- TargetGrid / GridResampler /
 CenterCropOrPad -- is the highest available seam (#102 testing decisions):
@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import SimpleITK as sitk
 
-from ctmr.grid.geometry import CenterCropOrPad, GridResampler, TargetGrid
+from ctmr.domain.grid import CenterCropOrPad, GridResampler, TargetGrid
 
 
 def test_target_grid_is_a_frozen_xyz_value_object():

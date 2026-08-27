@@ -12,7 +12,7 @@
 """The unique measurement entry point (ADR-0010, issue #109).
 
 ``InstrumentMeasurer.measure(pred, *, gt=None, condition=None, brain=None)``
-composes the ctmr.measure collaborators (``RegionMasks`` / ``HierarchyChecker``
+composes the measurement collaborators (``RegionMasks`` / ``HierarchyChecker``
 / ``CalibrationCaseUsability`` / ``DiceScore``) into one ``CaseMeasurement``:
 a pure transform, numpy in / value object out, no file IO, no cluster or path
 coupling (READERS stay with the callers -- alignment, the DM-RAS->LPS flip and
@@ -39,10 +39,10 @@ from collections.abc import Sequence
 import numpy as np
 from scipy import ndimage
 
-from ctmr.measure.hierarchy import CalibrationCaseUsability, HierarchyChecker
-from ctmr.measure.measurement import CaseMeasurement, GtRegionMetrics
-from ctmr.measure.metrics import DiceScore
-from ctmr.measure.regions import REGION_NAMES, SPACING_MM, VOXEL_ML, RegionMasks
+from ctmr.domain.measurement.hierarchy import CalibrationCaseUsability, HierarchyChecker
+from ctmr.domain.measurement.measurement import CaseMeasurement, GtRegionMetrics
+from ctmr.domain.measurement.metrics import DiceScore
+from ctmr.domain.measurement.regions import REGION_NAMES, SPACING_MM, VOXEL_ML, RegionMasks
 
 _26_CONNECTIVITY = np.ones((3, 3, 3), dtype=np.uint8)
 

@@ -61,9 +61,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python -m scripts.<this>
 sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
 
-from ctmr.grid.geometry import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler  # noqa: E402
-from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
-from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
+from ctmr.domain.grid import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler, InstrumentGridAdapter  # noqa: E402
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
 from .brats_l1_quantitative import FidScoreCalculator  # noqa: E402
 from .diff_model_setting import load_config  # noqa: E402
@@ -84,7 +83,7 @@ SAMPLE_EVERY_K = 2
 STOP_FILE = ".early_stop"
 
 # Frozen instrument command comes from the single construction point (ADR-0009
-# #108 adoption): INSTRUMENT_SPECS / FrozenInstrumentCommand in ctmr.instrument.
+# #108 adoption): INSTRUMENT_SPECS / FrozenInstrumentCommand in ctmr.domain.instrument_spec.
 
 
 class DevCohortBuilder:

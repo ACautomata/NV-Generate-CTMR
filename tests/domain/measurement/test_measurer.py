@@ -32,8 +32,8 @@ import numpy as np
 import pytest
 from scipy import ndimage
 
-from ctmr.measure.measurer import InstrumentMeasurer
-from ctmr.measure.regions import RegionMasks
+from ctmr.domain.measurement.measurer import InstrumentMeasurer
+from ctmr.domain.measurement.regions import RegionMasks
 
 # ── frozen terminal-acceptance reference (verbatim, pre-#109) ───────────────
 
