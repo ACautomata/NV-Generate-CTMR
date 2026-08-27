@@ -67,9 +67,9 @@ def test_engine_files_match_originals_ast():
     for orig_name, vendored_name in ENGINE_PAIRS:
         original = REPO_ROOT / "scripts" / orig_name
         vendored = REPO_ROOT / "src" / "ctmr" / "infrastructure" / "maiisi_engine" / vendored_name
-        assert _dump_without_imports(original) == _dump_without_imports(vendored), (
-            f"{vendored_name} drifted from scripts/{orig_name}; engine freeze is byte-stable by contract — update both sides or write a new ADR."
-        )
+        assert _dump_without_imports(original) == _dump_without_imports(
+            vendored
+        ), f"{vendored_name} drifted from scripts/{orig_name}; engine freeze is byte-stable by contract — update both sides or write a new ADR."
 
 
 def test_module_docstrings_unchanged():
