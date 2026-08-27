@@ -97,6 +97,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ctmr.infrastructure.dmsource import DmSourceRepository
+
 SCHEMA = "brats-phase-run/1"
 PHASES = ("P1", "P2", "P3")
 P3_VARIANTS = ("controlnet-candidate", "stage0-baseline")
@@ -1189,17 +1191,15 @@ class DmSourceLedger:
 
     def __init__(self, store):
         self._store = store
+        self._ledger = DmSourceRepository(store.root())
 
     def path(self):
-        return self._store.root() / "dm_source.json"
+        return self._ledger.path()
 
     def current(self):
-        ledger_path = self.path()
-        if not ledger_path.is_file():
-            return None
-        ledger = json.loads(ledger_path.read_text())
-        if ledger.get("schema") != DM_SOURCE_SCHEMA:
-            raise ContractViolationError(f"dm_source ledger {ledger_path} has schema {ledger.get('schema')!r} != {DM_SOURCE_SCHEMA!r}")
+        ledger = self._ledger.read()
+        if ledger is not None and ledger.get("schema") != DM_SOURCE_SCHEMA:
+            raise ContractViolationError(f"dm_source ledger {self.path()} has schema {ledger.get('schema')!r} != {DM_SOURCE_SCHEMA!r}")
         return ledger
 
     def register(self, record, run_record_path):
@@ -1224,7 +1224,7 @@ class DmSourceLedger:
         }
         if current is not None:
             entry["superseded_run_id"] = current["run_id"]
-        self.path().write_text(json.dumps(entry, indent=2, sort_keys=True) + "\n")
+        self._ledger.write(entry)
         return entry
 
     def check_upstream(self, upstream_run_id, checkpoint_sha256):
