@@ -55,7 +55,9 @@ src/ctmr/
     └── dataio/                # transforms/augmentation/quality_check/find_masks/sample_mask/utils_plot/NIfTI·下载装配
 ```
 
-原则：**纯度上浮、IO 下沉**。同一文件内混血时，IO 骨架留 infrastructure、算法核心抽 domain；执行期逐件搬移时在 PR 描述申报 from→to 映射，防静默漂移。prototype/、data/、configs/ 本 ADR 不触碰。
+原则：**纯度上浮、IO 下沉**。同一文件内混血时，IO 骨架留 infrastructure、算法核心抽 domain；执行期逐件搬移时在 PR 描述申报 from→to 映射，防静默漂移。prototype/（#145 出清）、data/、configs/ 本 ADR 不触碰。
+
+> 修订（2026-08-27）：`prototype/` 三原型与 `eval/l2-synth-domain/` 两报告属地图外历史遗留，经 #145 整体出清；§2「本 ADR 不触碰」清单中 `prototype/` 一项随之完结，`data/`、`configs/` 维持不变。
 
 ### 3. installable package 与统一 CLI
 
