@@ -9,4 +9,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ctmr.domain -- pure logic: no IO, no process spawning; torch tensor math allowed."""
+"""ctmr.domain -- the pure-logic layer (ADR-0015 §2).
+
+Pure transforms and value objects only: no IO, no process spawning -- torch /
+numpy / SimpleITK / scipy computation is allowed. Readers, writers and every
+subprocess stay with the callers (application / infrastructure). The deep
+modules live here as of the migration batches (#133):
+
+- ``grid``            -- instrument input geometry        (ADR-0008, #105)
+- ``measurement``     -- instrument measurement           (ADR-0010, #109)
+- ``instrument_spec`` -- frozen instrument command        (ADR-0009, #107)
+- ``recipe``          -- pinned-recipe guards             (ADR-0011, #111)
+- ``identity``        -- weight lineage, sha256-addressed (#133)
+- ``losses``          -- pure VAE loss math, out of scripts/utils (#142)
+
+The package re-exports nothing: import the submodules directly.
+"""
