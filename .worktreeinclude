@@ -1,2 +1,3 @@
 # 被 git ignore 但需要复制进 `claude --worktree` 新建 worktree 的文件（.gitignore 风格 pattern）
 .claude/settings.local.json
+.claude/skills/
