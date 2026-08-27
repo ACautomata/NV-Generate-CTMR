@@ -90,10 +90,27 @@ def test_measure_bare_invocation_still_answers_not_migrated(capsys):
 
 
 def test_not_migrated_generate_cases_still_answer_not_migrated(capsys):
-    assert cli.main(["generate", "modality-label", "train"]) == 2
-    assert "modality-label" in capsys.readouterr().err
     assert cli.main(["gen", "mask", "watch"]) == 2
     assert "mask" in capsys.readouterr().err
+    assert cli.main(["generate", "mask", "train"]) == 2
+    assert "mask" in capsys.readouterr().err
+
+
+def test_live_generate_cases_peel_to_their_family_handlers():
+    train_peeled = cli.CtmrCli._peel_generate(["generate", "modality-label", "train", "-e", "env.json"])
+    assert train_peeled[0] is cli.CtmrCli._run_modality_label_train
+    assert list(train_peeled[1]) == ["-e", "env.json"]
+    dev_peeled = cli.CtmrCli._peel_generate(["generate", "modality-label", "dev-eval", "select", "--out", "o.json"])
+    assert dev_peeled[0] is cli.CtmrCli._run_modality_label_dev_eval
+    assert list(dev_peeled[1]) == ["select", "--out", "o.json"]
+
+
+def test_bare_generate_case_answers_a_usage_pointer_not_a_traceback(capsys):
+    assert cli.main(["generate", "modality-label"]) == 2
+    err = capsys.readouterr().err
+    assert "needs a verb" in err and "modality-label" in err
+    assert cli.main(["gen", "cross-modal"]) == 2
+    assert "needs a verb" in capsys.readouterr().err
 
 
 def test_family_without_verb_also_answers_not_migrated(capsys):

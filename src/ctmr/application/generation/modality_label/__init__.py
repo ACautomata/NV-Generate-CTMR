@@ -10,11 +10,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Quantitative acceptance evidence generators (ADR-0015 §2 application/acceptance/quantitative).
+"""Modality-label-conditioned generation family (ADR-0015 §2, issue #129).
 
-Two residents so far: ``fid_2d5`` (the 2.5D Frechet-Inception-Distance
-calculator, #140) and ``fid`` (the Fréchet-distance metric computation the L1
-evidence chain and the generation families' dev-trend machinery share,
-ticket 10). The paired-error chain lands with the quantitative acceptance
-ticket (#141).
+The image-only tumour-candidate use case as word-named modules (ADR-0015 §7⑥):
+``train`` (full-parameter DM continuation with the 1:1 MR-RATE replay mix) and
+``monitor`` (the dev light-acceptance sidecar). The shared dev-trend machinery
+lives in ``ctmr.application.generation.trend``; the watch/select polling
+skeleton in ``ctmr.application.shell``. The historical phase codename stays in
+CONTEXT.md and ADR history only.
 """

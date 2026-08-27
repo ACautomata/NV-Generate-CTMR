@@ -55,7 +55,10 @@ import nibabel as nib
 import numpy as np
 import torch
 
-from .brats_p1_dev_eval import MODALITY_TOKENS, TARGET_MODALITIES
+# Reverse shim (ticket 10 / ADR-0015 §2): the shared cohort constants live in
+# ctmr.application.shell until this script's own migration batch relocates it.
+from ctmr.application.shell import MODALITY_TOKENS, TARGET_MODALITIES  # noqa: E402
+
 from .brats_p2_dev_eval import P2CandidateSampler
 from .diff_model_setting import load_config
 

@@ -38,8 +38,8 @@ INSTRUMENT_ARGS=(
 case "$PHASE" in
   p1)
     RUN_ROOT="${RUN_ROOT:-/root/private_data/brats2023_rflow_p1}"
-    TRAIN_MODULE=scripts.brats_p1_finetune
-    WATCH_MODULE=scripts.brats_p1_dev_eval
+    TRAIN_MODULE=ctmr.application.generation.modality_label.train
+    WATCH_MODULE=ctmr.application.generation.modality_label.monitor
     TRAIN_CONFIG=configs/config_brats_p1_train.json
     NETWORK_CONFIG=configs/config_network_rflow.json
     ENV_JSON="$RUN_ROOT/environment_brats_p1_train.json"

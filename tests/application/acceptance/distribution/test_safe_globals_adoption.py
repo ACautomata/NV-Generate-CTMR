@@ -6,9 +6,12 @@ Proves decision 4's collapse end state: importing the judge-chain modules that
 their ``torch.load`` calls run inside the ``nnunet_safe_globals()`` scope, the
 promoted canonical verb lives in ``ctmr.infrastructure.nnunet_runner`` (the
 legacy ``l2_calibration_predict_entry.py`` and ``python -m ctmr.instrument.predict``
-stay superseded), and the four surviving different-payload whitelists stay
-untouched. Torch-level tier: runs for real in the CI full-dependency set
-(ADR-0015 §6); the AST half needs no torch but lives here to keep the gate in one file.
+stay superseded), and the surviving different-payload whitelists stay untouched
+(the modality-label family and the shared trend machinery were relocated to
+allowlist-at-the-load-point form in ticket 10; the mask scripts follow with
+their own migration batch). Torch-level tier: runs for real in the CI
+full-dependency set (ADR-0015 §6); the AST half needs no torch but lives here
+to keep the gate in one file.
 """
 
 import ast
@@ -27,9 +30,7 @@ ADOPTED_MODULES = (
     REPO_ROOT / "src/ctmr/application/acceptance/distribution/closing.py",
 )
 UNTOUCHED_WHITELIST_SITES = (
-    "scripts/brats_p1_dev_eval.py",
     "scripts/brats_p2_dev_eval.py",
-    "scripts/brats_p1_finetune.py",
     "scripts/brats_p2_finetune.py",
 )
 
