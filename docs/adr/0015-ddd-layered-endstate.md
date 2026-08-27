@@ -89,9 +89,11 @@ CLAUDE.md 的实验记录段同步改址。其余 10 个 .sh 按 §2/§3 吸收�
 ### 6. 测试面整合
 
 - pytest canonical 地位不变（ADR-0013 决定 1 存续）；13 处内嵌 selftest 全部迁入 tests/：脚本中的 `selftest` 子命令随脚本迁移消亡，断言逻辑变为对应 test 函数，目录按甲案改名（tests/domain|application|infrastructure/… 对应第二层）。
-- GPU/集群级冒烟（dcu_smoke、nnUNet 推理链）加 `@pytest.mark.gpu` 自动跳过标记（延续现有 markers 机制）；「任意机器可跑」切分线不变，只是载体从子命令换成标记。
-- 「sugon 无 pytest 故 selftest 留驻生产文件」前提废止；集群恢复时跑的就是正经 pytest。两级门禁语义保持：收敛级 CI 常驻，冻结·集成级＝GPU 标记测试全集在 DCU 环境（或集群恢复后）执行。
-- 出生即带测试硬门延续：每个新 module 落地 PR 必须同时交付其测试。
+- 标记分档：**torch 级**＝CPU 可跑真实执行——测试环境缺 torch 就装：CI 测试 job 一律安装 CPU torch＋monai＋nnunetv2 等全部非 GPU 依赖（单一全依赖档），torch 标记测试在 CI 用合成小夹具真实执行，**禁止缺失即跳过**（`importorskip` 兜底与「CI 不装 torch」前提作废，取代 ADR-0013 §4 的 torch 级 skip 设计）；依赖无法 CI 承载的测试一律归 gpu 级。**gpu 级**＝需真 GPU/集群环境（dcu_smoke、nnUNet 推理链），加 `@pytest.mark.gpu` 自动跳过，统一送服务器（集群恢复后/DCU）执行、不在本地/CI 跑；「任意机器可跑」切分线不变，只是载体从子命令换成标记。
+- 「sugon 无 pytest 故 selftest 留驻生产文件」前提废止；集群恢复时跑的就是正经 pytest。两级门禁语义保持：收敛级 CI 常驻（torch 全依赖档），冻结·集成级＝GPU 标记测试全集在 DCU 环境（或集群恢复后）执行。
+- 出生即带测试硬门延续：每个新 module 落地 PR 必须同时交付其测试；torch 计算模块（losses/generation 内核/vae_train/引擎冒烟/checkpoint 往返等）带执行级测试而非仅配置级夹具。
+
+> 修订（2026-08-27）：§6 标记分档澄清为「torch 级禁止缺失即跳过、CI 一律装 torch」＋「gpu 级送服务器执行」，取代 ADR-0013 §4 的 torch 级 `importorskip` skip 设计与 CI 轻栈/重栈分离；随 #129 规格修订同步。
 
 ### 7. 命名精简规则
 
