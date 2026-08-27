@@ -64,8 +64,8 @@ case "$PHASE" in
     ;;
   p3)
     RUN_ROOT="${RUN_ROOT:-/root/private_data/brats2023_rflow_p3}"
-    TRAIN_MODULE=scripts.brats_p3_finetune
-    WATCH_MODULE=scripts.brats_p3_dev_eval
+    TRAIN_MODULE=ctmr.application.generation.cross_modal.train
+    WATCH_MODULE=ctmr.application.generation.cross_modal.monitor
     TRAIN_CONFIG=configs/config_brats_p3_train.json
     NETWORK_CONFIG=configs/config_network_p3.json
     ENV_JSON="$RUN_ROOT/environment_brats_p3_train.json"
@@ -75,7 +75,7 @@ case "$PHASE" in
     AUTOENCODER="${AUTOENCODER:-/root/private_data/manifold/models/autoencoder_v1.pt}"
     WATCH_ROOT_FLAGS=(--phase-root "$PHASE_ROOT")
     TRAIN_EXTRA_FLAGS=()
-    INSTRUMENT_ARGS=()  # P3's dev-eval watch has no --instrument-results flag
+    INSTRUMENT_ARGS=()  # the cross-modal dev-eval watch has no --instrument-results flag
     ;;
   *)
     echo "unknown PHASE '$PHASE' (expected p1|p2|p3)" >&2
