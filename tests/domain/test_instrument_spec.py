@@ -14,8 +14,8 @@ from dataclasses import fields
 
 import pytest
 
+from ctmr.application.acceptance.distribution.final_acceptance import PredictScriptWriter
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand, InstrumentSpec
-from scripts.nnunet_l2_final_acceptance import PredictScriptWriter
 
 # The canonical argv snapshot per challenge, exactly as ADR-0009 decisions 1+3
 # pin it. Do not edit -- drift here is exactly what this gate exists to catch.

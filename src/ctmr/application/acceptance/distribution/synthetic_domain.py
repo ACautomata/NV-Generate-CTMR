@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Issue #38 L2 仪器合成域适用性评估——v1 DM 直出样本生成与仪器评估管线。
+"""Issue #38 L2 仪器合成域适用性评估——v1 DM 直出样本生成与仪器评估管线（自 scripts/nnunet_l2_synthetic_domain_eval 平移，ticket #140；旧 sugon 版运行器 scripts/l2_synth_domain_sugon.py 已由 deploy/jobs/run_l2_synth_domain_eval.sh 配方取代退役）。
 
 在 v1 DM 基模直出样本（不依赖任何微调产物、零循环）上跑冻结的五子挑战
 L2 测量仪器，测输入契约失败率与层级违反率（ET⊆TC⊆WT），对照真实校准
@@ -15,33 +14,33 @@ R_fail 给出合成域适用性判定。
 用法示例（在 sugon DCU 集群上执行）::
 
   # Step 1: 生成 P1 式独立采样样本
-  python -m scripts.nnunet_l2_synthetic_domain_eval generate \\
+  python -m ctmr.application.acceptance.distribution.synthetic_domain generate \\
       --mode p1 \\
       --case-list /root/private_data/l2-synth-eval/case_lists/p1_cases.json \\
       --v1-model-dir /root/private_data/models \\
       --output-dir /root/private_data/l2-synth-eval/p1_samples
 
   # Step 2: 生成 P3 式 img2img 样本
-  python -m scripts.nnunet_l2_synthetic_domain_eval generate \\
+  python -m ctmr.application.acceptance.distribution.synthetic_domain generate \\
       --mode p3 \\
       --case-list /root/private_data/l2-synth-eval/case_lists/p3_cases.json \\
       --v1-model-dir /root/private_data/models \\
       --output-dir /root/private_data/l2-synth-eval/p3_samples
 
   # Step 3: 组装 nnU-Net 输入（把 DM 输出重采样并格式化为仪器输入契约）
-  python -m scripts.nnunet_l2_synthetic_domain_eval prep-inputs \\
+  python -m ctmr.application.acceptance.distribution.synthetic_domain prep-inputs \\
       --sample-dir /root/private_data/l2-synth-eval/p1_samples \\
       --nnunet-root /root/private_data/brats2023_nnunet \\
       --output-dir /root/private_data/l2-synth-eval/p1_nnunet_inputs
 
   # Step 4: 跑冻结仪器推理
-  python -m scripts.nnunet_l2_synthetic_domain_eval predict \\
+  python -m ctmr.application.acceptance.distribution.synthetic_domain predict \\
       --input-dir /root/private_data/l2-synth-eval/p1_nnunet_inputs \\
       --results-root /root/private_data/nnUNet_results \\
       --output-dir /root/private_data/l2-synth-eval/p1_predictions
 
   # Step 5: 计算指标 + 与真实 R_fail 对照
-  python -m scripts.nnunet_l2_synthetic_domain_eval evaluate \\
+  python -m ctmr.application.acceptance.distribution.synthetic_domain evaluate \\
       --sample-dir /root/private_data/l2-synth-eval/p1_samples \\
       --input-dir /root/private_data/l2-synth-eval/p1_nnunet_inputs \\
       --pred-dir /root/private_data/l2-synth-eval/p1_predictions \\
@@ -57,19 +56,14 @@ import argparse
 import json
 import math
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import SimpleITK as sitk
 
-_HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python -m scripts.<this>
-sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
-
-from ctmr.domain.grid import InstrumentGridAdapter  # noqa: E402
-from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
+from ctmr.domain.grid import InstrumentGridAdapter
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
 
 # ── 常量 ──────────────────────────────────────────────────────────────────
 
@@ -448,11 +442,12 @@ class InstrumentRunner:
 
         # 生成脚本在独立 shell 里跑 canonical 入口:src 树自举到 PYTHONPATH
         # (与 nnunet_l2_final_acceptance 的 writer 同族,ADR-0009 决定 6)。
-        script_dir = Path(__file__).resolve().parent
-        src_roots = ":".join(str(root) for root in dict.fromkeys((script_dir.parent / "src", script_dir / "src")))
+        # 生成脚本在独立 shell 里跑 canonical 入口:本检出的 src 树自举到 PYTHONPATH
+        # (#140 迁家后 repo 与 flat 部署两种形态同源——包根即 <checkout>/src)。
+        package_src = Path(__file__).resolve().parents[4]
         script = (
             "#!/bin/bash\nset -euo pipefail\n"
-            + f'export PYTHONPATH="{src_roots}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+            + f'export PYTHONPATH="{package_src}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
             + " ".join(cmd)
             + f" 2>&1 | tee {pred_dir / 'predict.log'}\n"
         )
@@ -640,7 +635,7 @@ class ReportGenerator:
             "title": "L2 仪器合成域适用性评估报告",
             "issue": 38,
             "mode": mode,
-            "description": ("在 v1 DM 直出样本上测试 L2 测量仪器的输入失败率与层级违反率，" "建立合成域适用性前置证据"),
+            "description": ("在 v1 DM 直出样本上测试 L2 测量仪器的输入失败率与层级违反率，建立合成域适用性前置证据"),
             "per_challenge": {},
             "overall_verdict": "PASS",
         }
@@ -660,7 +655,7 @@ class ReportGenerator:
         # P2 方向证据缺位记录
         if mode == "p1":
             report["p2_evidence_gap"] = (
-                "P2 方向前置证据缺位已知情接受（掩码 ControlNet 训练前不存在 v1 可产样本），" "P2 依赖终验伴随监控（undecided 语义）兜底"
+                "P2 方向前置证据缺位已知情接受（掩码 ControlNet 训练前不存在 v1 可产样本），P2 依赖终验伴随监控（undecided 语义）兜底"
             )
 
         report_path = output_dir / f"synthetic_domain_report_{mode}.json"

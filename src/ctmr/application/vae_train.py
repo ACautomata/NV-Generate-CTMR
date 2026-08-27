@@ -171,7 +171,7 @@ def train_epoch(
     """
     if amp and (scaler_g is None or scaler_d is None):
         raise ValueError(
-            "amp=True requires both scalers (build_amp_scalers) -- enabled autocast " "without gradient scaling silently underflows fp16 gradients."
+            "amp=True requires both scalers (build_amp_scalers) -- enabled autocast without gradient scaling silently underflows fp16 gradients."
         )
     autoencoder.train()
     discriminator.train()

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """运行并审计一个 Issue #35 MONAI nnU-Net fold_0 仪器。
 
 所有输出均约束于 ``/root/private_data``。本程序绝不向 Git 写入患者 ID、NIfTI
@@ -13,7 +12,6 @@ import inspect
 import json
 import os
 import platform
-import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,14 +20,10 @@ from pathlib import Path
 # safeglobals.nnunet_safe_globals)：load 处 `with` 包裹，import 本模块不再
 # 改全局 torch 状态。sugon 部署须连同 src/ 树一起同步(同族 shim,见
 # nnunet_l2_final_acceptance_nifti.py)。
-_PATH_HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_PATH_HERE.parent / "src"))  # repo src layout: python scripts/<this>.py
-sys.path.insert(0, str(_PATH_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
-
 import torch  # noqa: E402
 from monai.apps.nnunet import nnUNetV2Runner  # noqa: E402
 
-from ctmr.instrument.safeglobals import nnunet_safe_globals  # noqa: E402
+from ctmr.infrastructure.nnunet_runner import nnunet_safe_globals
 
 PERSISTENT_ROOT = Path("/root/private_data")
 TRAINER_CLASS = "nnUNetTrainer250Epochs"

@@ -1,15 +1,14 @@
-"""Torch-level gate tests for the #108 weights_only whitelist adoption (ADR-0009).
+"""Torch-level gate tests for the weights_only whitelist adoption (ADR-0009, re-homed with #140).
 
-Proves decision 4's collapse on the two remaining copy sites: importing
-``scripts.nnunet_l2_instrument`` / ``scripts.nnunet_l2_closing_verification``
-no longer mutates global torch state (import-time ``add_safe_globals`` gone),
+Proves decision 4's collapse end state: importing the judge-chain modules that
+``torch.load`` checkpoints (``instrument_training`` / ``closing``, now in
+``ctmr.application.acceptance.distribution``) never mutates global torch state,
 their ``torch.load`` calls run inside the ``nnunet_safe_globals()`` scope, the
-promoted ``l2_calibration_predict_entry.py`` is gone as a call site, and the
-four surviving different-payload whitelists stay untouched (a fifth,
-``prototype/p3_image_cond_controlnet/p3_common.py``, was removed with the
-prototype tree in #145). Auto-skipped on light stacks
-(``pytest.importorskip``, ADR-0013 §4); the AST half needs no torch but lives
-here to keep the adoption gate in one file.
+promoted canonical verb lives in ``ctmr.infrastructure.nnunet_runner`` (the
+legacy ``l2_calibration_predict_entry.py`` and ``python -m ctmr.instrument.predict``
+stay superseded), and the four surviving different-payload whitelists stay
+untouched. Torch-level tier: runs for real in the CI full-dependency set
+(ADR-0015 §6); the AST half needs no torch but lives here to keep the gate in one file.
 """
 
 import ast
@@ -20,14 +19,15 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("torch")
-pytest.importorskip("monai")
+pytest.importorskip("nnunetv2")
 
 pytestmark = pytest.mark.torch
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
-REPO_ROOT = Path(__file__).resolve().parents[2]
-ADOPTED_SCRIPTS = (SCRIPTS_DIR / "nnunet_l2_instrument.py", SCRIPTS_DIR / "nnunet_l2_closing_verification.py")
+REPO_ROOT = Path(__file__).resolve().parents[4]
+ADOPTED_MODULES = (
+    REPO_ROOT / "src/ctmr/application/acceptance/distribution/instrument_training.py",
+    REPO_ROOT / "src/ctmr/application/acceptance/distribution/closing.py",
+)
 UNTOUCHED_WHITELIST_SITES = (
     "scripts/brats_p1_dev_eval.py",
     "scripts/brats_p2_dev_eval.py",
@@ -59,14 +59,15 @@ def _is_nnunet_safe_globals_with(node):
     )
 
 
-def test_import_of_the_two_scripts_no_longer_mutates_torch_global_state():
+def test_import_of_the_judge_chain_modules_no_longer_mutates_torch_global_state():
     # the baseline is taken AFTER monai's own import chain (monai registers its own
     # MetaTensor/SpaceKeys allowlist on import -- third-party behaviour, not ours):
-    # the gate is that OUR scripts add nothing on top of it.
+    # the gate is that OUR modules add nothing on top of it.
     check = (
         "import torch; import monai.apps.nnunet; "
         "before = list(torch.serialization.get_safe_globals()); "
-        "import scripts.nnunet_l2_instrument, scripts.nnunet_l2_closing_verification; "
+        "import ctmr.application.acceptance.distribution.instrument_training; "
+        "import ctmr.application.acceptance.distribution.closing; "
         "assert torch.serialization.get_safe_globals() == before"
     )
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
@@ -74,26 +75,27 @@ def test_import_of_the_two_scripts_no_longer_mutates_torch_global_state():
     assert result.returncode == 0, result.stderr
 
 
-def test_no_import_time_allowlist_call_remains_in_the_two_scripts():
-    for path in ADOPTED_SCRIPTS:
+def test_no_import_time_allowlist_call_remains_in_the_judge_chain():
+    for path in ADOPTED_MODULES:
         tree = ast.parse(path.read_text())
         assert not [node for node in ast.walk(tree) if _is_add_safe_globals_call(node)], path
 
 
 def test_torch_load_points_run_inside_the_scoped_allowlist():
-    for path in ADOPTED_SCRIPTS:
+    for path in ADOPTED_MODULES:
         tree = ast.parse(path.read_text())
         scoped_lines = [(node.lineno, node.end_lineno) for node in ast.walk(tree) if _is_nnunet_safe_globals_with(node)]
         load_lines = [node.lineno for node in ast.walk(tree) if _is_torch_load_call(node)]
-        assert load_lines, path  # both scripts really load with weights_only=True
+        assert load_lines, path  # both modules really load with weights_only=True
         assert all(any(start <= line <= end for start, end in scoped_lines) for line in load_lines), path
 
 
-def test_legacy_entry_script_is_superseded_by_the_canonical_entry():
-    assert not (SCRIPTS_DIR / "l2_calibration_predict_entry.py").exists()
-    # the promoted canonical verb (``ctmr measure predict``, #140) carries the scoped activation
-    tree = ast.parse((REPO_ROOT / "src/ctmr/infrastructure/nnunet_runner.py").read_text())
-    assert [node for node in ast.walk(tree) if _is_nnunet_safe_globals_with(node)]
+def test_legacy_entries_are_superseded_by_the_canonical_verb():
+    assert not (REPO_ROOT / "scripts" / "l2_calibration_predict_entry.py").exists()
+    shim_source = (REPO_ROOT / "src/ctmr/instrument/predict.py").read_text()  # reverse shim: no scope body of its own
+    assert "ctmr.infrastructure.nnunet_runner" in shim_source  # forwards, adds nothing
+    runner_tree = ast.parse((REPO_ROOT / "src/ctmr/infrastructure/nnunet_runner.py").read_text())
+    assert [node for node in ast.walk(runner_tree) if _is_nnunet_safe_globals_with(node)]  # the scoped activation
 
 
 def test_unrelated_payload_whitelists_stay_untouched():

@@ -93,7 +93,7 @@ class P1RecipeSpec:
             raise ValueError(f"pinned P1 max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')} (ADR-0005)")
         if self._scheduler.get("sample_method") != self.PINNED_SAMPLE_METHOD:
             raise ValueError(
-                f"pinned P1 noise_scheduler.sample_method is {self.PINNED_SAMPLE_METHOD}, " f"got {self._scheduler.get('sample_method')} (ADR-0005)"
+                f"pinned P1 noise_scheduler.sample_method is {self.PINNED_SAMPLE_METHOD}, got {self._scheduler.get('sample_method')} (ADR-0005)"
             )
         if self._scheduler.get("scale") != self.PINNED_RF_SCALE:
             raise ValueError(f"pinned P1 noise_scheduler.scale is {self.PINNED_RF_SCALE}, got {self._scheduler.get('scale')} (ADR-0005)")
@@ -144,9 +144,7 @@ class P3RecipeSpec:
         if cfg.get("n_epochs", self.MAX_EPOCHS) > self.MAX_EPOCHS:
             raise ValueError(f"pinned P3 max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')}")
         if self._infer.get("cfg_guidance_scale", 0.0) != self.PINNED_CFG:
-            raise ValueError(
-                f"P3 candidate is evaluated/selected with CFG OFF (cfg_guidance_scale=0); " f"got {self._infer.get('cfg_guidance_scale')}"
-            )
+            raise ValueError(f"P3 candidate is evaluated/selected with CFG OFF (cfg_guidance_scale=0); got {self._infer.get('cfg_guidance_scale')}")
         self._logger.info(
             f"P3 recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} weighted_loss={self.PINNED_WEIGHTED_LOSS}"
             f"@{self.PINNED_WEIGHTED_LABELS} RCL=off cfg={self.PINNED_CFG}"

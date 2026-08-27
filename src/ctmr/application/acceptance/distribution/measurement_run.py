@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
 """Issue #55 NIfTI execution side for the L2 final-acceptance pipeline.
 
-Runs on the sugon DCU host (needs SimpleITK / numpy / scipy); every judgement
-rule lives in ``nnunet_l2_final_acceptance.py`` (stdlib-only). Two commands:
+(needs SimpleITK / numpy / scipy; runs where the predictions were produced).
+Every judgement rule lives in ``final_acceptance`` (stdlib-only). Two commands:
 
   assemble-execute   plan -> instrument inputs at ``<output-root>/inputs/<CH>/``
                      (generated side: the issue #38 ``InputPreparator``
@@ -34,18 +33,12 @@ import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
 
-_HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE))  # sibling scripts (the stdlib judge module)
-sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python scripts/<this>.py
-sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
-
-from nnunet_l2_final_acceptance import (  # noqa: E402
+from ctmr.application.acceptance.distribution.final_acceptance import (
     CHANNEL_SUFFIXES,
     REGION_LABELS,
     REGIONS,
     MeasurementTable,
 )
-
 from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter  # noqa: E402
 
 NNUNET_TARGET_SIZE = INSTRUMENT_GRID.size

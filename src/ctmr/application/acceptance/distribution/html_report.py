@@ -34,18 +34,13 @@ browser -- subject ids and per-case measurements stay in controlled storage and
 never land in git.
 """
 
-import argparse
 import base64
 import html
 import io
-import sys
-from pathlib import Path
 
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from nnunet_l2_final_acceptance import (  # noqa: E402
+from ctmr.application.acceptance.distribution.final_acceptance import (
     CHALLENGES,
     MODALITIES,
     REGIONS,
@@ -562,142 +557,3 @@ footer{margin-top:24px;color:var(--muted);font-size:12px;text-align:center}
 })();
 </script>
 """
-
-
-class RendererSelfTest:
-    """End-to-end regression check of the stdlib + Pillow renderer logic.
-
-    Uses synthetic arrays only (no numpy / no NIfTI); exercises palette mapping,
-    windowing, PNG encoding, overlay compositing, measurement presentation, case
-    sampling and HTML assembly.  Returns 0 on success, non-zero on any failure.
-    """
-
-    def run(self):
-        failures = []
-        presenter = MeasurementPresenter()
-        palette = BraTSRegionPalette()
-        renderer = SliceRenderer()
-        window = GrayscaleWindowing()
-        sampler = CaseSampler()
-
-        if palette.color_for_label(2) == palette.color_for_label(3):
-            failures.append("WT and ET must not share a colour")
-        if palette.color_for_label(0) is not None:
-            failures.append("background (0) must map to None")
-
-        gray = [[0, 10, 100, 200], [30, 5000, 1420, 60]]
-        windowed = window.apply(gray)
-        if len(windowed) != 2 or len(windowed[0]) != 4:
-            failures.append("window grid geometry")
-        png = renderer.render_gray(gray)
-        if not png.startswith("iVBOR"):
-            failures.append("render_gray must produce a base64 PNG")
-
-        label = [[0, 0, 3, 0], [0, 0, 0, 0]]
-        png_o = renderer.render_overlay(gray, label)
-        if not png_o.startswith("iVBOR"):
-            failures.append("render_overlay must produce a base64 PNG")
-        img = Image.open(io.BytesIO(base64.b64decode(png_o))).convert("RGB")
-        r, g, b = img.getpixel((2, 0))  # label 3 (ET) -> red-dominant
-        if not (r > g and r > b):
-            failures.append("overlay ET (label 3) must blend red-dominant")
-        r0, g0, b0 = img.getpixel((0, 0))  # background label 0 -> grayscale
-        if abs(r0 - g0) > 12 or abs(g0 - b0) > 12:
-            failures.append("background (label 0) must stay grayscale")
-        img.close()
-
-        row = {
-            "vol_wt_ml": "50.0",
-            "vol_tc_ml": "30.0",
-            "vol_et_ml": "10.0",
-            "wt_brain": "0.04",
-            "et_wt": "0.10",
-            "cond_dice_wt": "0.95",
-            "cond_dice_tc": "0.93",
-            "cond_dice_et": "",
-        }
-        if presenter.volume_fields(row)["WT"] != "50.0":
-            failures.append("volume formatting")
-        if presenter.ratio_fields(row)["wt_brain"] != "4.0%":
-            failures.append("ratio formatting")
-        if presenter.dice_fields(row)["ET"] != "—":
-            failures.append("missing dice -> em dash")
-        if not presenter.vol_present(row):
-            failures.append("vol_present should be True for defined volumes")
-
-        rows = [{"challenge": "GLI", "case": f"GLI-{i:03d}"} for i in range(10)] + [{"challenge": "GLI", "case": f"GLI-{i:03d}"} for i in range(10)]
-        sampled = sampler.sample(rows, 3)
-        if len(sampled) != 3:
-            failures.append("sampler per-challenge count")
-        if len(set(sampled)) != 3:
-            failures.append("sampler dedup across real/gen rows")
-
-        idx_rows = [
-            {"challenge": "GLI", "case": "A", "side": "real"},
-            {"challenge": "GLI", "case": "A", "side": "gen"},
-            {"challenge": "MEN", "case": "B", "side": "real"},
-        ]
-        index = IndexSummarizer().summarize(
-            idx_rows,
-            {
-                "overall_verdict": "fail",
-                "per_challenge": {
-                    "GLI": {
-                        "verdict": "fail",
-                        "tost": [
-                            {"quantity": "vol_wt_rel", "passed": False},
-                            {"quantity": "vol_tc_rel", "passed": False},
-                        ],
-                    }
-                },
-            },
-        )
-        if index["overall"] != "fail":
-            failures.append("index overall from report JSON")
-        if index["challenges"]["GLI"]["n_cases"] != 1:
-            failures.append("index per-challenge case count")
-        if index["challenges"]["GLI"]["tost_passed"] != 0 or index["challenges"]["GLI"]["tost_total"] != 2:
-            failures.append("index TOST count from report JSON")
-        if index["challenges"]["MEN"]["verdict"] != "unknown":
-            failures.append("index default verdict for missing challenge")
-
-        case = {
-            "case_id": 'BraTS-GLI-00119-000"onload="alert(1)',
-            "challenge": "GLI",
-            "slice_label": "axial z=64",
-            "modality_slices": {m: {"real": gray, "gen": gray} for m in MODALITIES},
-            "overlays": {"gen": label, "real": label},
-            "measurements": {"real": row, "gen": row},
-        }
-        report = L2HtmlReport().build([case], index={"overall": "fail"}, note="note")
-        if not report.startswith("<!DOCTYPE html>"):
-            failures.append("report must start with DOCTYPE")
-        if report.count('class="card"') != 1:
-            failures.append("report must contain exactly one card")
-        if "&quot;" not in report:
-            failures.append("case id quote must be HTML-escaped (&quot;)")
-        if "fail" not in report:
-            failures.append("index overall verdict must be shown")
-
-        if failures:
-            print("selftest FAIL:")
-            for f in failures:
-                print("  -", f)
-            return 1
-        print("selftest OK (stdlib + Pillow, no numpy/NIfTI)")
-        return 0
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("selftest", help="run the stdlib + Pillow renderer self-test")
-    args = parser.parse_args()
-
-    if args.command == "selftest":
-        return RendererSelfTest().run()
-    return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

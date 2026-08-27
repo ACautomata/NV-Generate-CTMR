@@ -118,7 +118,7 @@ from monai.transforms import Compose
 # ------------------------------------------------------------------------------
 # Create logger
 # ------------------------------------------------------------------------------
-logger = logging.getLogger("fid_2-5d_ct")
+logger = logging.getLogger("fid_2d5")
 if not logger.handlers:
     # Configure logger only if it has no handlers (avoid reconfiguring in multi-rank scenarios)
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)

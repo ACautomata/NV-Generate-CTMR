@@ -122,7 +122,6 @@ class DmSourceLedger:
         upstream = record.get("upstream")
         if upstream and (WeightsRef(sha256=upstream["checkpoint"]["sha256"]) != current_ref or upstream["run_id"] != current["run_id"]):
             return [
-                f"DM was retrained: this bypass is pinned to superseded DM {upstream['run_id']} "
-                f"while the registered DM source is {current['run_id']}"
+                f"DM was retrained: this bypass is pinned to superseded DM {upstream['run_id']} while the registered DM source is {current['run_id']}"
             ]
         return []

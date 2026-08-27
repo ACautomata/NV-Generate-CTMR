@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Issue #35 收尾验证：逐条重算受控 run 的全部工件 hash 并核验完成证据。
 
 对每个子挑战读取既有 run-manifest.json 与 completion-audit.json，重新执行
@@ -11,16 +10,12 @@ import argparse
 import importlib
 import importlib.metadata
 import json
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))  # repo src layout: python scripts/<this>.py
-sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon deployment: src/ synced next to the script
+import torch
 
-import torch  # noqa: E402
-from nnunet_l2_instrument import (  # noqa: E402
+from ctmr.application.acceptance.distribution.instrument_training import (
     PERSISTENT_ROOT,
     TRAINER_CLASS,
     ArtifactHasher,
@@ -31,9 +26,9 @@ from nnunet_l2_instrument import (  # noqa: E402
 )
 
 # weights_only 白名单已收编到 ADR-0009 的单一 scoped 定义
-# (ctmr.instrument.safeglobals.nnunet_safe_globals)：load 处 `with` 包裹，
+# (ctmr.infrastructure.nnunet_runner.nnunet_safe_globals)：load 处 `with` 包裹，
 # import 本模块不再改全局 torch 状态。
-from ctmr.instrument.safeglobals import nnunet_safe_globals  # noqa: E402
+from ctmr.infrastructure.nnunet_runner import nnunet_safe_globals
 
 
 class ClosingVerifier:

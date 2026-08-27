@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """计算 Issue #36 L2 仪器校准的七类误差与预注册误差包络。
 
 输入为 ``nnunet_l2_calibration_prep.py`` 冻结的校准集与 3 次独立推理输出；
