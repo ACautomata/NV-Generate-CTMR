@@ -141,11 +141,11 @@ _Avoid_: 空超集前置守卫(跳过 ET 存在而 TC 空的真违反)、vacuous
 _Avoid_: 与层级违反混称、用于生成数据(无 GT)
 
 **验收层注册表(AcceptanceLayer)**:
-run contract 中验收层(l1/l2/l3_report)全部接线的单点声明——附件 kind、层名、报告 schema 串、validator 构造、层读数路径与阻塞原因推导——`ACCEPTANCE_LAYERS` 一处注册,`ATTACH_KINDS`(层 kind+env,env 为非层附件)与 `LAYER_KINDS` 由此派生;新增验收层=注册表一项+新层自有类组(Rules 与 reasons builder),不再散落平行接线。validator 为组合注入:通用外壳(序幕+绑定+分派)+共享件(绑定校验/挑战读取/微工具)+层 Rules(protocol/coverage/verdict 复算/gate 检查留层——判定不同源的结构保证),非实现继承。经 ADR-0012 钉板,代码不动,执行期另行落地。
+run contract 中验收层(l1/l2/l3_report)全部接线的单点声明——附件 kind、层名、报告 schema 串、validator 构造、层读数路径与阻塞原因推导——`ACCEPTANCE_LAYERS` 一处注册,`ATTACH_KINDS`(层 kind+env,env 为非层附件)与 `LAYER_KINDS` 由此派生;新增验收层=注册表一项+新层自有类组(Rules 与 reasons builder),不再散落平行接线。validator 为组合注入:通用外壳(序幕+绑定+分派)+共享件(绑定校验/挑战读取/微工具)+层 Rules(protocol/coverage/verdict 复算/gate 检查留层——判定不同源的结构保证),非实现继承。经 ADR-0012 钉板;已落地(#136):`ACCEPTANCE_LAYERS` 与三个层验证器居于 `ctmr.application.acceptance.contract`,旧 run contract 脚本反向 import,组合注入外壳随判定链迁移执行。
 _Avoid_: 以实现继承提取三胞胎 validator(应组合注入)、把 gate 检查参数化进注册表数据、ATTACH_KINDS/LAYER_KINDS 与注册表并存双份
 
 **冻结候选绑定(FrozenRunBinding)**:
-冻结候选身份五键(run_id/phase/manifest_sha256/candidate_checkpoint_sha256/samples_sha256)的唯一提取构造点,内置 require_frozen 门禁(提取即校验 run 状态);定义于 run contract 模块(ADR-0015 甲案后居 `ctmr.application.acceptance`),L1/L2/L3 生产侧直接 import 共用。性质是身份提取而非判定:身份可共享(漂移风险在双侧失同步,共享恰消除);gate 常量镜像与 verdict 复算属判定,保持双侧不同源(ADR-0006 裁判独立性);生产侧 schema 串独立声明防版本漂移。经 ADR-0012 钉板,代码不动,执行期另行落地。
+冻结候选身份五键(run_id/phase/manifest_sha256/candidate_checkpoint_sha256/samples_sha256)的唯一提取构造点,内置 require_frozen 门禁(提取即校验 run 状态);定义于 run contract 模块(ADR-0015 甲案后居 `ctmr.application.acceptance.contract`),L1/L2/L3 生产侧直接 import 共用。性质是身份提取而非判定:身份可共享(漂移风险在双侧失同步,共享恰消除);gate 常量镜像与 verdict 复算属判定,保持双侧不同源(ADR-0006 裁判独立性);生产侧 schema 串独立声明防版本漂移。经 ADR-0012 钉板;已落地(#136):`FrozenRunBinding`/`FrozenRunBindingError` 居于 `ctmr.application.acceptance.contract.binding`,三份生产侧重写已收编(`from_record`/`from_path` 入口),门禁内置。
 _Avoid_: 生产侧重写五键提取、frozen 门禁留在各调用点、以共享身份为由合并 gate 常量镜像
 
 **weighted_loss(肿瘤区加权)**:
