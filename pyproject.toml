@@ -26,7 +26,7 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
 markers = [
-    "torch: torch-level test; auto-skipped via pytest.importorskip when torch is absent",
+    "torch: torch-level test; CPU-runnable real execution in the CI full-dependency tier (ADR-0015 §6)",
 ]
 
 [tool.ruff]

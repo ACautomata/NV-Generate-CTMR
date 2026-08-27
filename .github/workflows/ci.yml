@@ -33,30 +33,11 @@ jobs:
       - name: Run pre-commit
         run: pre-commit run --all-files
 
-  # Light sci-stack test job (ADR-0013 §4): explicit pip list, NOT requirements.txt
-  # (which pulls the full torch stack). torch-level tests skip themselves via
-  # pytest.importorskip; GPU/cluster chains stay out of CI (sugon integration gate).
-  test:
-    name: test (light sci stack)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install test dependencies
-        run: pip install pytest numpy nibabel scikit-image Pillow SimpleITK
-
-      - name: Run tests
-        run: pytest
-
-  # Torch-stack test job (ADR-0013 §4): CPU torch + monai so the torch-level
-  # dev-eval gates (pytest.importorskip) actually run in CI instead of skipping
-  # themselves -- the CPU wheel suffices, no GPU needed (those chains stay on
-  # the sugon integration gate).
+  # Test job (ADR-0015 §6, rev. 2026-08-27): single full-dependency tier — CPU
+  # torch + monai installed so torch-level tests run for real on plain CPU
+  # instead of skipping. "Missing torch -> install it" replaces the retired
+  # ADR-0013 §4 light/skip design; GPU/cluster chains stay out of CI (sugon
+  # integration gate, pytest.mark.gpu).
   test-torch:
     name: test (torch stack)
     runs-on: ubuntu-latest
