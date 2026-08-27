@@ -25,7 +25,9 @@ tutorial's reproduction anchor. What lives here:
   growth_factor=1.5;
 - the alternating update itself: per batch a generator step (recon + KL +
   perceptual + adversarial, loss-weighted sum) then a discriminator step on
-  detached reconstructions, plus the finetune loading of pretrained weights.
+  detached reconstructions, plus the finetune loading of pretrained weights;
+- the validation pass: epoch-averaged recon/KL/perceptual scores through a
+  caller-injected inferer (whole-volume / sliding-window lives on the caller).
 
 The IO ring stays out: TensorBoard logging, validation, checkpoint
 publication and data transforms belong to the caller / future harness shells;
@@ -52,6 +54,7 @@ __all__ = [
     "load_pretrained_weights",
     "loss_weighted_sum",
     "train_epoch",
+    "validate_epoch",
     "warmup_rule",
 ]
 
@@ -157,14 +160,19 @@ def train_epoch(
 
     Per batch: zero both optimizers, run the generator step inside autocast
     (recon + KL + perceptual + weighted adversarial), then train the
-    discriminator on detached reconstructions against real images. Pass the
-    paired scalers from :func:`build_amp_scalers` to route through AMP scaling;
-    ``None`` falls back to plain backward. Callers step the paired LR schedulers
-    once per epoch and own validation/checkpoint publication.
+    discriminator on detached reconstructions against real images. When
+    ``amp=True`` the paired scalers from :func:`build_amp_scalers` are
+    mandatory -- enabled autocast without gradient scaling silently underflows
+    fp16 grads -- and are unused when ``amp=False``. Callers step the paired LR
+    schedulers once per epoch and own validation/checkpoint publication.
 
     Returns:
         dict: epoch-averaged ``{"recons_loss", "kl_loss", "p_loss"}`` floats.
     """
+    if amp and (scaler_g is None or scaler_d is None):
+        raise ValueError(
+            "amp=True requires both scalers (build_amp_scalers) -- enabled autocast " "without gradient scaling silently underflows fp16 gradients."
+        )
     autoencoder.train()
     discriminator.train()
     epoch_losses = {"recons_loss": 0.0, "kl_loss": 0.0, "p_loss": 0.0}
@@ -197,6 +205,9 @@ def train_epoch(
                 optimizer_g.step()
 
             # Train Discriminator
+            # The generator backward traversed the discriminator and stacked
+            # gradients on its parameters; only loss_d may drive optimizer_d.
+            optimizer_d.zero_grad(set_to_none=True)
             logits_fake = discriminator(reconstruction.contiguous().detach())[-1]
             loss_d_fake = adversarial_loss(logits_fake, target_is_real=False, for_discriminator=True)
             logits_real = discriminator(images.contiguous().detach())[-1]
@@ -213,6 +224,47 @@ def train_epoch(
 
         for loss_name, loss_value in losses.items():
             epoch_losses[loss_name] += loss_value.item()
+
+    for key in epoch_losses:
+        epoch_losses[key] /= n_batches
+    return epoch_losses
+
+
+def validate_epoch(
+    dataloader,
+    *,
+    autoencoder: torch.nn.Module,
+    intensity_loss,
+    perceptual_loss,
+    infer,
+    device,
+    autocast_device_type: str = "cuda",
+    amp: bool = True,
+) -> dict[str, float]:
+    """One validation pass over the training loss family (cell 30 tail).
+
+    ``infer(images)`` returns the same ``(reconstruction, z_mu, z_sigma)``
+    triple as the autoencoder forward: the caller hands in the cell-30 inferer
+    wrapper (``dynamic_infer`` around a Simple/SlidingWindow inferer), so
+    whole-volume evaluation stays on the caller. Runs under ``torch.no_grad``
+    and does not modify weights.
+
+    Returns:
+        dict: epoch-averaged ``{"recons_loss", "kl_loss", "p_loss"}`` floats.
+    """
+    autoencoder.eval()
+    epoch_losses = {"recons_loss": 0.0, "kl_loss": 0.0, "p_loss": 0.0}
+    n_batches = len(dataloader)
+
+    with torch.no_grad():
+        for batch in dataloader:
+            images = batch["image"].to(device)
+            with torch.autocast(autocast_device_type, enabled=amp):
+                reconstruction, z_mu, z_sigma = infer(images)
+            reconstruction = reconstruction.to(device)
+            epoch_losses["recons_loss"] += intensity_loss(reconstruction, images).item()
+            epoch_losses["kl_loss"] += kl_loss(z_mu, z_sigma).item()
+            epoch_losses["p_loss"] += perceptual_loss(reconstruction.float(), images.float()).item()
 
     for key in epoch_losses:
         epoch_losses[key] /= n_batches
