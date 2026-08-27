@@ -127,8 +127,6 @@ pip install -r requirements.txt
 
 **Skill:** [`infer_image-only`](skills/infer_image-only.md) — feed this file to an AI coding agent to run the workflow below end-to-end.
 
-Please refer to [inference_diff_unet_tutorial.ipynb](inference_diff_unet_tutorial.ipynb) for the inference tutorial that generates CT or MR image without mask.
-
 You can also run it in command line to generate MR image without mask. Please change "modality" in [configs/config_maisi_diff_model_rflow-mr-brain.json](configs/config_maisi_diff_model_rflow-mr-brain.json) according to [configs/modality_mapping.json](configs/modality_mapping.json) to control the output MR contrast. Currently we support both whole brain and skull-stripped brain generation for T1w, T2w, FLAIR, SWI images.
 
 ```json
@@ -160,8 +158,6 @@ network="rflow"
 generate_version="rflow-ct" # can change to "ddpm-ct"
 python -m scripts.inference -t ./configs/config_network_${network}.json -i ./configs/config_infer.json -e ./configs/environment_${generate_version}.json --random-seed 0 --version ${generate_version}
 ```
-
-See also: [inference_tutorial.ipynb](inference_tutorial.ipynb)
 
 ### 2.4 CT Image Generation
 
@@ -233,9 +229,6 @@ If you've adapted NV-Generate-CTMR for other imaging tasks or applications and w
 | [Evaluation](docs/evaluation.md) | FID evaluation tool and benchmark results |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and solutions |
 | [Applications](docs/applications.md) | Community adaptations (MR-to-CT synthesis, radiotherapy educational toolkit) |
-| [Inference Tutorial](inference_tutorial.ipynb) | Quick start CT paired generation (notebook) |
-| [Diffusion Inference](inference_diff_unet_tutorial.ipynb) | CT/MR image-only generation (notebook) |
-| [Training Tutorials](train_vae_tutorial.ipynb) | VAE, diffusion, and ControlNet training |
 
 Training, inference, data preparation, and evaluation details are covered in the guides linked above.
 
