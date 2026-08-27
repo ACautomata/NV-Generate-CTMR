@@ -12,8 +12,10 @@
 """Generated-mask refinement: connected-component suppression, organ filling, label remapping.
 
 Migrated from ``scripts/utils`` (ticket #132): the generated-mask post-processing family used by
-the MAISI mask pipeline, kept byte-for-byte identical; the original leaves stay in ``scripts/utils``
-serving their unmigrated consumers until the expand phase retires them.
+the MAISI mask pipeline, kept byte-for-byte identical except the ``numpy`` long-alias removal
+(``np.long`` -> ``np.int64``, PR #155 Codex fix) — ``np.long`` was removed in NumPy 1.24; the
+original leaves stay in ``scripts/utils`` serving their unmigrated consumers until the expand
+phase retires them.
 """
 
 import copy
@@ -128,7 +130,7 @@ def organ_fill_by_closing(data, target_label, device, close_times=2, filter_size
     Returns:
         ndarray: Boolean mask of the filled organ.
     """
-    mask = (data == target_label).astype(np.long)
+    mask = (data == target_label).astype(np.int64)
     mask = torch.from_numpy(mask).to(device)
     for _ in range(close_times):
         mask = dilate_one_img(mask, filter_size=filter_size, pad_value=pad_value)
@@ -149,7 +151,7 @@ def organ_fill_by_removed_mask(data, target_label, remove_mask, device):
     Returns:
         ndarray: Boolean mask of the filled organ in previously removed regions.
     """
-    mask = (data == target_label).astype(np.long)
+    mask = (data == target_label).astype(np.int64)
     mask = dilate_one_img(torch.from_numpy(mask).to(device), filter_size=3, pad_value=0.0)
     mask = dilate_one_img(mask, filter_size=3, pad_value=0.0)
     roi_oragn_mask = dilate_one_img(mask, filter_size=3, pad_value=0.0).cpu().numpy()
@@ -178,7 +180,7 @@ def general_mask_generation_post_process(volume_t, target_tumor_label=None, devi
     # ------------ refine body mask pred
     body_region_mask = erode_one_img(torch.from_numpy(volume_t > 0).to(device), filter_size=3, pad_value=0.0).cpu().numpy()
     body_region_mask, _ = supress_non_largest_components(body_region_mask, [1])
-    body_region_mask = dilate_one_img(torch.from_numpy(body_region_mask).to(device), filter_size=3, pad_value=0.0).cpu().numpy().astype(np.long)
+    body_region_mask = dilate_one_img(torch.from_numpy(body_region_mask).to(device), filter_size=3, pad_value=0.0).cpu().numpy().astype(np.int64)
     volume_t = volume_t * body_region_mask
 
     # ------------ refine tumor pred
@@ -203,12 +205,12 @@ def general_mask_generation_post_process(volume_t, target_tumor_label=None, devi
     data, _ = supress_non_largest_components(volume_t, oran_list, default_val=200)  # 200 is body region
     organ_remove_mask = (volume_t - data).astype(np.bool_)
     # process intestinal system (stomach 12, duodenum 13, small bowel 19, colon 62)
-    intestinal_mask_ = (data == 12).astype(np.long) + (data == 13).astype(np.long) + (data == 19).astype(np.long) + (data == 62).astype(np.long)
+    intestinal_mask_ = (data == 12).astype(np.int64) + (data == 13).astype(np.int64) + (data == 19).astype(np.int64) + (data == 62).astype(np.int64)
     intestinal_mask, _ = supress_non_largest_components(intestinal_mask_, [1], default_val=0)
     # process small bowel 19
-    small_bowel_remove_mask = (data == 19).astype(np.long) - (data == 19).astype(np.long) * intestinal_mask
+    small_bowel_remove_mask = (data == 19).astype(np.int64) - (data == 19).astype(np.int64) * intestinal_mask
     # process colon 62
-    colon_remove_mask = (data == 62).astype(np.long) - (data == 62).astype(np.long) * intestinal_mask
+    colon_remove_mask = (data == 62).astype(np.int64) - (data == 62).astype(np.int64) * intestinal_mask
     intestinal_remove_mask = (small_bowel_remove_mask + colon_remove_mask).astype(np.bool_)
     data[intestinal_remove_mask] = 200
 
@@ -219,12 +221,12 @@ def general_mask_generation_post_process(volume_t, target_tumor_label=None, devi
     if target_tumor_label == 23 and np.sum(target_tumor) > 0:
         # speical process for cases with lung tumor
         dia_lung_tumor_mask = dilate_one_img(torch.from_numpy(data == 23).to(device), filter_size=3, pad_value=0.0).cpu().numpy()
-        tmp = (data * (dia_lung_tumor_mask.astype(np.long) - (data == 23).astype(np.long))).astype(np.float32).flatten()
+        tmp = (data * (dia_lung_tumor_mask.astype(np.int64) - (data == 23).astype(np.int64))).astype(np.float32).flatten()
         tmp[tmp == 0] = float("nan")
         mode = int(stats.mode(tmp.flatten(), nan_policy="omit")[0])
         if mode in [28, 29, 30, 31, 32]:
             dia_lung_tumor_mask = dilate_one_img(torch.from_numpy(dia_lung_tumor_mask).to(device), filter_size=3, pad_value=0.0).cpu().numpy()
-            lung_remove_mask = dia_lung_tumor_mask.astype(np.long) - (data == 23).astype(np.long).astype(np.long)
+            lung_remove_mask = dia_lung_tumor_mask.astype(np.int64) - (data == 23).astype(np.int64).astype(np.int64)
             data[organ_fill_by_removed_mask(data, target_label=mode, remove_mask=lung_remove_mask, device=device)] = mode
         dia_lung_tumor_mask = dilate_one_img(torch.from_numpy(dia_lung_tumor_mask).to(device), filter_size=3, pad_value=0.0).cpu().numpy()
         data[organ_fill_by_removed_mask(data, target_label=23, remove_mask=dia_lung_tumor_mask * organ_remove_mask, device=device)] = 23
@@ -247,8 +249,8 @@ def general_mask_generation_post_process(volume_t, target_tumor_label=None, devi
             target_tumor_label
         )
         # refine hepatic tumor
-        hepatic_tumor_vessel_liver_mask_ = (data == 26).astype(np.long) + (data == 25).astype(np.long) + (data == 1).astype(np.long)
-        hepatic_tumor_vessel_liver_mask_ = (hepatic_tumor_vessel_liver_mask_ > 1).astype(np.long)
+        hepatic_tumor_vessel_liver_mask_ = (data == 26).astype(np.int64) + (data == 25).astype(np.int64) + (data == 1).astype(np.int64)
+        hepatic_tumor_vessel_liver_mask_ = (hepatic_tumor_vessel_liver_mask_ > 1).astype(np.int64)
         hepatic_tumor_vessel_liver_mask, _ = supress_non_largest_components(hepatic_tumor_vessel_liver_mask_, [1], default_val=0)
         removed_region = (hepatic_tumor_vessel_liver_mask_ - hepatic_tumor_vessel_liver_mask).astype(np.bool_)
         data[removed_region] = 200

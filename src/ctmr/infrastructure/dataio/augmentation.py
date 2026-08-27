@@ -9,7 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Label-volume augmentation family: elastic organ/tumor deformation and tumor removal (migrated verbatim from scripts/augmentation, ticket #132)."""
+"""Label-volume augmentation family: elastic organ/tumor deformation and tumor removal (migrated verbatim from scripts/augmentation, ticket #132).
+
+Two Codex-reported defects (PR #155) are fixed against the migrated copy: the liver/lung/pancreas/bone
+retry loops are bounded by ``MAX_COUNT`` like ``augmentation_tumor_only``, and ``finalize_tumor_mask``
+counts retained voxels instead of summing multi-label values (BraTS 401/402/403).
+"""
 
 import numpy as np
 import torch
@@ -111,6 +116,8 @@ def augmentation_tumor_bone(pt_nda, output_size, random_seed=None):
                 real_l_volume = dilate3d(real_l_volume.squeeze(0), erosion=5)
                 real_l_volume = erode3d(real_l_volume, erosion=5).unsqueeze(0).to(torch.uint8)
                 break
+            if cnt > MAX_COUNT:
+                raise ValueError("Please check if tumor is inside organ.")
     else:
         real_l_volume = real_l_volume_
 
@@ -148,7 +155,9 @@ def augmentation_tumor_liver(pt_nda, output_size, random_seed=None):
     volume[real_l_volume_ == 1] = 1
     volume[real_l_volume_ == 2] = 1
     ###########################
+    cnt = 0
     while True:
+        cnt += 1
         real_l_volume = real_l_volume_
         # random distor mask
         real_l_volume = elastic((real_l_volume == 2).cuda(), spatial_size=tuple(output_size)).as_tensor()
@@ -163,6 +172,8 @@ def augmentation_tumor_liver(pt_nda, output_size, random_seed=None):
             real_l_volume = dilate3d(real_l_volume.squeeze(0), erosion=5)
             real_l_volume = erode3d(real_l_volume, erosion=5).unsqueeze(0)
             break
+        if cnt > MAX_COUNT:
+            raise ValueError("Please check if tumor is inside organ.")
 
     volume[real_l_volume == 1] = 26
 
@@ -204,7 +215,9 @@ def augmentation_tumor_lung(pt_nda, output_size, random_seed=None):
     ###########################
     if tumor_szie > 0:
         # aug
+        cnt = 0
         while True:
+            cnt += 1
             real_l_volume = real_l_volume_.cpu().contiguous()
             # random distor mask
             real_l_volume = elastic(real_l_volume, spatial_size=tuple(output_size)).as_tensor().cuda()
@@ -219,6 +232,8 @@ def augmentation_tumor_lung(pt_nda, output_size, random_seed=None):
                 real_l_volume = dilate3d(real_l_volume.squeeze(0), erosion=5)
                 real_l_volume = erode3d(real_l_volume, erosion=5).unsqueeze(0).to(torch.uint8)
                 break
+            if cnt > MAX_COUNT:
+                raise ValueError("Please check if tumor is inside organ.")
     else:
         real_l_volume = real_l_volume_
 
@@ -256,7 +271,9 @@ def augmentation_tumor_pancreas(pt_nda, output_size, random_seed=None):
     volume[real_l_volume_ == 1] = 4
     volume[real_l_volume_ == 2] = 4
     ###########################
+    cnt = 0
     while True:
+        cnt += 1
         real_l_volume = real_l_volume_
         # random distor mask
         real_l_volume = elastic((real_l_volume == 2).cuda(), spatial_size=tuple(output_size)).as_tensor()
@@ -271,6 +288,8 @@ def augmentation_tumor_pancreas(pt_nda, output_size, random_seed=None):
             real_l_volume = dilate3d(real_l_volume.squeeze(0), erosion=5)
             real_l_volume = erode3d(real_l_volume, erosion=5).unsqueeze(0)
             break
+        if cnt > MAX_COUNT:
+            raise ValueError("Please check if tumor is inside organ.")
 
     volume[real_l_volume == 1] = 24
 
@@ -424,7 +443,7 @@ def finalize_tumor_mask(augmented_mask: Tensor, organ_mask: Tensor, threshold_tu
         tumor_mask, [H,W,D] torch tensor; or None if the size did not qualify
     """
     tumor_mask = augmented_mask * organ_mask  # might not be binary for multi-type tumor map
-    if torch.sum(tumor_mask) >= threshold_tumor_size:
+    if torch.count_nonzero(tumor_mask) >= threshold_tumor_size:
         label_list = torch.unique(tumor_mask.long())
         if len(label_list) == 2:
             tumor_mask = dilate_one_img(tumor_mask.squeeze(0), filter_size=5, pad_value=1.0)

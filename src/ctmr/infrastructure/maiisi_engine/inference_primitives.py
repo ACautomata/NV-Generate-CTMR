@@ -60,8 +60,10 @@ def dynamic_infer(inferer, model, images):
         # Iterate and adjust each ROI dimension
         adjusted_roi = [min(roi_dim, img_dim) for roi_dim, img_dim in zip(orig_roi, spatial_dims)]
         inferer.roi_size = adjusted_roi
-        output = inferer(network=model, inputs=images)
-        inferer.roi_size = orig_roi
+        try:
+            output = inferer(network=model, inputs=images)
+        finally:
+            inferer.roi_size = orig_roi
         return output
 
 
@@ -89,15 +91,15 @@ def get_body_region_index_from_mask(input_mask):
     unique_elements = np.unique(nda)
     unique_elements = list(unique_elements)
     # print(f"nda: {nda.shape} {unique_elements}.")
-    overlap_array = np.zeros(len(region_indices), dtype=np.long)
+    overlap_array = np.zeros(len(region_indices), dtype=np.int64)
     for _j in range(len(region_indices)):
         overlap = any(element in region_indices[f"region_{_j}"] for element in unique_elements)
-        overlap_array[_j] = np.long(overlap)
+        overlap_array[_j] = np.int64(overlap)
     overlap_array_indices = np.nonzero(overlap_array)[0]
-    top_region_index = np.eye(len(region_indices), dtype=np.long)[np.amin(overlap_array_indices), ...]
+    top_region_index = np.eye(len(region_indices), dtype=np.int64)[np.amin(overlap_array_indices), ...]
     top_region_index = list(top_region_index)
     top_region_index = [int(_k) for _k in top_region_index]
-    bottom_region_index = np.eye(len(region_indices), dtype=np.long)[np.amax(overlap_array_indices), ...]
+    bottom_region_index = np.eye(len(region_indices), dtype=np.int64)[np.amax(overlap_array_indices), ...]
     bottom_region_index = list(bottom_region_index)
     bottom_region_index = [int(_k) for _k in bottom_region_index]
     # print(f"{top_region_index} {bottom_region_index}")

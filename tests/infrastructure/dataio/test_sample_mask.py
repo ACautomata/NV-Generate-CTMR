@@ -182,3 +182,23 @@ def test_dynamic_infer_rejects_roi_ndim_mismatch():
     images = torch.zeros(1, 1, 4, 4, 4)
     with pytest.raises(ValueError, match="ROI length"):
         dynamic_infer(inferer, lambda x: x, images)
+
+
+class _BoomInferer:
+    def __init__(self, roi_size):
+        self.roi_size = roi_size
+
+    def __call__(self, network, inputs):
+        raise RuntimeError("simulated infer failure")
+
+
+def test_dynamic_infer_restores_roi_size_when_inference_raises():
+    """Regression (Codex P2, PR #155): when sliding-window inference raises after
+    ``inferer.roi_size`` was clamped to the input, the original ROI must be
+    restored — otherwise every retry or the next volume silently reuses the
+    dimensions adjusted for the failed input."""
+    inferer = _BoomInferer(roi_size=(2, 2, 2))
+    images = torch.zeros(1, 1, 4, 4, 4)  # larger than roi -> sliding-window branch
+    with pytest.raises(RuntimeError, match="simulated"):
+        dynamic_infer(inferer, lambda x: x, images)
+    assert inferer.roi_size == (2, 2, 2)
