@@ -16,9 +16,10 @@ retiring ``ctmr.harness`` / scripts layer:
 
 - the **phase training shell**: ``PhaseHarness`` epoch loop with early-stop
   file polling at epoch boundaries and mid-epoch, autocast + GradScaler
-  mechanics, loss all_reduce, atomic checkpoint publication
-  (``epoch_<N>.pt`` tmp + replace, ``latest.json``), rank-0 gating for the
-  recipe guard / mkdir / provenance — driven by an injected
+  mechanics, loss all_reduce, checkpoint publication via
+  ``CheckpointRepository`` (the tmp atomic publish + ``latest.json``
+  protocol lives there), rank-0 gating for the recipe guard / mkdir /
+  provenance — driven by an injected
   ``PhaseTrainKernel`` (composition, never implementation inheritance);
   the common finetune argparse surface lives in the stdlib-only sibling
   ``ctmr.application.train_cli`` (``TrainCli``);
@@ -44,6 +45,8 @@ from typing import Any, Protocol
 import torch
 import torch.distributed as dist
 from torch.amp import GradScaler, autocast
+
+from ctmr.infrastructure.checkpoints import CheckpointRepository
 
 STOP_FILE = ".early_stop"
 
@@ -119,6 +122,7 @@ class PhaseHarness:
         self._logger = logger
         self._recipe_check = recipe_check
         self._provenance = provenance
+        self._repository = CheckpointRepository(Path(model_dir))
 
     def run(self):
         """Drive one full training run: recipe guard -> provenance -> loop -> cleanup."""
@@ -181,13 +185,10 @@ class PhaseHarness:
     def _publish_checkpoint(self, epoch, ctx, loss_totals):
         average = (loss_totals[0] / loss_totals[1]).item()
         payload = self._kernel.checkpoint_payload(epoch + 1, average, ctx.scale)
-        path = Path(self._model_dir) / f"epoch_{epoch + 1}.pt"
-        tmp = path.with_name(path.name + ".tmp")
-        # Atomically publish the checkpoint: the dev sidecar polls epoch_*.pt and
-        # must never observe a partial write.
-        torch.save(payload, tmp)
-        tmp.replace(path)
-        (Path(self._model_dir) / "latest.json").write_text(json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n")
+        # The shell's single publication call point: the repository owns the
+        # tmp atomic publish (the dev sidecar polls epoch_*.pt and must never
+        # observe a partial write) + latest.json pointer protocol (ADR-0015 §4).
+        path = self._repository.save(payload, epoch + 1)
         self._logger.info(f"epoch {epoch + 1} average loss: {average:.4f} -> {path}")
 
 

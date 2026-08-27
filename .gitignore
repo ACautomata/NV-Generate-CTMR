@@ -3,3 +3,8 @@
 __pycache__/
 *.egg-info/
 .venv/
+
+# Claude Code：个人本地配置不入库；worktree 工作区由 Claude Code 自建
+.claude/settings.local.json
+.claude/worktrees/
+.claude/skills/

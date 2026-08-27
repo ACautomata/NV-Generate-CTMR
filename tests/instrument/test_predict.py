@@ -2,8 +2,9 @@
 
 Proves ``ctmr.instrument.predict`` runs the native nnUNetv2 entry inside the
 ``nnunet_safe_globals()`` scope and that ``python -m ctmr.instrument.predict``
-is a working Python/shell entry. Auto-skipped when nnunetv2 / torch are absent
-(``pytest.importorskip``, ADR-0013 §4); no cluster, no external data.
+is a working Python/shell entry. Torch-level tier: nnunetv2 / torch / numpy are
+part of the CI full-dependency set and these tests run for real (ADR-0015 §6 --
+the ``importorskip`` light-stack design is retired); no cluster, no external data.
 """
 
 import os
@@ -11,16 +12,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy
 import pytest
+import torch
 
-pytest.importorskip("nnunetv2")
-pytest.importorskip("torch")
-pytest.importorskip("numpy")
-
-import numpy  # noqa: E402  (importorskip must precede the dependent imports)
-import torch  # noqa: E402
-
-import ctmr.instrument.predict  # noqa: E402
+import ctmr.instrument.predict
 
 pytestmark = pytest.mark.torch
 

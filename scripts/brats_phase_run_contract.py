@@ -122,6 +122,16 @@ from ctmr.application.acceptance.contract import (  # noqa: E402
     STATUS_FROZEN,
 )
 
+# Reverse shim (ticket 06 / ADR-0015 §4): the dm_source ledger moved to
+# ctmr.infrastructure.dmsource -- the single read/write port (register/current
+# plus the mismatch-verify gates). Its violation type aliases this script's
+# contract-violation type so `except ContractViolationError` keeps catching
+# ledger gates unchanged (expand step; the judgement chain migrates over later).
+from ctmr.domain.identity import WeightsRef  # noqa: E402
+from ctmr.infrastructure.dmsource import DmSourceLedger, DmSourceViolationError  # noqa: E402
+
+ContractViolationError = DmSourceViolationError
+
 SCHEMA = "brats-phase-run/1"
 PHASES = ("P1", "P2", "P3")
 P3_VARIANTS = ("controlnet-candidate", "stage0-baseline")
@@ -134,11 +144,6 @@ LIST_SIDES = ("train", "dev", "replay")  # holdout is never a data-list side; re
 UPSTREAM_PHASE = "P1"  # P2 and P3 both hang off the same frozen P1-DM
 
 FINAL_ACCEPTANCE_SCHEMA = "brats-final-acceptance/1"
-DM_SOURCE_SCHEMA = "brats-dm-source/1"
-
-
-class ContractViolationError(Exception):
-    """Raised when a mutation or verification breaks the phase run contract."""
 
 
 class ArtifactFingerprinter:
@@ -377,7 +382,7 @@ class RunInitializer:
         on_disk = self._fingerprinter.must_fingerprint(checkpoint["path"], "upstream candidate checkpoint")
         if on_disk["sha256"] != checkpoint["sha256"]:
             raise ContractViolationError(f"upstream checkpoint changed on disk: {checkpoint['path']}")
-        DmSourceLedger(self._store).check_upstream(upstream["run_id"], checkpoint["sha256"])
+        DmSourceLedger(self._store.root()).check_upstream(upstream["run_id"], WeightsRef(sha256=checkpoint["sha256"]))
         return {
             "run_id": upstream["run_id"],
             "run_record": str(Path(upstream_run_path).resolve()),
@@ -589,91 +594,6 @@ class ReportAttacher:
         return self._store.write(record)
 
 
-class DmSourceLedger:
-    """The single registered P1-DM source that P2/P3 bypasses may hang off (issue #58).
-
-    Registering is the freeze of a final-acceptance-passing P1 candidate's DM
-    identity, configs and provenance. Replacement is explicit: a later P1
-    candidate that passes final acceptance supersedes the previous source, and
-    every bypass pinned to the superseded DM fails verification with a
-    mismatch -- a retrained DM never silently keeps old bypasses comparable
-    (spec #51 user story 22 / CONTEXT.md 产物链).
-    """
-
-    def __init__(self, store):
-        self._store = store
-
-    def path(self):
-        return self._store.root() / "dm_source.json"
-
-    def current(self):
-        ledger_path = self.path()
-        if not ledger_path.is_file():
-            return None
-        ledger = json.loads(ledger_path.read_text())
-        if ledger.get("schema") != DM_SOURCE_SCHEMA:
-            raise ContractViolationError(f"dm_source ledger {ledger_path} has schema {ledger.get('schema')!r} != {DM_SOURCE_SCHEMA!r}")
-        return ledger
-
-    def register(self, record, run_record_path):
-        """Freezes the passing P1 candidate as the current DM source (superseding any previous)."""
-        if record["phase"] != "P1":
-            raise ContractViolationError("only a P1 candidate can be registered as the DM source (P2/P3 are bypasses, not sources)")
-        current = self.current()
-        if current is not None and current["run_id"] == record["run_id"]:
-            return current  # idempotent re-register of the same candidate
-        entry = {
-            "schema": DM_SOURCE_SCHEMA,
-            "run_id": record["run_id"],
-            "run_record": str(Path(run_record_path).resolve()),
-            "run_record_sha256": ArtifactFingerprinter().file_sha256(run_record_path),
-            "checkpoint": record["selection"]["checkpoint"],
-            "configs": record["configs"],
-            "manifest": record["manifest"],
-            "base_ckpt": record.get("base_ckpt"),
-            "code_version": record.get("code_version"),
-            "registered_utc": self._store.now_utc(),
-            "superseded_run_id": None,
-        }
-        if current is not None:
-            entry["superseded_run_id"] = current["run_id"]
-        self.path().write_text(json.dumps(entry, indent=2, sort_keys=True) + "\n")
-        return entry
-
-    def check_upstream(self, upstream_run_id, checkpoint_sha256):
-        """Init-time gate: a P2/P3 bypass may only pin the registered DM source."""
-        current = self.current()
-        if current is None:
-            raise ContractViolationError(
-                "no P1 candidate has passed final acceptance yet; P2/P3 must hang off the registered DM source (conclude a passing P1 run first)"
-            )
-        if upstream_run_id != current["run_id"] or checkpoint_sha256 != current["checkpoint"]["sha256"]:
-            raise ContractViolationError(
-                f"upstream run {upstream_run_id} is not the registered DM source {current['run_id']}; "
-                "P2/P3 may only hang off the final-acceptance-passing P1-DM"
-            )
-
-    def check_record(self, record):
-        """Verify-time mismatch detection against the current DM source."""
-        current = self.current()
-        if current is None:
-            return []
-        if record.get("phase") == "P1":
-            if (
-                record["run_id"] == current["run_id"]
-                and record.get("selection", {}).get("checkpoint", {}).get("sha256") != current["checkpoint"]["sha256"]
-            ):
-                return ["registered DM source checkpoint no longer matches its P1 run record"]
-            return []
-        upstream = record.get("upstream")
-        if upstream and (upstream["checkpoint"]["sha256"] != current["checkpoint"]["sha256"] or upstream["run_id"] != current["run_id"]):
-            return [
-                f"DM was retrained: this bypass is pinned to superseded DM {upstream['run_id']} "
-                f"while the registered DM source is {current['run_id']}"
-            ]
-        return []
-
-
 class FinalAcceptanceJudge:
     """Non-compensatory L1 ∧ L2 ∧ L3 final acceptance over a frozen candidate (issue #58).
 
@@ -735,7 +655,7 @@ class FinalAcceptanceJudge:
         }
         if verdict == "pass" and record["phase"] == "P1":
             entry["dm_source_registered"] = True
-            DmSourceLedger(self._store).register(record, run_path)
+            DmSourceLedger(self._store.root()).register(record, run_path)
         verdict_path.parent.mkdir(parents=True, exist_ok=True)
         verdict_path.write_text(json.dumps(entry, indent=2, sort_keys=True) + "\n")
         return entry, verdict_path
@@ -965,7 +885,7 @@ class RunVerifier:
         self.verify_guard(record)
         resolved_path = record_path or Path(record.get("run_id", "."))
         self.verify_storage(resolved_path)
-        for failure in DmSourceLedger(RunRecordStore.for_run(resolved_path)).check_record(record):
+        for failure in DmSourceLedger(RunRecordStore.for_run(resolved_path).root()).check_record(record):
             self.failures.append(f"dm source: {failure}")
         self.verify_final_acceptance(record, resolved_path)
         if chain_depth == 0:
@@ -1483,7 +1403,7 @@ class ContractSelfTest:
             self.failures.append("L1-failing run must conclude blocked with traceable reasons")
         if not any(reason.startswith("L1 FID") for reason in blocked_entry["blocked_reasons"]):
             self.failures.append("blocked reasons must cite the failing L1 criteria (no offset by passing layers)")
-        if DmSourceLedger(store).current() is not None:
+        if DmSourceLedger(store.root()).current() is not None:
             self.failures.append("a blocked conclusion must not register a DM source")
         self.expect_reject(lambda: judge.conclude(p1_path), "double conclude (immutable verdict)")
         flipped_path = FinalAcceptanceJudge.verdict_path_for(p1_path)
@@ -1506,7 +1426,7 @@ class ContractSelfTest:
         undecided_entry, _ = FinalAcceptanceJudge(store, fingerprinter).conclude(p1_undecided_path)
         if undecided_entry["verdict"] != "blocked" or not any("L2 SSA: undecided" in r for r in undecided_entry["blocked_reasons"]):
             self.failures.append(f"L2 undecided must block final acceptance traceably, got {undecided_entry['blocked_reasons']}")
-        if DmSourceLedger(store).current() is not None:
+        if DmSourceLedger(store.root()).current() is not None:
             self.failures.append("an L2-undecided conclusion must not register a DM source")
 
         p1_final_path = self._open_passing_candidate(store, fingerprinter, fixture, "p1-final")
@@ -1522,7 +1442,7 @@ class ContractSelfTest:
             self.failures.append("all-pass run must conclude pass with no blockers")
         if pass_entry["dm_source_registered"] is not True:
             self.failures.append("a passing P1 conclusion must register the DM source")
-        source = DmSourceLedger(store).current()
+        source = DmSourceLedger(store.root()).current()
         if source is None or source["run_id"] != "p1-final":
             self.failures.append("dm source ledger does not point at the passing candidate")
         elif source["checkpoint"]["sha256"] != p1_final_record["selection"]["checkpoint"]["sha256"]:
@@ -1786,7 +1706,7 @@ class ContractSelfTest:
         retrained_entry, _ = FinalAcceptanceJudge(store, fingerprinter).conclude(p1_retrained_path)
         if retrained_entry["verdict"] != "pass":
             self.failures.append("retrained P1 fixture must conclude pass")
-        superseded = DmSourceLedger(store).current()
+        superseded = DmSourceLedger(store.root()).current()
         if superseded["run_id"] != "p1-retrained" or superseded["superseded_run_id"] != "p1-final":
             self.failures.append(f"dm source supersession not recorded: {superseded.get('run_id')} <- {superseded.get('superseded_run_id')}")
         stale_verifier = RunVerifier(fingerprinter)
