@@ -39,8 +39,10 @@ from ctmr.application.vae_train import (
     load_pretrained_weights,
     loss_weighted_sum,
     train_epoch,
+    validate_epoch,
     warmup_rule,
 )
+from ctmr.domain.losses import kl_loss
 
 # 32^3 is the smallest cube the 3-layer patch discriminator keeps spatially
 # alive at train time (16^3 collapses to a single element and trips norm layers).
@@ -235,3 +237,147 @@ def test_train_epoch_alternating_updates_execute_and_move_both_networks(tiny_aut
     assert set(avg_losses) == {"recons_loss", "kl_loss", "p_loss"}
     for value in avg_losses.values():
         assert isinstance(value, float) and value == value and abs(value) < float("inf")  # finite (not NaN/inf)
+
+
+@pytest.mark.torch
+def test_train_epoch_rejects_amp_without_scalers(tiny_autoencoder, tmp_path: Path):
+    """amp=True autocasts but never scales: the scaler pair is mandatory, not optional.
+
+    Codex review P2 (line 154): a caller setting amp=True while omitting both scalers
+    silently fell back to plain backward under enabled autocast. The combination is
+    now rejected up front instead of silently destablilising fp16 training.
+    """
+    loader = SyntheticLoader(n_batches=1)
+    with pytest.raises(ValueError, match="amp"):
+        train_epoch(
+            loader,
+            autoencoder=tiny_autoencoder,
+            discriminator=build_discriminator(spatial_dims=3),
+            intensity_loss=build_intensity_loss("l1"),
+            adversarial_loss=build_adversarial_loss(),
+            perceptual_loss=lambda recon, target: (recon - target).abs().mean(),
+            optimizer_g=build_optimizers(tiny_autoencoder, build_discriminator(spatial_dims=3), lr=2e-4, amp=True)[0],
+            optimizer_d=build_optimizers(tiny_autoencoder, build_discriminator(spatial_dims=3), lr=2e-4, amp=True)[1],
+            adv_weight=0.01,
+            kl_weight=1e-6,
+            perceptual_weight=1e-6,
+            device=torch.device("cpu"),
+            autocast_device_type="cpu",
+            amp=True,
+        )
+
+
+@pytest.mark.torch
+def test_train_epoch_discriminator_update_excludes_generator_objective(tiny_autoencoder, monkeypatch):
+    """The D-step gradients must come from the discriminator objective only.
+
+    Codex review P1 (line 199): with a nonzero ``adv_weight`` the generator backward
+    traverses the discriminator and accumulates gradients on its parameters, and the
+    subsequent discriminator backward stacked on top of them -- so optimizer_d.step
+    updated the discriminator by a mixture of opposing objectives. The loop must clear
+    the generator-path gradients before the discriminator update.
+    """
+    batch = {"image": torch.rand(2, 1, *IMAGE_VOLUME)}
+    loader = SyntheticLoader(n_batches=1)
+    loader.batches = [batch]
+    discriminator = build_discriminator(spatial_dims=3)
+    d_params = list(discriminator.parameters())
+
+    adv_loss = build_adversarial_loss()
+    perceptual_stub = lambda recon, target: (recon - target).abs().mean()  # noqa: E731
+    intensity_loss = build_intensity_loss("l1")
+    adv_weight, kl_weight, perceptual_weight = 0.01, 1e-6, 1e-6
+
+    def generator_step_graph():
+        reconstruction, z_mu, z_sigma = tiny_autoencoder(batch["image"])
+        losses = {
+            "recons_loss": intensity_loss(reconstruction, batch["image"]),
+            "kl_loss": kl_loss(z_mu, z_sigma),
+            "p_loss": perceptual_stub(reconstruction.float(), batch["image"].float()),
+        }
+        logits_fake = discriminator(reconstruction.contiguous().float())[-1]
+        generator_loss = adv_loss(logits_fake, target_is_real=True, for_discriminator=False)
+        loss_g = loss_weighted_sum(losses, kl_weight=kl_weight, perceptual_weight=perceptual_weight)
+        return loss_g + adv_weight * generator_loss, reconstruction
+
+    # Reference: the generator-objective and discriminator-objective gradient
+    # contributions on the discriminator parameters, computed at initial weights.
+    loss_g, reconstruction = generator_step_graph()
+    grad_g = torch.autograd.grad(loss_g, d_params, retain_graph=True)
+    with torch.no_grad():
+        reconstruction = reconstruction.contiguous().detach()
+    logits_fake = discriminator(reconstruction)[-1]
+    loss_d_fake = adv_loss(logits_fake, target_is_real=False, for_discriminator=True)
+    logits_real = discriminator(batch["image"].contiguous().detach())[-1]
+    loss_d_real = adv_loss(logits_real, target_is_real=True, for_discriminator=True)
+    grad_d = torch.autograd.grad((loss_d_fake + loss_d_real) * 0.5, d_params)
+    assert any(g is not None and g.abs().sum() > 0 for g in grad_g), "precondition: the generator path must reach the discriminator"
+
+    # What the loop actually hands to optimizer_d.step (the D-step is the only one).
+    captured = {}
+
+    class SteppingOptimizer(torch.optim.Adam):
+        def step(self, closure=None):
+            captured["grads"] = [p.grad.detach().clone() for p in d_params]
+            return super().step(closure)
+
+    optimizer_g, _ = build_optimizers(tiny_autoencoder, discriminator, lr=2e-4, amp=False)
+    optimizer_d = SteppingOptimizer(params=d_params, lr=2e-4, eps=1e-8)
+
+    train_epoch(
+        loader,
+        autoencoder=tiny_autoencoder,
+        discriminator=discriminator,
+        intensity_loss=intensity_loss,
+        adversarial_loss=adv_loss,
+        perceptual_loss=perceptual_stub,
+        optimizer_g=optimizer_g,
+        optimizer_d=optimizer_d,
+        adv_weight=adv_weight,
+        kl_weight=kl_weight,
+        perceptual_weight=perceptual_weight,
+        device=torch.device("cpu"),
+        autocast_device_type="cpu",
+        amp=False,
+    )
+
+    for got, d_only, g_plus_d in zip(captured["grads"], grad_d, (g + d for g, d in zip(grad_g, grad_d))):
+        assert torch.allclose(got, d_only, atol=1e-6), (
+            "discriminator update must be driven by the discriminator objective only "
+            f"(max deviation from d-only {((got - d_only).abs().max().item()):.2e}, "
+            f"from g+d {((got - g_plus_d).abs().max().item()):.2e})"
+        )
+
+
+@pytest.mark.torch
+def test_validate_epoch_scores_the_loss_family_without_moving_weights(tiny_autoencoder):
+    """The validation pass runs real tensor math and leaves weights untouched (cell 30 tail)."""
+    loader = SyntheticLoader(n_batches=2)
+    before = _absolute_parameters(tiny_autoencoder)
+    perceptual_stub = lambda recon, target: (recon - target).abs().mean()  # noqa: E731
+    intensity_loss = build_intensity_loss("l1")
+
+    scores = validate_epoch(
+        loader,
+        autoencoder=tiny_autoencoder,
+        intensity_loss=intensity_loss,
+        perceptual_loss=perceptual_stub,
+        infer=lambda images: tiny_autoencoder(images),
+        device=torch.device("cpu"),
+        autocast_device_type="cpu",
+        amp=False,
+    )
+
+    assert _absolute_parameters(tiny_autoencoder) == before, "validation must not move weights"
+    assert set(scores) == {"recons_loss", "kl_loss", "p_loss"}
+    # the epoch averages are exactly the per-batch loss means, computed by hand
+    expected = {"recons_loss": 0.0, "kl_loss": 0.0, "p_loss": 0.0}
+    for batch in loader.batches:
+        with torch.no_grad():
+            reconstruction, z_mu, z_sigma = tiny_autoencoder(batch["image"])
+        expected["recons_loss"] += intensity_loss(reconstruction, batch["image"]).item()
+        expected["kl_loss"] += kl_loss(z_mu, z_sigma).item()
+        expected["p_loss"] += perceptual_stub(reconstruction.float(), batch["image"].float()).item()
+    for key in expected:
+        expected[key] /= len(loader.batches)
+        assert scores[key] == pytest.approx(expected[key], rel=1e-6)

@@ -14,6 +14,22 @@ The VAE training loop lives in [`ctmr.application.vae_train`](../src/ctmr/applic
 
 The information for the training hyperparameters and data processing parameters, like learning rate and patch size, are stored in [../configs/config_maisi_vae_train.json](../configs/config_maisi_vae_train.json). The provided configuration works for 16G V100 GPU. Please feel free to tune the parameters for your datasets and device.
 
+### Execute VAE Training
+
+The end-to-end entry point is [`scripts/train_vae.py`](../scripts/train_vae.py): it loads the three config layers (network / train / environment), builds the data pipeline (`VAE_Transform` + `CacheDataset`), runs the per-epoch loop in `ctmr.application.vae_train`, publishes checkpoints and runs the periodic validation pass.
+
+```bash
+network="rflow"
+python -m scripts.train_vae \
+    -t ./configs/config_network_${network}.json \
+    -c ./configs/config_maisi_vae_train.json \
+    -e ./configs/environment_maisi_vae_train.json \
+    --train-list train_ct.json --train-list train_mri.json \
+    --val-list val_ct.json --val-list val_mri.json
+```
+
+Each `--train-list` / `--val-list` file is a JSON array of `{"image": <path>, "class": "ct"|"mri"}` entries (one file per modality). Every epoch publishes `autoencoder.pt` / `discriminator.pt` under `model_dir`, and the validation pass (every `val_interval` epochs) additionally saves the best-score epoch as `autoencoder_epoch<N>.pt`. TensorBoard/plot observers of the deleted tutorial notebook are not rebuilt -- epoch summaries go to stdout.
+
 ### Dataset Preprocessing Parameters
 
 - `"random_aug"`: bool, whether to add random data augmentation for training data.
