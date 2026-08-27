@@ -935,17 +935,12 @@ class NiftiVolume:
     affine: np.ndarray
 
 
-class MRIntensityNormalizer:
-    """Applies the fixed per-volume MR 0–99.5 percentile intensity protocol."""
-
-    def normalize(self, volume, label):
-        data = np.asarray(volume, dtype=np.float64)
-        if data.ndim != 3 or not np.isfinite(data).all():
-            raise L1QuantitativeError(f"{label} must be a finite 3D MR volume")
-        lower, upper = np.percentile(data, (0.0, 99.5))
-        if upper <= lower:
-            raise L1QuantitativeError(f"{label} has no usable 0–99.5 percentile intensity range")
-        return np.clip((data - lower) / (upper - lower), 0.0, 1.0)
+# Reverse shim (ticket 08 / ADR-0015 §2): the pinned MR [0,1] intensity protocol
+# moved to ctmr.domain.intensity_protocol; this module re-exports it so its
+# consumers (and the legacy evaluate chain) keep working until the L1 batch
+# relocates them. The protocol's error class is IntensityProtocolError (message
+# text unchanged) -- nothing here catches it by type.
+from ctmr.domain.intensity_protocol import MRIntensityNormalizer  # noqa: E402  (module-level position preserved)
 
 
 class NiftiVolumeReader:

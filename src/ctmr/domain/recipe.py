@@ -12,7 +12,7 @@
 """Pinned-recipe guards, first-class PhaseHarness hooks (ADR-0011 decision 4).
 
 Each spec pins the frozen recipe values of one stage (ADR-0005 P1 / ADR-0007 P2
-/ the P2-equivalent-plus-CFG=0 P3) and raises on any deviation. P1's guard is
+/ the mask-equivalent-plus-CFG=0 cross-modal) and raises on any deviation. P1's guard is
 the runtime validation ADR-0005 pinned but never had -- it changes no recipe
 value. Guards are value objects over plain config dicts: stdlib-only, so the
 convergence gate runs on any machine (ADR-0013 §4).
@@ -93,7 +93,7 @@ class P1RecipeSpec:
             raise ValueError(f"pinned P1 max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')} (ADR-0005)")
         if self._scheduler.get("sample_method") != self.PINNED_SAMPLE_METHOD:
             raise ValueError(
-                f"pinned P1 noise_scheduler.sample_method is {self.PINNED_SAMPLE_METHOD}, got {self._scheduler.get('sample_method')} (ADR-0005)"
+                f"pinned P1 noise_scheduler.sample_method is {self.PINNED_SAMPLE_METHOD}, " f"got {self._scheduler.get('sample_method')} (ADR-0005)"
             )
         if self._scheduler.get("scale") != self.PINNED_RF_SCALE:
             raise ValueError(f"pinned P1 noise_scheduler.scale is {self.PINNED_RF_SCALE}, got {self._scheduler.get('scale')} (ADR-0005)")
@@ -104,10 +104,10 @@ class P1RecipeSpec:
         return True
 
 
-class P3RecipeSpec:
-    """Pinned-recipe guard for the frozen P3 recipe (P2 recipe verbatim + CFG=0).
+class CrossModalRecipeSpec:
+    """Pinned-recipe guard for the frozen cross-modal recipe (mask recipe verbatim + CFG=0).
 
-    ``trained_controlnet_path`` rides in so the no-warm-start-from-P2 clause is
+    ``trained_controlnet_path`` rides in so the no-warm-start-from-mask clause is
     checked at the same rank-0 point the pre-#111 entry guarded it.
     """
 
@@ -127,26 +127,28 @@ class P3RecipeSpec:
 
     def check(self):
         if self._controlnet_path is not None:
-            raise ValueError("P3 recipe forbids warm-starting from a ControlNet checkpoint (P1-DM init only)")
+            raise ValueError("cross-modal recipe forbids warm-starting from a ControlNet checkpoint (P1-DM init only)")
         cfg = self._cfg
         if cfg.get("lr") != self.PINNED_LR:
-            raise ValueError(f"pinned P3 lr is {self.PINNED_LR}, got {cfg.get('lr')} (P2-equivalent recipe)")
+            raise ValueError(f"pinned cross-modal lr is {self.PINNED_LR}, got {cfg.get('lr')} (mask-equivalent recipe)")
         if cfg.get("batch_size") != self.PINNED_BATCH:
-            raise ValueError(f"pinned P3 batch_size is {self.PINNED_BATCH}, got {cfg.get('batch_size')}")
+            raise ValueError(f"pinned cross-modal batch_size is {self.PINNED_BATCH}, got {cfg.get('batch_size')}")
         if cfg.get("weighted_loss") != self.PINNED_WEIGHTED_LOSS:
-            raise ValueError(f"pinned P3 weighted_loss is {self.PINNED_WEIGHTED_LOSS}, got {cfg.get('weighted_loss')}")
+            raise ValueError(f"pinned cross-modal weighted_loss is {self.PINNED_WEIGHTED_LOSS}, got {cfg.get('weighted_loss')}")
         if cfg.get("weighted_loss_label") != self.PINNED_WEIGHTED_LABELS:
-            raise ValueError(f"pinned P3 weighted_loss_label is {self.PINNED_WEIGHTED_LABELS}, got {cfg.get('weighted_loss_label')}")
+            raise ValueError(f"pinned cross-modal weighted_loss_label is {self.PINNED_WEIGHTED_LABELS}, got {cfg.get('weighted_loss_label')}")
         if cfg.get("use_region_contrasive_loss", False) is not False:
-            raise ValueError("P3 recipe forbids use_region_contrasive_loss (must be OFF)")
+            raise ValueError("cross-modal recipe forbids use_region_contrasive_loss (must be OFF)")
         if cfg.get("cache_rate") != self.PINNED_CACHE_RATE:
-            raise ValueError(f"pinned P3 cache_rate is {self.PINNED_CACHE_RATE}, got {cfg.get('cache_rate')}")
+            raise ValueError(f"pinned cross-modal cache_rate is {self.PINNED_CACHE_RATE}, got {cfg.get('cache_rate')}")
         if cfg.get("n_epochs", self.MAX_EPOCHS) > self.MAX_EPOCHS:
-            raise ValueError(f"pinned P3 max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')}")
+            raise ValueError(f"pinned cross-modal max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')}")
         if self._infer.get("cfg_guidance_scale", 0.0) != self.PINNED_CFG:
-            raise ValueError(f"P3 candidate is evaluated/selected with CFG OFF (cfg_guidance_scale=0); got {self._infer.get('cfg_guidance_scale')}")
+            raise ValueError(
+                f"cross-modal candidate is evaluated/selected with CFG OFF (cfg_guidance_scale=0); " f"got {self._infer.get('cfg_guidance_scale')}"
+            )
         self._logger.info(
-            f"P3 recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} weighted_loss={self.PINNED_WEIGHTED_LOSS}"
+            f"cross-modal recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} weighted_loss={self.PINNED_WEIGHTED_LOSS}"
             f"@{self.PINNED_WEIGHTED_LABELS} RCL=off cfg={self.PINNED_CFG}"
         )
         return True

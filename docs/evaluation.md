@@ -76,8 +76,8 @@ python -m scripts.brats_phase_run_contract attach \
 
 P3 also requires a `brats-l1-pairs/1` manifest. Each record binds one same-case `reference`, stage-0 `baseline`, and candidate NIfTI along with `challenge`, `case`, `src_modality`, and `target_modality`. The evaluator rejects shape or affine mismatches, normalizes all three volumes using the fixed MR protocol, computes 3D SSIM (`data_range=1.0`, `win_size=7`) and MAE, then applies paired case-level percentile bootstrap. The 11 information-sufficient directions require MAE reduction ≥10%, SSIM increase ≥0.02, and both CIs toward improvement. `t1n→t1c` is reported with an explicit known-unobservable exception, not a paired hard gate.
 
-The stage-0 side of that manifest comes from `scripts/brats_p3_stage0_generate.py` (issue #60): a P3 run
-opened with `--variant stage0-baseline` pins the frozen P1-DM and runs the four-anchor-round img2img
+The stage-0 side of that manifest comes from `ctmr generate cross-modal generate baseline`
+(issue #60): a cross-modal run opened with `--variant stage0-baseline` pins the frozen P1-DM and runs the four-anchor-round img2img
 protocol (12 ordered pairs per case). Its `pairs.json` records carry the baseline volume plus a
 `reference_grid/` copy of the real target resampled onto the generation grid (RAS + trilinear
 256×256×128, raw intensity domain), so baseline/reference/candidate triplets share shape and affine by
@@ -85,8 +85,8 @@ construction; its `samples.json` feeds the distribution judge chain (`python -m 
 baseline run never attaches formal L1/L2/L3 reports or concludes final acceptance — it is only the
 comparison floor.
 
-The candidate side comes from `scripts/brats_p3_controlnet_generate.py` (issue #61), the trained
-counterpart of that img2img baseline: a P3 run opened with `--variant controlnet-candidate` pins the
+The candidate side comes from `ctmr generate cross-modal generate candidate` (issue #61), the trained
+counterpart of that img2img baseline: a cross-modal run opened with `--variant controlnet-candidate` pins the
 frozen P1-DM plus the run's trained image-conditioned ControlNet, conditions the DM on the anchor's 4
 channel src latent (target modality label riding `class_labels` into both DM and ControlNet), and
 denoises from pure noise with CFG OFF (`cfg_guidance_scale == 0`, zero latent unconditional branch) —

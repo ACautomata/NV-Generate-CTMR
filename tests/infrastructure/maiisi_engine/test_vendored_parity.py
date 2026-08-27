@@ -23,6 +23,7 @@ ENGINE_PAIRS = [
     ("diff_model_infer.py", "diff_model_infer.py"),
     ("diff_model_create_training_data.py", "create_training_data.py"),
     ("utils_infer.py", "utils_infer.py"),
+    ("img2img_infer.py", "img2img_infer.py"),
 ]
 
 # (source file, source symbol) -> (vendored module, same symbol)

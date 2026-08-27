@@ -9,24 +9,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unified ``ctmr`` console entry point (issue #130 / ADR-0015 §3).
+"""Unified ``ctmr`` console entry point (issues #130/#137/#140 / ADR-0015 §3).
 
-Five command families pinned as the terminal CLI face. Families whose verbs
-have landed route to their implementations; every other concrete invocation
-answers a friendly "not migrated yet" message instead of an error traceback.
+Five command families pinned as the terminal CLI face; verbs land family by
+family with the migration batches. Two doors are live:
 
 ``ctmr measure predict`` (issue #140) is the canonical frozen-instrument
-execution entry, replacing ``python -m ctmr.instrument.predict``. Its handler
-is reached lazily (importlib on dispatch): torch / monai / nnunetv2 are only
-loaded when the verb actually runs, so this module stays importable on any
-machine without them -- pinned by the CLI purity gate in tests/test_cli_entry.
+execution entry, replacing ``python -m ctmr.instrument.predict``.
+
+``ctmr generate cross-modal`` (ticket 08) routes train/dev-eval/generate to the
+cross-modal family module; the verb grammar is deliberately thin -- each verb
+forwards its remaining argv verbatim to the family module entry
+(``train`` / ``dev-eval`` / ``generate baseline|candidate``), whose full
+argparse surface (and the argv↔namespace equivalence gate) lives in the module
+itself. Because that entry argv is an arbitrary argparse surface of its own,
+the CLI cannot pre-parse it -- ``run`` peels the fixed verb prefix off the raw
+argv and hands the remainder verbatim to the entry (argparse REMAINDER would
+reject the unknown options). The parser tree exists for ``--help`` and for
+invalid invocations.
+
+Both doors reach their handlers lazily (importlib on dispatch / in-function
+imports): torch / monai / nnunetv2 are only loaded when a verb actually runs,
+so this module stays importable on any machine without them -- pinned by the
+CLI purity gate in tests/test_cli_entry.
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
+
+TRAIN_MODULE = "ctmr.application.generation.cross_modal.train"
+
+_VARIANTS = ("baseline", "candidate")
 
 
 class CtmrCli:
@@ -54,7 +71,13 @@ class CtmrCli:
         )
         subparsers = parser.add_subparsers(dest="family", metavar="<family>", required=True)
         for family, aliases, blurb in self.FAMILIES:
-            fam_parser = subparsers.add_parser(family, aliases=list(aliases), help=blurb)
+            if family == "generate":
+                self._add_generate(subparsers, aliases, blurb)
+                continue
+            if family == "measure":  # its predict verb landed with #140; unknown verbs are argparse errors
+                fam_parser = subparsers.add_parser(family, aliases=list(aliases), help=blurb)
+            else:
+                fam_parser = subparsers.add_parser(family, aliases=list(aliases), help=f"{blurb} -- not migrated yet")
             fam_parser.add_argument("rest", nargs="*", metavar="verb", help="verbs/flags of this family")
             fam_parser.set_defaults(run=self._not_migrated)
             verb_parsers = {
@@ -81,6 +104,15 @@ class CtmrCli:
             ),
         )
 
+    def _add_generate(self, subparsers, aliases, blurb):
+        fam_parser = subparsers.add_parser("generate", aliases=list(aliases), help=blurb)
+        cases = fam_parser.add_subparsers(dest="case", metavar="<case>", required=True)
+        for case in ("modality-label", "mask"):
+            case_parser = cases.add_parser(case, help=f"{case} chain -- not migrated yet")
+            case_parser.add_argument("rest", nargs="*", metavar="verb", help="future verbs/flags of this case")
+            case_parser.set_defaults(run=self._not_migrated)
+        cases.add_parser("cross-modal", help="image-conditioned cross-modality chain (train/dev-eval/generate)")
+
     def _not_migrated(self, args):
         """Answer any concrete call on a not-yet-migrated family with a pointer, not a traceback."""
         family = self._alias_to_family.get(args.family, args.family)
@@ -96,13 +128,69 @@ class CtmrCli:
         module = importlib.import_module(handler_module)
         return getattr(module, handler_name)().run(list(pass_through or []))
 
+    @staticmethod
+    def _peel_generate(argv):
+        """Peel the fixed ``generate cross-modal <verb> [variant]`` prefix; (handler, rest) or None.
+
+        ``None`` means the argv does not fit a migrated verb -- fall back to the
+        parser tree (help / argparse error). This deliberately does not parse
+        options: the entry argv belongs to the entry's own parser.
+        """
+        if len(argv) < 2:
+            return None
+        if argv[0] not in ("generate", "gen"):
+            return None
+        case = argv[1]
+        if case in ("modality-label", "mask"):
+            args = argparse.Namespace(family=argv[0], case=case, rest=argv[1:])
+            return (CtmrCli._not_migrated, args)
+        if case != "cross-modal":
+            return None
+        if len(argv) < 3:
+            return None
+        verb = argv[2]
+        rest = argv[3:]
+        if verb == "train":
+            return (CtmrCli._run_cross_modal_train, rest)
+        if verb == "dev-eval":
+            return (CtmrCli._run_cross_modal_dev_eval, rest)
+        if verb == "generate":
+            if len(rest) >= 1 and rest[0] in _VARIANTS:
+                return (CtmrCli._run_cross_modal_generate, rest[0], rest[1:])
+            return None
+        return None
+
     def run(self, argv=None):
         """Parse argv and dispatch; argparse errors/help exit inside parse_args."""
         argv = list(sys.argv[1:] if argv is None else argv)
         if argv[:2] == ["measure", "predict"]:  # the frozen instrument door: everything after is nnUNetv2's business
             return self._invoke_verb("ctmr.infrastructure.nnunet_runner", "MeasurePredictVerb", argv[2:])
+        peeled = self._peel_generate(argv)
+        if peeled is not None:
+            handler, *payload = peeled
+            return handler(self, *payload)
         args = self._parser.parse_args(argv)
         return args.run(args)
+
+    def _run_cross_modal_train(self, rest):
+        """Dispatch the finetune entry; outside torchrun, derive the torchrun child."""
+        from ctmr.application.generation.cross_modal import train
+        from ctmr.application.generation.launcher import TorchrunLauncher, num_gpus_of
+
+        if os.environ.get("WORLD_SIZE"):
+            return train.main(rest)
+        return TorchrunLauncher(TRAIN_MODULE, rest, num_gpus_of(rest)).run()
+
+    def _run_cross_modal_dev_eval(self, rest):
+        from ctmr.application.generation.cross_modal import monitor
+
+        return monitor.main(rest)
+
+    def _run_cross_modal_generate(self, variant, rest):
+        from ctmr.application.generation.cross_modal import baseline, candidate
+
+        entry = baseline if variant == "baseline" else candidate
+        return entry.main(rest)
 
 
 def main(argv=None):

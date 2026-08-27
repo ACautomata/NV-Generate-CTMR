@@ -27,7 +27,7 @@ testpaths = ["tests"]
 pythonpath = ["src", "."]
 markers = [
     "torch: torch-level test; CPU-runnable real execution in the CI full-dependency tier (ADR-0015 §6)",
-    "gpu: needs a real GPU/cluster host; auto-skipped locally & in CI, executed on servers via --run-gpu (ADR-0015 §6)",
+    "gpu: needs a real GPU/cluster host; auto-skipped locally & in CI, opt-in on servers via --run-gpu or CTMR_RUN_GPU_TESTS=1 (ADR-0015 §6)",
 ]
 
 [tool.ruff]

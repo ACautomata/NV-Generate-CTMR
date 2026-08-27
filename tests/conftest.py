@@ -14,12 +14,14 @@
 ``torch``-marked tests are CPU-runnable and always execute for real (the CI
 full-dependency tier installs torch + monai + nnunetv2). ``gpu``-marked tests
 need a real GPU/cluster host: they stay auto-skipped locally and in CI and run
-on servers explicitly via ``pytest --run-gpu``.
+on servers explicitly via ``pytest --run-gpu`` or ``CTMR_RUN_GPU_TESTS=1``
+(the two opt-in spellings are interchangeable).
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 
 import pytest
 
@@ -29,9 +31,11 @@ def pytest_addoption(parser: argparse.ArgumentParser) -> None:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if config.getoption("--run-gpu"):
+    if config.getoption("--run-gpu") or os.environ.get("CTMR_RUN_GPU_TESTS"):
         return
-    skip_gpu = pytest.mark.skip(reason="gpu-marked test: needs a real GPU/cluster host; execute there with pytest --run-gpu (ADR-0015 §6)")
+    skip_gpu = pytest.mark.skip(
+        reason="gpu-marked test: needs a real GPU/cluster host; opt in there with pytest --run-gpu or CTMR_RUN_GPU_TESTS=1 (ADR-0015 §6)"
+    )
     for item in items:
         if "gpu" in item.keywords:
             item.add_marker(skip_gpu)

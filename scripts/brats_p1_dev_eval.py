@@ -61,6 +61,18 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python -m scripts.<this>
 sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
 
+# Reverse shim (ticket 08 / ADR-0015 §2): the dev-eval engine (watch/select
+# machinery) and the shared cohort constants moved to ctmr.application.shell;
+# this script consumes them until its own migration batch relocates it.
+from ctmr.application.shell import (  # noqa: E402
+    COHORT_QUOTAS,
+    MODALITY_TOKENS,
+    STOP_FILE,
+    TARGET_MODALITIES,
+    CheckpointWatcher,
+    EarlyStopRule,
+    TrendLedger,
+)
 from ctmr.domain.grid import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler, InstrumentGridAdapter  # noqa: E402
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
@@ -69,18 +81,13 @@ from .diff_model_setting import load_config  # noqa: E402
 from .utils import define_instance, dynamic_infer  # noqa: E402
 from .utils_infer import ReconModel  # noqa: E402
 
-MODALITY_TOKENS = {"t1n": 29, "t1c": 34, "t2w": 30, "t2f": 31}
-
 # The run-local reference bank payload holds numpy arrays; weights_only rejects
 # them by default, so allowlist numpy reconstruction (bank is a local artifact).
 torch.serialization.add_safe_globals([np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.Float64DType])
-TARGET_MODALITIES = ("t1n", "t1c", "t2w", "t2f")
 PLANES = ("xy", "yz", "zx")
-COHORT_QUOTAS = {"GLI": 4, "SSA": 2, "MEN": 4, "METS": 3, "PED": 3}
 TREND_PREPROCESSING = "percentile_0_99.5_to_0_1_ras_1mm_zero_pad_240x240x160"
 EMPTY_SLICE_THRESHOLD = 0.05
 SAMPLE_EVERY_K = 2
-STOP_FILE = ".early_stop"
 
 # Frozen instrument command comes from the single construction point (ADR-0009
 # #108 adoption): INSTRUMENT_SPECS / FrozenInstrumentCommand in ctmr.domain.instrument_spec.
@@ -127,32 +134,6 @@ class CohortSpacingSource:
     def spacing_of(self, case):
         rel = self._entries[case].replace(".nii.gz", "_emb.nii.gz") + ".json"
         return json.loads((self._emb_root / rel).read_text())["spacing"]
-
-
-class CheckpointWatcher:
-    """Polls the trainer's epoch checkpoints; yields un-evaluated eval points."""
-
-    def __init__(self, ckpt_dir, eval_every, max_epoch, done_epochs=()):
-        self._ckpt_dir = Path(ckpt_dir)
-        self._eval_every = eval_every
-        self._max_epoch = max_epoch
-        # Seed from the ledger so a sidecar restart does not re-evaluate history
-        # (re-appended trend points would corrupt the early-stop patience count).
-        self._done = set(done_epochs)
-
-    def pending(self):
-        found = []
-        for path in sorted(self._ckpt_dir.glob("epoch_*.pt")):
-            try:
-                epoch = int(path.stem.split("_")[1])
-            except (IndexError, ValueError):
-                continue
-            if epoch % self._eval_every == 0 and epoch <= self._max_epoch and epoch not in self._done:
-                found.append((epoch, path))
-        return sorted(found)
-
-    def mark_done(self, epoch):
-        self._done.add(epoch)
 
 
 class CandidateSampler:
@@ -470,78 +451,6 @@ class L2TrendRunner:
             },
         }
         return summary
-
-
-class EarlyStopRule:
-    """Pre-recorded rule: patience on the mean dev trend (never before min_epoch).
-
-    ``direction`` selects whether the trend metric is minimized (``min``, the FID
-    rules P1/P2 pre-registered) or maximized (``max``, the paired PSNR/SSIM rule P3
-    pre-registered); the default keeps P1/P2 behavior byte-identical.
-    """
-
-    RULE_TEXT = (
-        "metric m(N) = mean over t1n/t1c/t2w/t2f of plane-mean dev 2.5D RadImageNet FID on the "
-        "fixed 16-case dev cohort (fixed seeds, cfg=10, 30 steps); stop when N >= {min_epoch} and "
-        "the last {patience} consecutive evals set no new best m; hard cap = trainer n_epochs"
-    )
-
-    def __init__(self, patience, min_epoch, max_epoch, direction="min"):
-        if direction not in ("min", "max"):
-            raise ValueError(f"direction must be 'min' or 'max', got {direction!r}")
-        self.patience = patience
-        self.min_epoch = min_epoch
-        self.max_epoch = max_epoch
-        self.direction = direction
-
-    def rule_text(self):
-        return self.RULE_TEXT.format(min_epoch=self.min_epoch, patience=self.patience)
-
-    def should_stop(self, trend):
-        """trend: list of {epoch, m} in epoch order; returns (stop, reason)."""
-        sign = -1 if self.direction == "max" else 1
-        points = [point for point in trend if point["m"] is not None]
-        if not points:
-            return False, "no eval points yet"
-        last_epoch = points[-1]["epoch"]
-        if last_epoch < self.min_epoch:
-            return False, f"before min_epoch {self.min_epoch}"
-        best_index = min(range(len(points)), key=lambda i: (sign * points[i]["m"], i))
-        best = points[best_index]["m"]
-        since_best = len(points) - 1 - best_index
-        if since_best >= self.patience:
-            return True, f"no new best for {since_best} evals (best {best:.4f})"
-        return False, f"best {best:.4f}, {since_best} evals since"
-
-    @staticmethod
-    def selection(trend, direction="min", metric_name="mean_fid"):
-        points = [point for point in trend if point["m"] is not None]
-        if not points:
-            return None
-        sign = -1 if direction == "max" else 1
-        best = min(points, key=lambda point: (sign * point["m"], point["epoch"]))
-        return {"epoch": best["epoch"], metric_name: best["m"], "checkpoint": best.get("checkpoint")}
-
-
-class TrendLedger:
-    """Appends eval records to dev_trend.jsonl and keeps the cohort + rule on disk."""
-
-    def __init__(self, eval_root):
-        self._root = Path(eval_root)
-
-    def path(self):
-        return self._root / "dev_trend.jsonl"
-
-    def read(self):
-        path = self.path()
-        if not path.is_file():
-            return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-
-    def append(self, record):
-        self._root.mkdir(parents=True, exist_ok=True)
-        with open(self.path(), "a") as handle:
-            handle.write(json.dumps(record) + "\n")
 
 
 class DevEvalSelfTest:

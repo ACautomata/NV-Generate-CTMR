@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""P3 image-conditioned ControlNet candidate training (issue #61, spec #51 decision 4/6/8).
+"""Cross-modal (image-conditioned) ControlNet candidate training (issue #61, spec #51 decision 4/6/8).
 
 Inter-modality candidate: a ControlNet-only bypass hung off the FROZEN P1-DM (the
 registered DM source, ADR-0006). The DM and VAE are untouched; the ControlNet
@@ -17,29 +17,30 @@ conditions on the 4ch **src-image latent** (``src_image`` in the ``p3_pairs.json
 list, no mask) and the target modality label rides the existing ``class_labels``
 path into both DM and ControlNet — the training-side change of the issue #12 §7
 checklist turned into a reusable recipe. Pinned hyperparameters are exactly the
-P2 recipe (lr=1e-5, batch=1, <=100 epochs, AdamW, PolynomialLR power 2.0, L1,
+mask recipe (lr=1e-5, batch=1, <=100 epochs, AdamW, PolynomialLR power 2.0, L1,
 cache_rate=0, weighted_loss=100 on 129/130/131, use_region_contrasive_loss OFF,
 pure BraTS no MR-RATE replay) plus CFG=0 semantics. The ControlNet is initialized
 from the frozen P1-DM encoder/mid (``copy_model_state``) and is NEVER warm-started
-from a P2 ControlNet — only the P1-DM checkpoint is read.
+from a mask ControlNet — only the P1-DM checkpoint is read.
 
-Deltas against ``brats_p2_finetune.py``, all pinned:
+Deltas against the mask family, all pinned:
 - ``controlnet_cond`` is the src-image latent (``src_image``, 4ch) instead of the
   binarized 8ch mask (``binarize_labels``); labels only enter the weighted loss;
 - the training list is the #52 ``p3_pairs.json`` (fold=1 train / fold=0 dev; the
   val split is DISCARDED — dev-eval selects the candidate, spec #51 decision 7);
-- ``P3RecipeSpec`` additionally pins cfg_guidance_scale=0 (the candidate is
+- ``CrossModalRecipeSpec`` additionally pins cfg_guidance_scale=0 (the candidate is
   evaluated and selected with CFG off) and refuses to load a ControlNet checkpoint;
 - bf16 autocast default (DCU), fp32 fallback via ``--no_amp``.
 
-Thin entry since the harness consolidation (ADR-0011, #111): the domain kernel
-(``P3TrainKernel``, four-method injection) rides the shared
-``ctmr.harness.PhaseHarness`` shell; the CLI face is unchanged.
+Migrated from the retired cross-modal finetune script entry (ticket 08, ADR-0015
+§2): the domain kernel (``TrainKernel``, four-method injection) rides the shared
+``PhaseHarness`` shell; the CLI face is unchanged.
 
-Usage (torchrun on the DCU):
-    torchrun --nproc_per_node=7 -m scripts.brats_p3_finetune \
-        -e run/environment.json -c configs/config_brats_p3_train.json \
+Usage (CLI, torchrun spawn is derived by the ctmr launcher):
+    ctmr generate cross-modal train -e run/environment.json -c configs/config_brats_p3_train.json \
         -t configs/config_network_p3.json --data-list runs/p3/.../p3_pairs.json
+    # or directly under torchrun (same argv namespace):
+    torchrun --nproc_per_node=7 -m ctmr.application.generation.cross_modal.train ...
 """
 
 from __future__ import annotations
@@ -53,21 +54,21 @@ import monai
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from monai.data import CacheDataset
+from monai.data import CacheDataset, partition_dataset
 from monai.networks.utils import copy_model_state
 from monai.transforms import Compose, EnsureTyped, Lambdad, LoadImaged, Orientationd
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
-from ctmr.harness.cli import TrainCli
-from ctmr.harness.recipe import P3RecipeSpec
-from ctmr.harness.train_shell import PhaseHarness, TrainContext, TrainProvenanceWriter
+from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWriter
+from ctmr.application.train_cli import TrainCli
+from ctmr.domain.recipe import CrossModalRecipeSpec
+from ctmr.infrastructure.dataio.list_assembly import add_data_dir2path
+from ctmr.infrastructure.maiisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
+from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
 
-from .diff_model_setting import initialize_distributed, load_config, setup_logging
-from .utils import add_data_dir2path, define_instance, partition_dataset
 
-
-def prepare_p3_controlnet_json_dataloader(
+def prepare_controlnet_json_dataloader(
     json_data_list,
     data_base_dir,
     batch_size=1,
@@ -77,7 +78,7 @@ def prepare_p3_controlnet_json_dataloader(
     world_size=1,
     modality_mapping=None,
 ):
-    """P3 dataloader: image (tgt latent), label (loss-only tumour), src_image (4ch src latent).
+    """cross-modal dataloader: image (tgt latent), label (loss-only tumour), src_image (4ch src latent).
 
     Isomorphic to ``utils.prepare_maisi_controlnet_json_dataloader`` but the transforms
     also load ``src_image`` (a 4ch latent, left float — never binarized) and the
@@ -127,8 +128,8 @@ def prepare_p3_controlnet_json_dataloader(
     return train_loader, val_loader
 
 
-class P3DataCatalog:
-    """The P3 image-conditioned training list (pure BraTS, no replay) — one record per ordered (src,tgt) pair."""
+class DataCatalog:
+    """The image-conditioned training list (pure BraTS, no replay) — one record per ordered (src,tgt) pair."""
 
     def __init__(self, args, logger):
         self._args = args
@@ -136,14 +137,14 @@ class P3DataCatalog:
 
     def load_entries(self):
         payload = json.loads(Path(self._args.json_data_list).read_text())["training"]
-        self._logger.info(f"[data] p3 list: {len(payload)} entries from {self._args.json_data_list} (no replay)")
+        self._logger.info(f"[data] cross-modal list: {len(payload)} entries from {self._args.json_data_list} (no replay)")
         for entry in payload:
             if "src_image" not in entry:
-                raise ValueError(f"P3 list entry missing src-image condition 'src_image': {entry.get('case')}")
+                raise ValueError(f"cross-modal list entry missing src-image condition 'src_image': {entry.get('case')}")
             if "src_modality" not in entry:
-                raise ValueError(f"P3 list entry missing 'src_modality': {entry.get('case')}")
+                raise ValueError(f"cross-modal list entry missing 'src_modality': {entry.get('case')}")
             if entry["src_modality"] == entry["modality"]:
-                raise ValueError(f"P3 list entry must be src!=tgt: {entry.get('case')} src={entry['src_modality']}")
+                raise ValueError(f"cross-modal list entry must be src!=tgt: {entry.get('case')} src={entry['src_modality']}")
         return payload
 
     def file_records(self):
@@ -174,11 +175,11 @@ class P3DataCatalog:
         return records
 
 
-class P3TrainKernel:
-    """P3 kernel: src-image data, frozen-DM ControlNet hook-up, weighted L1, CFG=0.
+class TrainKernel:
+    """Image-conditioned kernel: src-image data, frozen-DM ControlNet hook-up, weighted L1, CFG=0.
 
     The four-method ``PhaseTrainKernel`` boundary. Recipe values live here, not
-    in the shell: AdamW + lr + PolynomialLR power 2.0 (P2-equivalent recipe).
+    in the shell: AdamW + lr + PolynomialLR power 2.0 (mask-equivalent recipe).
     """
 
     def __init__(self, args, device, logger, local_rank):
@@ -194,9 +195,9 @@ class P3TrainKernel:
     def build_loader(self):
         args = self._args
         if self._local_rank == 0:
-            self._logger.info(f"num_files_train (p3, no replay): {len(P3DataCatalog(args, self._logger).file_records())}")
+            self._logger.info(f"num_files_train (cross-modal family, no replay): {len(DataCatalog(args, self._logger).file_records())}")
         world_size = dist.get_world_size() if dist.is_initialized() else 1
-        train_loader, _val_loader = prepare_p3_controlnet_json_dataloader(
+        train_loader, _val_loader = prepare_controlnet_json_dataloader(
             json_data_list=args.json_data_list,
             data_base_dir=args.data_base_dir,
             batch_size=args.controlnet_train["batch_size"],
@@ -206,8 +207,9 @@ class P3TrainKernel:
             world_size=world_size,
             modality_mapping=args.modality_mapping,
         )
-        # The val split (fold==fold) is DISCARDED: P3 selects its candidate by the
-        # dev-eval sidecar, never by training/validation loss (spec #51 decision 7).
+        # The val split (fold==fold) is DISCARDED: this family selects its
+        # candidate by the dev-eval sidecar, never by training/validation loss
+        # (spec #51 decision 7).
         return train_loader
 
     def load_models(self, loader):
@@ -223,7 +225,7 @@ class P3TrainKernel:
             raise ValueError(f"DM source checkpoint missing keys for frozen DM: {state.missing_keys}")
         if state.unexpected_keys:
             self._logger.warning(f"DM source checkpoint unexpected keys (ignored): {state.unexpected_keys}")
-        # init ControlNet from the frozen P1-DM encoder/mid — NEVER warm-start from a P2 ControlNet.
+        # init ControlNet from the frozen P1-DM encoder/mid — NEVER warm-start from a mask ControlNet.
         copy_model_state(controlnet, unet.state_dict())
         if dist.is_initialized():
             controlnet = DistributedDataParallel(controlnet, device_ids=[self._device], find_unused_parameters=True)
@@ -270,8 +272,8 @@ class P3TrainKernel:
         noise = torch.randn_like(images)
         timesteps = self._noise_scheduler.sample_timesteps(images)
         noisy_latent = self._noise_scheduler.add_noise(original_samples=images, noise=noise, timesteps=timesteps)
-        # The ONLY structural change vs P2: condition on the 4ch src latent,
-        # not the binarized mask. Labels never enter the condition.
+        # The ONLY structural change vs the mask family: condition on the 4ch src
+        # latent, not the binarized mask. Labels never enter the condition.
         controlnet_cond = src_latent
         down, mid = self._controlnet(x=noisy_latent, timesteps=timesteps, controlnet_cond=controlnet_cond, class_labels=modality_tensor)
         model_output = self._unet(
@@ -316,8 +318,8 @@ def main(argv=None):
         merged.modality_mapping = json.load(handle)
 
     local_rank, _world, device = initialize_distributed(args.num_gpus)
-    logger = setup_logging("p3-finetune")
-    kernel = P3TrainKernel(merged, device, logger, local_rank)
+    logger = setup_logging("cross-modal-finetune")
+    kernel = TrainKernel(merged, device, logger, local_rank)
     infer_cfg = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else None
     return PhaseHarness(
         kernel=kernel,
@@ -327,7 +329,7 @@ def main(argv=None):
         amp_dtype=args.amp_dtype,
         local_rank=local_rank,
         logger=logger,
-        recipe_check=P3RecipeSpec(
+        recipe_check=CrossModalRecipeSpec(
             merged.controlnet_train,
             infer_cfg,
             logger,

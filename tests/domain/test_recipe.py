@@ -15,7 +15,7 @@
 (ADR-0007 values, raise messages, the ``is not False`` identity check on RCL and
 the missing-``n_epochs`` default); ``P1RecipeSpec`` is the runtime guard
 ADR-0005 pinned but never had (validation only, no recipe value change);
-``P3RecipeSpec`` pins the P2-equivalent recipe plus CFG=0 and the no-warm-start
+``CrossModalRecipeSpec`` pins the mask-equivalent recipe plus CFG=0 and the no-warm-start
 clause. The specs read plain config dicts -- stdlib-only, any machine (ADR-0013 §4).
 """
 
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from ctmr.domain.recipe import P1RecipeSpec, P2RecipeSpec, P3RecipeSpec
+from ctmr.domain.recipe import CrossModalRecipeSpec, P1RecipeSpec, P2RecipeSpec
 
 REPO = Path(__file__).resolve().parents[2]
 P2_TRAIN_CONFIG = json.loads((REPO / "configs/config_brats_p2_train.json").read_text())
@@ -125,38 +125,38 @@ def test_p1_missing_n_epochs_defaults_to_the_max_cap():
     assert P1RecipeSpec(config, dict(RFLOW_NETWORK["noise_scheduler"]), _QuietLogger()).check() is True
 
 
-# ── P3: the P2-equivalent recipe plus CFG=0 and no warm-start ──
+# ── cross-modal: the mask-equivalent recipe plus CFG=0 and no warm-start ──
 
 
 def test_p3_accepts_the_pinned_config():
     logger = _QuietLogger()
-    spec = P3RecipeSpec(
+    spec = CrossModalRecipeSpec(
         dict(P3_TRAIN_CONFIG["controlnet_train"]),
         dict(P3_TRAIN_CONFIG["diffusion_unet_inference"]),
         logger,
         trained_controlnet_path=None,
     )
     assert spec.check() is True
-    assert "P3 recipe guard OK:" in logger.messages[0]
+    assert "cross-modal recipe guard OK:" in logger.messages[0]
 
 
 def test_p3_cfg_off_is_pinned():
-    spec = P3RecipeSpec(
+    spec = CrossModalRecipeSpec(
         dict(P3_TRAIN_CONFIG["controlnet_train"]),
         {"cfg_guidance_scale": 5.0},
         _QuietLogger(),
         trained_controlnet_path=None,
     )
-    with pytest.raises(ValueError, match=r"P3 candidate is evaluated/selected with CFG OFF \(cfg_guidance_scale=0\); got 5.0"):
+    with pytest.raises(ValueError, match=r"cross-modal candidate is evaluated/selected with CFG OFF \(cfg_guidance_scale=0\); got 5.0"):
         spec.check()
 
 
 def test_p3_warm_start_from_a_controlnet_is_forbidden():
-    spec = P3RecipeSpec(
+    spec = CrossModalRecipeSpec(
         dict(P3_TRAIN_CONFIG["controlnet_train"]),
         dict(P3_TRAIN_CONFIG["diffusion_unet_inference"]),
         _QuietLogger(),
         trained_controlnet_path="/some/controlnet.pt",
     )
-    with pytest.raises(ValueError, match="P3 recipe forbids warm-starting from a ControlNet checkpoint \\(P1-DM init only\\)"):
+    with pytest.raises(ValueError, match="cross-modal recipe forbids warm-starting from a ControlNet checkpoint \\(P1-DM init only\\)"):
         spec.check()
