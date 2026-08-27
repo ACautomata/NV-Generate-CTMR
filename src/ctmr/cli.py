@@ -62,8 +62,7 @@ class CtmrCli:
         family = self._alias_to_family.get(args.family, args.family)
         verbs = " " + " ".join(args.rest) if args.rest else ""
         print(
-            f"ctmr {family}{verbs}: not migrated yet -- "
-            "this command family lands with the ADR-0015 migration batches (issue #129).",
+            f"ctmr {family}{verbs}: not migrated yet -- " "this command family lands with the ADR-0015 migration batches (issue #129).",
             file=sys.stderr,
         )
         return 2
