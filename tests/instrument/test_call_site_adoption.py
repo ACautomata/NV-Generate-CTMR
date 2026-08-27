@@ -7,7 +7,7 @@ single construction point: each adopted Python call site produces precisely the
 ``--disable_tta False`` token and the non-standard entry names
 (``nnUNetv2_predict_from_raw_data`` / ``l2_calibration_predict_entry``) are gone
 everywhere, and shell orchestration shares the canonical
-``python -m ctmr.instrument.predict`` entry with the Python callers (decision 3).
+``python -m ctmr measure predict`` entry with the Python callers (decision 3).
 
 Light stack, any machine, no cluster, no external data (ADR-0009 decision 7 /
 ADR-0013 §4): the torch-heavy dev-eval call site is gated separately in
@@ -46,7 +46,7 @@ def test_predict_script_writer_emits_the_builder_argv(tmp_path):
 
 
 def test_predict_script_writer_bootstraps_the_src_tree_onto_pythonpath(tmp_path):
-    """The generated scripts run the canonical entry ``python -m ctmr.instrument.predict``
+    """The generated scripts run the canonical entry ``python -m ctmr measure predict``
     in a fresh shell; the writer pins its own src tree onto PYTHONPATH so the module
     is importable on the machine that generated them (repo and flat-deployment spellings,
     matching the sibling executors' shim)."""
@@ -57,7 +57,7 @@ def test_predict_script_writer_bootstraps_the_src_tree_onto_pythonpath(tmp_path)
     assert lines[2].startswith("export PYTHONPATH=")
     src_root = Path(final_acceptance.__file__).resolve().parent.parent / "src"
     assert str(src_root) in lines[2]
-    assert "-m ctmr.instrument.predict" in lines[-1]
+    assert "-m ctmr measure predict" in lines[-1]
 
 
 def test_predict_script_writer_runner_executes_every_challenge_script(tmp_path):
@@ -128,7 +128,7 @@ def test_synth_domain_sugon_predict_uses_the_builder_argv(tmp_path, monkeypatch)
     # nnU-Net env wiring stays with the executor (execution side, ADR-0009 decision 1)
     assert captured["env"]["nnUNet_raw"]
     # the child process gets the module's src tree on PYTHONPATH (process-local
-    # sys.path.insert does not reach a fresh `python -m ctmr.instrument.predict`)
+    # sys.path.insert does not reach a fresh `python -m ctmr measure predict`)
     assert str(REPO_ROOT / "src") in captured["env"]["PYTHONPATH"]
 
 
@@ -165,7 +165,7 @@ def test_shell_scripts_declare_the_canonical_per_challenge_spec():
 
 def test_p1_predict_all_sh_runs_the_canonical_command_per_challenge():
     text = (JOBS_DIR / "p1_predict_all.sh").read_text()
-    assert "-m ctmr.instrument.predict" in text
+    assert "-m ctmr measure predict" in text
     runs = {match[0]: (match[1], match[2], match[3]) for match in re.findall(r"run_pred (\w+)\s+\d+\s+(\S+)\s+(\S+)\s+(\S+)\s*&", text)}
     assert runs == {challenge: (spec.dataset_id, spec.plans, spec.config) for challenge, spec in INSTRUMENT_SPECS.items()}
 
@@ -173,7 +173,7 @@ def test_p1_predict_all_sh_runs_the_canonical_command_per_challenge():
 def test_shell_orchestration_calls_only_the_canonical_entry():
     for name in SHELL_SCRIPTS:
         text = (JOBS_DIR / name).read_text()
-        assert "-m ctmr.instrument.predict" in text, name
+        assert "-m ctmr measure predict" in text, name
         assert "nnUNetv2_predict_from_raw_data" not in text, name
         assert "l2_calibration_predict_entry" not in text, name
         assert "--disable_tta False" not in text, name  # the fatal token; bare mentions in comments are prose

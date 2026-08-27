@@ -41,7 +41,7 @@ ignore = ["E501", "N812", "N813"]  # E501: line length handled by formatter; N81
 [tool.ruff.lint.per-file-ignores]
 "scripts/compute_fid_2-5d_ct.py" = ["N999"]  # hyphenated filename cannot be renamed
 "scripts/nnunet_trainer_250_epochs.py" = ["N801"]  # nnUNet trainer class naming convention
-"src/ctmr/instrument/safeglobals.py" = ["N801"]  # ADR-0009-pinned interface name; class-shaped context manager like torch.serialization.safe_globals
+"src/ctmr/infrastructure/nnunet_runner.py" = ["N801"]  # ADR-0009-pinned interface name; class-shaped context manager like torch.serialization.safe_globals
 
 [tool.ruff.format]
 quote-style = "double"

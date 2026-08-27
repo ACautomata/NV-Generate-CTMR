@@ -1,6 +1,6 @@
 #!/bin/bash
 # Issue #36 校准推理编排：5 子挑战 × 3 次独立重复，4 卡工作槽消费任务队列。
-# 每任务 = (challenge, rep)：canonical 入口 python -m ctmr.instrument.predict
+# 每任务 = (challenge, rep)：canonical 入口 python -m ctmr measure predict
 # （ADR-0009 #108 收编），冻结配置 = 入口默认（镜像 TTA on、滑窗 overlap/
 # step_size 0.5，见 docs/calibration/l2-instrument-calibration-protocol.md §3）。
 # 幂等：输出齐全即跳过。ADR-0002 历史包络不重跑。
@@ -52,7 +52,7 @@ predict_one() {  # $1=challenge $2=rep $3=slot_gpu
   echo "START $CH rep$REP gpu$GPU $(date -u +%FT%TZ)" >> "$STATUS"
   HIP_VISIBLE_DEVICES=$GPU \
     nnUNet_results="${RESULTS[$CH]}" \
-    python3 -m ctmr.instrument.predict \
+    python3 -m ctmr measure predict \
       -i "$INPUT" -o "$OUT" \
       -d "${DATASET[$CH]}" -c "${CONFIG[$CH]}" -p "${PLANS[$CH]}" \
       -tr nnUNetTrainer250Epochs -f 0 \

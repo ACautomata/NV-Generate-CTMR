@@ -23,9 +23,9 @@ this interface exposes no TTA parameter at all and ``build`` never emits
 fatal argparse error, #78).
 
 ``build`` is a pure transform: it only produces argv for the canonical entry
-point ``python -m ctmr.instrument.predict`` (ADR-0009 decision 3) -- no
-execution, no file IO; running it (subprocess / writing a shell script) stays
-with the caller.
+point ``python -m ctmr measure predict`` (ADR-0009 decision 3, executed by
+``ctmr.infrastructure.nnunet_runner`` since #140) -- no execution, no file IO;
+running it (subprocess / writing a shell script) stays with the caller.
 """
 
 import sys
@@ -74,7 +74,9 @@ class FrozenInstrumentCommand:
         return [
             sys.executable,
             "-m",
-            "ctmr.instrument.predict",
+            "ctmr",
+            "measure",
+            "predict",
             "-i",
             str(input_dir),
             "-o",

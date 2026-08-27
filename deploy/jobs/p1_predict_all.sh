@@ -2,7 +2,7 @@
 # Issue #38 仪器推理：五挑战并行 nnUNetv2 预测（每挑战一卡）。
 # 用法：bash p1_predict_all.sh [p1|p3]（默认 p1）
 # TTA 保持默认开启（与 ADR-0002 校准包络一致；不传 --disable_tta）。
-# 调用点已收编 ADR-0009：canonical 入口 python -m ctmr.instrument.predict，
+# 调用点已收编 ADR-0009：canonical 入口 python -m ctmr measure predict，
 # 每挑战 spec 与 FrozenInstrumentCommand 的 INSTRUMENT_SPECS 一致。
 set -u
 
@@ -23,7 +23,7 @@ mkdir -p "$PRED" "$LOGS"
 run_pred() {
   local CH=$1 GPU=$2 DSNAME=$3 PLANS=$4 CONFIG=$5
   echo "PREDICT_${MODE}_${CH}_START $(date -u +%FT%TZ)" >> "$LOGS/predict-status.txt"
-  HIP_VISIBLE_DEVICES=$GPU python3 -m ctmr.instrument.predict \
+  HIP_VISIBLE_DEVICES=$GPU python3 -m ctmr measure predict \
     -i "$INPUT/$CH" -o "$PRED/$CH" \
     -d "$DSNAME" -c "$CONFIG" -p "$PLANS" -tr nnUNetTrainer250Epochs -f 0 \
     >> "$LOGS/predict-${MODE}-$CH.log" 2>&1

@@ -55,7 +55,6 @@ def test_help_lists_all_five_command_families(capsys):
     out = capsys.readouterr().out
     for family in FAMILIES:
         assert family in out
-    assert "not migrated yet" in out
 
 
 def test_gen_alias_reaches_the_generate_family(capsys):
@@ -63,13 +62,28 @@ def test_gen_alias_reaches_the_generate_family(capsys):
     assert "ctmr generate" in capsys.readouterr().err
 
 
-def test_every_family_answers_not_migrated_for_any_concrete_call(capsys):
+def test_every_family_without_verbs_answers_not_migrated_for_any_concrete_call(capsys):
     for family in FAMILIES:
+        if family == "measure":  # its predict verb landed with #140; unknown verbs there are argparse errors
+            continue
         assert cli.main([family, "some-future-verb"]) == 2
         err = capsys.readouterr().err
         assert "not migrated yet" in err
         assert f"ctmr {family}" in err
         assert "some-future-verb" in err
+
+
+def test_unknown_measure_verb_is_a_clean_usage_error():
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["measure", "some-future-verb"])
+    assert excinfo.value.code == 2
+
+
+def test_measure_bare_invocation_still_answers_not_migrated(capsys):
+    assert cli.main(["measure"]) == 2
+    err = capsys.readouterr().err
+    assert "ctmr measure" in err
+    assert "not migrated yet" in err
 
 
 def test_family_without_verb_also_answers_not_migrated(capsys):

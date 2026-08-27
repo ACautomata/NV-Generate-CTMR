@@ -91,8 +91,8 @@ def test_torch_load_points_run_inside_the_scoped_allowlist():
 
 def test_legacy_entry_script_is_superseded_by_the_canonical_entry():
     assert not (SCRIPTS_DIR / "l2_calibration_predict_entry.py").exists()
-    # the promoted canonical entry carries the scoped activation (ADR-0009 decision 3)
-    tree = ast.parse((REPO_ROOT / "src/ctmr/instrument/predict.py").read_text())
+    # the promoted canonical verb (``ctmr measure predict``, #140) carries the scoped activation
+    tree = ast.parse((REPO_ROOT / "src/ctmr/infrastructure/nnunet_runner.py").read_text())
     assert [node for node in ast.walk(tree) if _is_nnunet_safe_globals_with(node)]
 
 

@@ -33,8 +33,8 @@ FIVE_CHALLENGES = [challenge for challenge, _ in CANONICAL_SPEC_OPTIONS]
 @pytest.mark.parametrize("challenge,expected_options", CANONICAL_SPEC_OPTIONS)
 def test_build_produces_the_canonical_argv(challenge, expected_options):
     argv = FrozenInstrumentCommand(INSTRUMENT_SPECS[challenge]).build("/raw/in", "/pred/out")
-    assert argv[:7] == [sys.executable, "-m", "ctmr.instrument.predict", "-i", "/raw/in", "-o", "/pred/out"]
-    assert argv[7:] == expected_options
+    assert argv[:9] == [sys.executable, "-m", "ctmr", "measure", "predict", "-i", "/raw/in", "-o", "/pred/out"]
+    assert argv[9:] == expected_options
 
 
 def test_specs_cover_exactly_the_five_challenges():
@@ -50,7 +50,7 @@ def test_ssa_pins_the_derived_batch16_configuration():
 def test_build_never_touches_the_filesystem():
     command = FrozenInstrumentCommand(InstrumentSpec(dataset_id="Dataset501_BraTS2023GLI", config="3d_fullres", plans="nnUNetPlans"))
     argv = command.build("/nonexistent-instrument-input", "/nonexistent-instrument-output")
-    assert argv[4] == "/nonexistent-instrument-input"  # -i passed through: no directory had to exist
+    assert argv[6] == "/nonexistent-instrument-input"  # -i passed through: no directory had to exist
     assert argv == command.build("/nonexistent-instrument-input", "/nonexistent-instrument-output")  # same input -> same argv
 
 
@@ -64,7 +64,7 @@ def test_mirror_tta_stays_on_by_omission(challenge):
 def test_terminal_acceptance_invocation_is_the_builder_argv(tmp_path):
     """The #108 adoption: PredictScriptWriter emits exactly ``build(...)`` -- the
     frozen call site lands on the single construction point, so the generated
-    script line is verbatim the builder argv (entry ``\\ -m ctmr.instrument.predict``,
+    script line is verbatim the builder argv (entry ``\\ -m ctmr measure predict``,
     the canonical spec flags, no TTA token)."""
     challenges = {challenge: {} for challenge in FIVE_CHALLENGES}  # the writer only reads the keys
     PredictScriptWriter({"challenges": challenges}, tmp_path).write()
