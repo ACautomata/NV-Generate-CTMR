@@ -40,15 +40,15 @@ VENDORED_BODIES = [
 ]
 
 EXPECTED_BRIDGES = {
-    "augmentation": ("scripts.augmentation", {"augmentation"}),
-    "find_masks": ("scripts.find_masks", {"find_masks"}),
+    "augmentation": ("ctmr.infrastructure.dataio.augmentation", {"augmentation"}),
+    "find_masks": ("ctmr.infrastructure.dataio.find_masks", {"find_masks"}),
     "infer_image_from_mask": ("scripts.infer_image_from_mask", {"crop_img_body_mask", "ldm_conditional_sample_one_image"}),
-    "quality_check": ("scripts.quality_check", {"is_outlier"}),
+    "quality_check": ("ctmr.infrastructure.dataio.quality_check", {"is_outlier"}),
     "sample_mask": (
         "scripts.sample_mask",
         {"ReconModel", "check_input_ct", "check_input_mr", "filter_mask_with_organs", "initialize_noise_latents", "ldm_conditional_sample_one_mask"},
     ),
-    "transforms": ("scripts.transforms", {"SUPPORT_MODALITIES", "define_fixed_intensity_transform"}),
+    "transforms": ("ctmr.infrastructure.dataio.transforms", {"SUPPORT_MODALITIES", "define_fixed_intensity_transform"}),
     "utils": ("scripts.utils", {"define_instance", "dynamic_infer", "get_body_region_index_from_mask"}),
 }
 
