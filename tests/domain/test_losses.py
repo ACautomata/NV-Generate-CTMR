@@ -14,11 +14,13 @@
 Torch-level: runs real tensor math on CPU.
 """
 
+import inspect
 import math
 
 import pytest
 import torch
 
+from ctmr.domain import losses
 from ctmr.domain.losses import kl_loss
 
 
@@ -47,3 +49,20 @@ def test_kl_loss_sums_all_non_batch_dims():
     sigma = torch.full((1, 1, 1, 2), 2.0)
     per_element = 0.5 * (0.0 + 4.0 - math.log(4.0 + 1e-10) - 1.0)
     assert kl_loss(mu, sigma).item() == pytest.approx(2 * per_element, rel=1e-6)
+
+
+@pytest.mark.torch
+def test_kl_loss_averages_over_batch_not_sums():
+    """Batch mean semantics, not batch sum: samples 0.5*1 and 0.5*9 average to 2.5."""
+    mu = torch.tensor([[[[1.0]]], [[[3.0]]]])  # shape [2,1,1,1]
+    sigma = torch.ones_like(mu)
+    assert kl_loss(mu, sigma).item() == pytest.approx(2.5)
+
+
+@pytest.mark.torch
+def test_losses_module_has_no_io():
+    """Domain purity guard: the losses module must not reference any I/O surface."""
+    source = inspect.getsource(losses)
+    banned = ["open(", "os.", "pathlib", "Path(", "requests", "urllib"]
+    hits = [token for token in banned if token in source]
+    assert hits == []
