@@ -19,9 +19,10 @@ Born with the M2 batch of ADR-0015 section 10 (issue #133):
 - ``ctmr.domain.measurement``     -- instrument measurement          (ADR-0010, #109; moved #133)
 - ``ctmr.domain.recipe``          -- pinned-recipe guards            (ADR-0011; moved up from the shell, #133)
 - ``ctmr.domain.identity``        -- sha256 weight-lineage entities  (ADR-0015 section 2; born with #133)
+- ``ctmr.domain.losses``          -- pure loss math (KL)             (ADR-0015 section 2; born with #132)
 
 This package re-exports nothing: the modules have different dependency floors
-(``grid`` needs SimpleITK, ``measurement`` needs numpy/scipy, ``recipe`` /
-``identity`` are stdlib-only -- ADR-0013 section 4 light stack), so importing
-one must not pay for another. Import submodules directly.
+(``grid`` needs SimpleITK, ``measurement`` needs numpy/scipy, ``losses`` needs
+torch, ``recipe`` / ``identity`` are stdlib-only -- ADR-0013 section 4 light
+stack), so importing one must not pay for another. Import submodules directly.
 """
