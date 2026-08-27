@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
 """Issue #58 sugon execution side for the L2 generated-case HTML report.
 
 Reads the L2-acceptance data (generated four modalities, real four modalities,
 L2 instrument predictions, measurements.csv) on the sugon host, resamples
 everything onto the generated image grid (the unified display space), picks a
 representative slice per case, and hands the sliced arrays to
-``brats_p1_l2_html`` (stdlib + Pillow) to produce a single self-contained HTML
+``html_report`` (stdlib + Pillow) to produce a single self-contained HTML
 report.  Runs where numpy + SimpleITK + Pillow are available; the rendered HTML
 is written to a controlled path -- subject ids and per-case measurements never
 land in git.
@@ -17,7 +16,7 @@ Two commands:
              is ``<real-root>/raw/ASNR-MICCAI-BraTS2023/<challenge-dir>/<case>/``;
              the challenge-dir stem is resolved here, not hard-coded.
   render     measurements.csv -> sampled cases -> slices -> HTML report.
-             Reuses ``brats_p1_l2_html.CaseSampler`` (sampling),
+             Reuses ``html_report.CaseSampler`` (sampling),
              ``MeasurementPresenter`` (volumes) and ``L2HtmlReport`` (page).
 """
 
@@ -30,14 +29,9 @@ from pathlib import Path
 import numpy as np
 import SimpleITK as sitk  # noqa: N813  (standard medical-imaging alias)
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))  # repo src layout: python scripts/<this>.py
-sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon deployment: src/ synced next to the script
-
-from brats_p1_l2_html import CaseSampler, IndexSummarizer, L2HtmlReport  # noqa: E402
-from nnunet_l2_final_acceptance import MODALITIES  # noqa: E402
-
-from ctmr.domain.grid import GridResampler, TargetGrid  # noqa: E402
+from ctmr.application.acceptance.distribution.final_acceptance import MODALITIES
+from ctmr.application.acceptance.distribution.html_report import CaseSampler, IndexSummarizer, L2HtmlReport
+from ctmr.domain.grid import GridResampler, TargetGrid
 
 REAL_CANDIDATE_ROOTS = ("raw/ASNR-MICCAI-BraTS2023", "ASNR-MICCAI-BraTS2023", ".")
 VIEW_AXIS = {"axial": 0, "coronal": 1, "sagittal": 2}  # sitk array layout is zyx

@@ -119,7 +119,7 @@ class FrozenTerminalReference:
 class FrozenCalibrationReference:
     """Verbatim snapshot of the pre-#109 calibration mother per-region readout.
 
-    ``measure_case`` loop body of nnunet_l2_calibration_metrics.py (dice_of /
+    ``measure_case`` loop body of the calibration metrics implementation (dice_of /
     hd95_mm / centroid_distance_mm / component_stats / the region-row fields).
     The only difference is the sentinel policy the module must reproduce:
     mother ``math.nan`` == module ``None`` (registered ADR-0010 decision 4).

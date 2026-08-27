@@ -1,11 +1,11 @@
-"""Torch-level convergence-gate tests for the frozen weights_only allowlist (ADR-0009, #107).
+"""Torch-level convergence-gate tests for the frozen weights_only allowlist (ADR-0009, #107; new home #140).
 
 Proves the four properties of decision 4: the payload is the verbatim
 collapsed copy, importing the module never mutates global torch state,
 activation is scoped (restores the exact prior allowlist), and torch>=2.6
 default ``weights_only=True`` loads of the numpy payload work inside the
-scope only. Auto-skipped when torch / numpy are absent (``pytest.importorskip``,
-ADR-0013 §4); no nnunetv2, no cluster, no external data.
+scope only. Torch-level tier: torch / numpy are part of the CI full-dependency
+set, so these run for real (ADR-0015 §6); no nnunetv2, no cluster, no external data.
 """
 
 import os
@@ -13,17 +13,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy
 import pytest
+import torch
 
-pytest.importorskip("torch")
-pytest.importorskip("numpy")
-
-import numpy  # noqa: E402  (importorskip must precede the torch-dependent import)
-import torch  # noqa: E402
-
-from ctmr.instrument.safeglobals import NNUNET_SAFE_GLOBALS, nnunet_safe_globals  # noqa: E402
+from ctmr.infrastructure.nnunet_runner import NNUNET_SAFE_GLOBALS, nnunet_safe_globals
 
 pytestmark = pytest.mark.torch
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_allowlist_payload_matches_the_frozen_copies():
@@ -33,13 +31,12 @@ def test_allowlist_payload_matches_the_frozen_copies():
 
 
 def test_import_does_not_mutate_global_torch_state():
-    repo_root = Path(__file__).resolve().parents[2]
-    env = {**os.environ, "PYTHONPATH": str(repo_root / "src")}
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
     # comparing before/after the module import: torch itself registers some safe
     # globals at import time (NestedTensor & friends) -- that baseline is not ours to assert on
     check = (
         "import torch; before = list(torch.serialization.get_safe_globals()); "
-        "import ctmr.instrument.safeglobals; "
+        "import ctmr.infrastructure.nnunet_runner; "
         "assert torch.serialization.get_safe_globals() == before"
     )
     result = subprocess.run([sys.executable, "-c", check], env=env, capture_output=True, text=True)

@@ -1,7 +1,6 @@
-#!/usr/bin/env python3
 """计算 Issue #36 L2 仪器校准的七类误差与预注册误差包络。
 
-输入为 ``nnunet_l2_calibration_prep.py`` 冻结的校准集与 3 次独立推理输出；
+输入为 ``calibration_prep`` 冻结的校准集与 3 次独立推理输出；
 逐病例 × 区域 × rep 的原始指标写 CSV，预注册统计量（``D_r,low``、
 ``E_r,*``、``R_fail``、重复性、ET<1 mL 分层）按 docs/calibration/
 l2-instrument-calibration-protocol.md §5–§6 的冻结定义计算并写 JSON。

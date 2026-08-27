@@ -1,12 +1,22 @@
-#!/usr/bin/env python3
-"""Derive the audited SSA 8-card batch-16 nnU-Net plan variant.
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Derive the audited SSA 8-card batch-16 nnU-Net plan variant (migrated from scripts/nnunet_plan_variant, ticket #140).
 
 This tool never changes the source plan. It adds only the approved
 ``3d_fullres_bs16`` configuration to a new plans file and writes a compact
-sidecar audit record for the controlled data directory.
+sidecar audit record for the controlled data directory. The script ``__main__``
+glue and argparse block do not travel: a later CLI slice takes over.
 """
 
-import argparse
 import copy
 import hashlib
 import json
@@ -140,19 +150,3 @@ class PlanVariantBuilder:
             "data_identifier": variant["data_identifier"],
             "approved_delta": {"batch_size": GLOBAL_BATCH_SIZE},
         }
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-plans", type=Path, required=True)
-    parser.add_argument("--derived-plans", type=Path, required=True)
-    parser.add_argument("--audit", type=Path, required=True)
-    args = parser.parse_args()
-
-    audit = PlanVariantBuilder(args.source_plans, args.derived_plans, args.audit).build()
-    print(json.dumps(audit, indent=2, sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

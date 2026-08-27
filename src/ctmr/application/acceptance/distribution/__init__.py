@@ -9,13 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ctmr.instrument -- superseded reverse shim (issue #140; ADR-0015 §2).
+"""Distribution-alignment acceptance (formerly L2): the frozen-instrument judge chain.
 
-The execution side of the frozen instrument call moved to
-``ctmr.infrastructure.nnunet_runner`` (predictor execution + the weights_only
-allowlist), exposed canonically as ``ctmr measure predict``; the frozen command
-construction had already moved to ``ctmr.domain.instrument_spec`` (#133). The
-submodules here re-export the new home until their last not-yet-migrated
-consumer (the modality-label chain, ticket #140's sibling tickets) switches;
-they then go away with the ADR-0015 batches.
+Migrated verbatim from scripts/ along its seven internal import edges (issue
+#140 / ADR-0015 §4): ``final_acceptance`` (assemble/predict/evaluate/verify)
+with ``measurement_run`` (NIfTI execution side), ``closing`` /
+``freeze_audit`` (frozen-artifact gates over ``instrument_training``), the
+html report pair, and the calibration pair + synthetic-domain evaluator.
+Every domain quantity (envelopes, pass lines, quotas) is frozen by
+ADR-0002/0003/0004 -- this package changes addresses only.
 """

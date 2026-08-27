@@ -1,11 +1,21 @@
-#!/usr/bin/env python3
-"""Validate the SSA derived batch-16 plan before 8-card nnU-Net training.
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Validate the SSA derived batch-16 plan before 8-card nnU-Net training (migrated from scripts/nnunet_ddp_preflight, ticket #140).
 
 Run once for filesystem/configuration checks, then under ``torchrun`` with
-``--distributed`` to prove the eight-rank NCCL/RCCL path.
+``--distributed`` to prove the eight-rank NCCL/RCCL path. The script ``__main__``
+glue and argparse block do not travel: a later CLI slice takes over.
 """
 
-import argparse
 import hashlib
 import json
 import os
@@ -176,32 +186,3 @@ class DdpPreflight:
             return {"rank": dist.get_rank(), "world_size": dist.get_world_size(), "all_reduce_sum": value.item()}
         finally:
             dist.destroy_process_group()
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--raw-root", type=Path, default=PERSISTENT_ROOT / "brats2023_nnunet")
-    parser.add_argument("--preprocessed-root", type=Path, default=PERSISTENT_ROOT / "nnUNet_preprocessed")
-    parser.add_argument("--results-root", type=Path, default=PERSISTENT_ROOT / "nnUNet_results_ssa_bs16_ddp8")
-    parser.add_argument(
-        "--audit",
-        type=Path,
-        default=PERSISTENT_ROOT / "l2-instrument-audit" / "ssa-bs16-v1" / "plans-variant-audit.json",
-    )
-    parser.add_argument("--distributed", action="store_true")
-    args = parser.parse_args()
-
-    result = DdpPreflight(
-        raw_root=args.raw_root,
-        preprocessed_root=args.preprocessed_root,
-        results_root=args.results_root,
-        audit_path=args.audit,
-        distributed=args.distributed,
-    ).verify()
-    if not args.distributed or result["distributed"]["rank"] == 0:
-        print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

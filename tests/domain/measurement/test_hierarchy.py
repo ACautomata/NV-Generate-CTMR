@@ -28,7 +28,7 @@ from ctmr.domain.measurement.regions import REGIONS
 
 
 # The frozen reference: InstrumentFailureChecker.hierarchy_violation pre-#109,
-# verbatim (scripts/nnunet_l2_final_acceptance_nifti.py).
+# verbatim (the distribution measurement_run module).
 class FrozenHierarchyReference:
     @staticmethod
     def violates(pred):

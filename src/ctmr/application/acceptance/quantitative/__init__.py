@@ -9,15 +9,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pytest wrapper for the L2 HTML renderer selftest (issue #104 / ADR-0013 §2).
+"""Quantitative acceptance evidence generators (formerly L1 FID/paired-error chain; issue #140).
 
-Calls the resident ``RendererSelfTest`` directly (stdlib + Pillow renderer; the
-implementation stays in the production script and the ``selftest`` subcommand
-remains the sugon-side integration-gate entry).
+Opens with ``fid_2d5`` (the 2.5D Frechet-Inception-Distance calculator); the
+paired-error chain lands with the quantitative acceptance ticket (#141).
 """
-
-from scripts.brats_p1_l2_html import RendererSelfTest
-
-
-def test_p1_l2_html_renderer_selftest():
-    assert RendererSelfTest().run() == 0

@@ -19,16 +19,17 @@ docs/calibration/l2-final-acceptance-protocol.md; every number comes from
 ADR-0002 (calibration envelopes) and ADR-0003 (frozen-artifact audit).
 
 Pipeline (judgement chain in this file is stdlib-only; NIfTI execution side
-lives in nnunet_l2_final_acceptance_nifti.py and runs on sugon):
+lives in ``measurement_run``, the NIfTI execution side of this package):
 
   assemble    samples manifest + holdout phase manifest -> assembly plan JSON
               (unique obs_id per observation: <case>__real / <case>__gen[__a<anchor>];
               asserts every case is holdout-side and flags provisional when the
               case count falls short of the frozen quota)
   predict     plan -> per-challenge frozen-instrument inference scripts
-              (python -m ctmr.instrument.predict, the ADR-0009 canonical entry
+              (ctmr measure predict, the ADR-0009 canonical entry
               sharing nnUNetv2_predict defaults: mirror TTA on by omission --
-              the flag is store_true, passing "False" enables it -- overlap 0.5,
+              the flag is store_true, appending a value is an argparse fatal
+              exit 2, not a TTA switch -- overlap 0.5,
               fold 0, nnUNetTrainer250Epochs; SSA uses the derived bs16 plans,
               ADR-0001)
   measure     (nifti side) plan + predictions -> per-observation measurement CSV
@@ -48,25 +49,23 @@ Wide METS/PED envelopes are carried verbatim and can never be narrowed: any
 loaded envelope value drifting from the ADR-0002 literals rejects the run.
 
 Usage:
-    python -m scripts.nnunet_l2_final_acceptance assemble --phase P2 \
+    python -m ctmr.application.acceptance.distribution.final_acceptance assemble --phase P2 \
         --samples samples.json --real-root /root/private_data/raw \
         --holdout-manifest phase_manifest.json --run-id p2-... --output-dir DIR
-    python -m scripts.nnunet_l2_final_acceptance predict --plan DIR/plan.json \
+    python -m ctmr.application.acceptance.distribution.final_acceptance predict --plan DIR/plan.json \
         --output-dir DIR
-    python -m scripts.nnunet_l2_final_acceptance evaluate --phase P2 \
+    python -m ctmr.application.acceptance.distribution.final_acceptance evaluate --phase P2 \
         --table measurements.csv --freeze-audit freeze-audit.json \
         --run-id p2-... --run runs/p2-.../run.json --output-dir DIR
-    python -m scripts.nnunet_l2_final_acceptance verify-frozen --freeze-audit freeze-audit.json
-    python -m scripts.nnunet_l2_final_acceptance selftest --workdir TMP
+    python -m ctmr.application.acceptance.distribution.final_acceptance verify-frozen --freeze-audit freeze-audit.json
 
-``--run`` (issue #58) binds the report to the frozen candidate of the #53 run
+``--run`` (issue #58) #140 migration binds the report to the frozen candidate of the #53 run
 contract; the bound report then passes ``brats_phase_run_contract attach
 --kind l2_report`` and feeds ``conclude`` (non-compensatory L1∧L2∧L3).
 """
 
 import argparse
 import csv
-import hashlib
 import json
 import math
 import random
@@ -74,14 +73,9 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))  # repo src layout: python -m scripts.<this>
-sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon deployment: src/ synced next to the script
-
-from brats_phase_run_contract import ArtifactFingerprinter, ManifestSides  # noqa: E402
-
-from ctmr.application.acceptance.contract.binding import FrozenRunBinding, FrozenRunBindingError  # noqa: E402
-from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
+from ctmr.application.acceptance.contract.artifacts import ArtifactFingerprinter, ManifestSides
+from ctmr.application.acceptance.contract.binding import FrozenRunBinding, FrozenRunBindingError
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
 
 PLAN_SCHEMA = "l2-final-acceptance-plan/1"
 REPORT_SCHEMA = "l2-final-acceptance-report/1"
@@ -218,7 +212,7 @@ class FreezeGuard:
     """Accepts only the ADR-0003 §6 frozen audit verdict (or a re-run of it).
 
     Default mode pins the published verdict SHA-256; ``--any-verdict`` accepts
-    a fresh re-run of scripts/nnunet_l2_freeze_audit.py whose all_passed is
+    a fresh re-run of ``freeze_audit`` whose all_passed is
     true (its own hash is recorded into the report instead). Anything narrower
     (spot-checking a subset of hashes) is deliberately not offered.
     """
@@ -467,11 +461,12 @@ class PredictScriptWriter:
     """Per-challenge inference scripts under the frozen ADR-0003 §4 config.
 
     The command line is exactly ``FrozenInstrumentCommand.build`` (ADR-0009
-    decision 1): the canonical entry ``python -m ctmr.instrument.predict``, the
+    decision 1): the canonical entry ``ctmr measure predict``, the
     per-challenge frozen spec (SSA uses the ADR-0001 derived batch-16 plans and
     configuration), fold 0, ``nnUNetTrainer250Epochs``. Mirror TTA stays ON by
-    omission (--disable_tta is store_true; passing any value, including False,
-    would turn it off). The generated shell also puts this module's src tree on
+    omission (--disable_tta is store_true; appending a value, ``False``
+    included, is an argparse fatal exit 2, not a TTA switch). The generated
+    shell also puts this module's src tree on
     PYTHONPATH, so the canonical entry is importable from the fresh shell the
     script runs in (repo and flat-deployment spellings, the ADR-0009 decision 6
     shim).
@@ -483,9 +478,11 @@ class PredictScriptWriter:
 
     @staticmethod
     def _pythonpath_export():
-        script_dir = Path(__file__).resolve().parent
-        src_roots = ":".join(str(root) for root in dict.fromkeys((script_dir.parent / "src", script_dir / "src")))
-        return f'export PYTHONPATH="{src_roots}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+        """The generated scripts run the canonical verb in a fresh shell; pin this
+        checkout's ``src`` tree onto PYTHONPATH (repo and flat-deployment spellings
+        collapse to the installed package root since #140)."""
+        package_src = Path(__file__).resolve().parents[4]
+        return f'export PYTHONPATH="{package_src}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
 
     def write(self):
         self._output_dir.mkdir(parents=True, exist_ok=True)
@@ -655,9 +652,9 @@ class QuantityRegistry:
                     vol_field,
                     vol_margin[region],
                     relative=True,
-                    exclusion=lambda real_row, gen_row, vol_field=vol_field: None
-                    if (MeasurementTable.number(real_row, vol_field) or 0) > 0
-                    else "real_volume_zero",
+                    exclusion=lambda real_row, gen_row, vol_field=vol_field: (
+                        None if (MeasurementTable.number(real_row, vol_field) or 0) > 0 else "real_volume_zero"
+                    ),
                 )
             )
             for axis in ("x", "y", "z"):
@@ -668,9 +665,11 @@ class QuantityRegistry:
                         centroid_field,
                         cent_margin[region],
                         relative=False,
-                        exclusion=lambda real_row, gen_row, vol_field=vol_field: None
-                        if (MeasurementTable.number(real_row, vol_field) or 0) > 0 and (MeasurementTable.number(gen_row, vol_field) or 0) > 0
-                        else "empty_mask_side",
+                        exclusion=lambda real_row, gen_row, vol_field=vol_field: (
+                            None
+                            if (MeasurementTable.number(real_row, vol_field) or 0) > 0 and (MeasurementTable.number(gen_row, vol_field) or 0) > 0
+                            else "empty_mask_side"
+                        ),
                     )
                 )
         self._quantities.append(
@@ -983,443 +982,6 @@ class AcceptanceReport:
         return "\n".join(lines)
 
 
-# ── selftest (stdlib-only, synthetic non-subject ids) ───────────────────
-
-
-class SelfTest:
-    """Fixture-driven end-to-end check of the judgement chain and guards."""
-
-    def __init__(self, workdir, bootstrap_b=400):
-        self._workdir = Path(workdir)
-        self._bootstrap_b = bootstrap_b
-        self.failures = []
-
-    def expect_reject(self, action, label):
-        try:
-            action()
-        except AcceptanceError:
-            return
-        self.failures.append(f"expected rejection but succeeded: {label}")
-
-    def fixture_measurement_row(self, obs_id, challenge, case, side, anchor=None, **overrides):
-        row = {field: "" for field in MEASUREMENT_FIELDS}
-        row.update(
-            obs_id=obs_id,
-            challenge=challenge,
-            case=case,
-            side=side,
-            anchor=anchor or "",
-            input_fail="0",
-            run_fail="0",
-            hier_viol="0",
-            pred_empty="0",
-            vol_wt_ml="50.0",
-            vol_tc_ml="30.0",
-            vol_et_ml="10.0",
-            brain_ml="1200.0",
-            wt_brain="0.0417",
-            et_wt="0.20",
-            cx_wt_mm="120.0",
-            cy_wt_mm="120.0",
-            cz_wt_mm="77.0",
-            cx_tc_mm="121.0",
-            cy_tc_mm="121.0",
-            cz_tc_mm="78.0",
-            cx_et_mm="122.0",
-            cy_et_mm="122.0",
-            cz_et_mm="79.0",
-            cond_dice_wt="0.95",
-            cond_dice_tc="0.93",
-            cond_dice_et="0.90",
-        )
-        row.update(overrides)
-        return row
-
-    def run(self):
-        self._workdir.mkdir(parents=True, exist_ok=True)
-        self._test_envelope_verification()
-        self._test_freeze_guard()
-        self._test_run_binding()
-        self._test_assembly_plans()
-        self._test_verdict_chain()
-        return self.failures
-
-    def _test_envelope_verification(self):
-        envelopes = FrozenEnvelopes()
-        summary_dir = self._workdir / "calibration_summaries"
-        summary_dir.mkdir(parents=True, exist_ok=True)
-        for challenge in CHALLENGES:
-            summary = {
-                "per_region": {
-                    region: {
-                        "D_r_low": envelopes.d_r_low(challenge, region),
-                        "E_r_vol": envelopes.e_r_vol(challenge, region),
-                        "E_r_centroid": envelopes.e_r_centroid(challenge, region),
-                    }
-                    for region in REGIONS
-                }
-            }
-            (summary_dir / f"summary_{challenge}.json").write_text(json.dumps(summary))
-        envelopes.verify_against_summary(summary_dir)  # exact literals pass
-
-        drifted = json.loads((summary_dir / "summary_GLI.json").read_text())
-        drifted["per_region"]["WT"]["E_r_vol"] = 0.2000  # narrowed / drifted
-        (summary_dir / "summary_GLI.json").write_text(json.dumps(drifted))
-        self.expect_reject(lambda: envelopes.verify_against_summary(summary_dir), "drifted envelope value")
-        (summary_dir / "summary_GLI.json").unlink()
-        self.expect_reject(lambda: envelopes.verify_against_summary(summary_dir), "missing calibration summary")
-        # METS floors stay zero: the wide envelope is carried, never narrowed.
-        for region in REGIONS:
-            if envelopes.d_r_low("METS", region) != 0.0:
-                self.failures.append(f"METS {region} D_r,low is not the frozen 0")
-
-    def _test_freeze_guard(self):
-        guard = FreezeGuard(ArtifactFingerprinter())
-        verdict = {"all_passed": True, "challenges": []}
-        good = self._workdir / "freeze_audit_good.json"
-        payload = json.dumps(verdict, indent=2, sort_keys=True) + "\n"
-        good.write_text(payload)
-        pinned = hashlib.sha256(payload.encode()).hexdigest()
-        guard.verify(good, expect_sha256=pinned)  # pinned hash passes
-        bad_hash = self._workdir / "freeze_audit_bad_hash.json"
-        bad_hash.write_text(payload)
-        self.expect_reject(lambda: guard.verify(bad_hash, expect_sha256="0" * 64), "verdict hash mismatch")
-        failed = self._workdir / "freeze_audit_failed.json"
-        failed_payload = json.dumps({"all_passed": False}) + "\n"
-        failed.write_text(failed_payload)
-        self.expect_reject(lambda: guard.verify(failed, expect_sha256=hashlib.sha256(failed_payload.encode()).hexdigest()), "all_passed false")
-        # ADR-0003 anchor itself is loadable.
-        record = guard.verify(good, expect_sha256=None)
-        if record["pinned"] is not False:
-            self.failures.append("freeze guard pinned flag misreported")
-
-    def _test_run_binding(self):
-        """evaluate --run binds the report to the frozen candidate (issue #58 attachment gate)."""
-        run_record = {
-            "schema": "brats-phase-run/1",
-            "run_id": "p1-bindtest",
-            "phase": "P1",
-            "status": "frozen",
-            "manifest": {"path": "/private/m.json", "sha256": "a" * 64},
-            "selection": {"checkpoint": {"path": "/private/ckpt.pt", "sha256": "b" * 64, "epoch": 7}},
-            "samples": {"path": "/private/samples.json", "sha256": "c" * 64},
-        }
-        path = self._workdir / "run_bindtest.json"
-        path.write_text(json.dumps(run_record))
-        binding = self._bind(path).as_dict()
-        expected = {
-            "run_id": "p1-bindtest",
-            "phase": "P1",
-            "manifest_sha256": "a" * 64,
-            "candidate_checkpoint_sha256": "b" * 64,
-            "samples_sha256": "c" * 64,
-        }
-        if binding != expected:
-            self.failures.append(f"run binding extraction mismatch: {binding}")
-        open_record = dict(run_record, status="open")
-        open_path = self._workdir / "run_open.json"
-        open_path.write_text(json.dumps(open_record))
-        self.expect_reject(lambda: self._bind(open_path), "binding an open run record")
-        missing = self._workdir / "run_absent.json"
-        self.expect_reject(lambda: self._bind(missing), "binding a missing run record")
-
-    @staticmethod
-    def _bind(path):
-        """Shared five-key binding with the frozen gate; translated to the L2 error surface."""
-        try:
-            return FrozenRunBinding.from_path(path)
-        except FrozenRunBindingError as error:
-            raise AcceptanceError(str(error)) from error
-
-    def _fixture_entry(self, challenge, case, phase):
-        real_paths = {m: f"/private/real/{challenge}/{case}/{case}-{m}.nii.gz" for m in MODALITIES}
-        if phase == "P1":
-            return {
-                "case_id": case,
-                "challenge": challenge,
-                "phase": "P1",
-                "samples": {m: {"path": f"/private/gen/{case}-{m}.nii.gz", "seed": 100 + i} for i, m in enumerate(MODALITIES)},
-                "real_paths": real_paths,
-            }
-        if phase == "P2":
-            return {
-                "case_id": case,
-                "challenge": challenge,
-                "phase": "P2",
-                "condition_mask": f"/private/cond/{case}-cond.nii.gz",
-                "samples": {m: {"path": f"/private/gen/{case}-{m}.nii.gz"} for m in MODALITIES},
-                "real_paths": real_paths,
-            }
-        return {
-            "case_id": case,
-            "challenge": challenge,
-            "phase": "P3",
-            "anchors": {
-                m: {
-                    "real": f"/private/real/{challenge}/{case}/{case}-{m}.nii.gz",
-                    "generated": {t: {"path": f"/private/gen/{case}-{t}-from-{m}.nii.gz"} for t in MODALITIES if t != m},
-                }
-                for m in MODALITIES
-            },
-        }
-
-    def _holdout_manifest(self):
-        manifest = {"split_id": "selftest", "challenges": {}}
-        for challenge in CHALLENGES:
-            manifest["challenges"][challenge] = {
-                "cases": {
-                    "train": [f"FIX{challenge}-0000-{i:03d}" for i in range(2)],
-                    "dev": [f"FIX{challenge}-0100-{i:03d}" for i in range(2)],
-                    "holdout": [f"FIX{challenge}-0200-{i:03d}" for i in range(HOLDOUT_QUOTAS[challenge])],
-                }
-            }
-        path = self._workdir / "holdout_manifest.json"
-        path.write_text(json.dumps(manifest, indent=2) + "\n")
-        return path, manifest
-
-    def _planner(self, phase, manifest_path):
-        strategies = {"P1": P1PseudoQuadPlan(), "P2": P2SharedMaskPlan(), "P3": P3FourAnchorPlan()}
-        return AssemblyPlanner(
-            phase,
-            strategies[phase],
-            RealReferenceResolver(self._workdir / "real"),
-            ManifestSides(json.loads(Path(manifest_path).read_text())),
-            ArtifactFingerprinter(),
-        )
-
-    def _write_samples(self, entries, name):
-        path = self._workdir / name
-        path.write_text(json.dumps(entries, indent=2) + "\n")
-        return path
-
-    def _test_assembly_plans(self):
-        manifest_path, manifest = self._holdout_manifest()
-        holdout_case = {ch: manifest["challenges"][ch]["cases"]["holdout"][0] for ch in CHALLENGES}
-
-        # P1: distinct seeds pass; identical seeds reject; wrong side rejects; quota shortfall -> provisional.
-        planner = self._planner("P1", manifest_path)
-        entry = self._fixture_entry("GLI", holdout_case["GLI"], "P1")
-        samples = self._write_samples([entry], "p1_samples.json")
-        plan = planner.build(samples, manifest_path, "p1-run", self._workdir / "real")
-        obs_ids = [obs["obs_id"] for obs in plan["observations"]]
-        if sorted(obs_ids) != sorted([f"{holdout_case['GLI']}__real", f"{holdout_case['GLI']}__gen"]):
-            self.failures.append(f"P1 plan observations wrong: {obs_ids}")
-        if not plan["challenges"]["GLI"]["provisional"]:
-            self.failures.append("P1 single-case plan must be provisional (quota 250)")
-        same_seed = {m: {"path": entry["samples"][m]["path"], "seed": 7} for m in MODALITIES}
-        bad_entry = {**entry, "samples": same_seed}
-        bad_samples = self._write_samples([bad_entry], "p1_bad_seed.json")
-        self.expect_reject(lambda: planner.build(bad_samples, manifest_path, "p1-bad", self._workdir / "real"), "P1 with identical seeds")
-        dev_entry = self._fixture_entry("GLI", manifest["challenges"]["GLI"]["cases"]["dev"][0], "P1")
-        dev_samples = self._write_samples([dev_entry], "p1_dev_case.json")
-        self.expect_reject(lambda: planner.build(dev_samples, manifest_path, "p1-dev", self._workdir / "real"), "dev-side case in final acceptance")
-        wrong_phase = self._write_samples([self._fixture_entry("GLI", holdout_case["GLI"], "P2")], "p1_wrong_phase.json")
-        self.expect_reject(lambda: planner.build(wrong_phase, manifest_path, "p1-wrong", self._workdir / "real"), "phase-mismatched sample entry")
-
-        # P2: missing condition mask rejects.
-        planner2 = self._planner("P2", manifest_path)
-        entry2 = self._fixture_entry("MEN", holdout_case["MEN"], "P2")
-        samples2 = self._write_samples([entry2], "p2_samples.json")
-        planner2.build(samples2, manifest_path, "p2-run", self._workdir / "real")
-        maskless = {k: v for k, v in entry2.items() if k != "condition_mask"}
-        self.expect_reject(
-            lambda: planner2.build(self._write_samples([maskless], "p2_maskless.json"), manifest_path, "p2-bad", self._workdir / "real"),
-            "P2 without condition mask",
-        )
-
-        # P3: four anchor rounds per case, unique obs ids; a dropped round rejects.
-        planner3 = self._planner("P3", manifest_path)
-        entry3 = self._fixture_entry("SSA", holdout_case["SSA"], "P3")
-        samples3 = self._write_samples([entry3], "p3_samples.json")
-        plan3 = planner3.build(samples3, manifest_path, "p3-run", self._workdir / "real")
-        gen_obs = [obs for obs in plan3["observations"] if obs["side"] == "gen"]
-        if len(gen_obs) != 4 or len({obs["anchor"] for obs in gen_obs}) != 4:
-            self.failures.append(f"P3 plan must carry four distinct anchor rounds, got {len(gen_obs)}")
-        if len({obs["obs_id"] for obs in plan3["observations"]}) != 5:
-            self.failures.append("P3 plan obs_ids are not unique")
-        broken = {m: entry3["anchors"][m] for m in ("t1n", "t1c", "t2w")}
-        broken_entry = {**entry3, "anchors": broken}
-        self.expect_reject(
-            lambda: planner3.build(self._write_samples([broken_entry], "p3_broken.json"), manifest_path, "p3-bad", self._workdir / "real"),
-            "P3 with a missing anchor round",
-        )
-
-    def _challenge_rows(self, challenge, cases, phase, mutate=None):
-        rows = []
-        for index, case in enumerate(cases):
-            real = self.fixture_measurement_row(f"{case}__real", challenge, case, "real")
-            gen_anchors = [None] if phase != "P3" else list(MODALITIES)
-            for anchor in gen_anchors:
-                suffix = "" if anchor is None else f"__a{anchor}"
-                gen = self.fixture_measurement_row(f"{case}__gen{suffix}", challenge, case, "gen", anchor)
-                if mutate is not None:
-                    mutate(index, case, anchor, real, gen)
-                rows.append(gen)
-            rows.append(real)
-        return rows
-
-    def _test_verdict_chain(self):
-        envelopes = FrozenEnvelopes()
-        bootstrap = ClusterBootstrap(self._bootstrap_b)
-        seed = GLOBAL_SEED + CHALLENGE_SEED_OFFSET["GLI"]
-
-        # Equivalent volumes -> TOST pass (differences well inside GLI margins).
-        rows = self._challenge_rows(
-            "GLI",
-            [f"FIXGLI-0200-{i:03d}" for i in range(6)],
-            "P1",
-            mutate=lambda i, case, a, real, gen: gen.update(vol_wt_ml="51.0", vol_tc_ml="30.5", vol_et_ml="10.2"),
-        )
-        verdict = ChallengeJudge(envelopes, bootstrap, "P1").judge(rows, "GLI", seed)
-        if verdict["verdict"] != "pass":
-            self.failures.append(
-                f"GLI P1 equivalent volumes should pass, got {verdict['verdict']}: {[q for q in verdict['tost'] if not q['passed']]}"
-            )
-
-        # One hierarchy violation anywhere -> undecided and it blocks.
-        def break_one(index, case, anchor, real, gen):
-            if index == 2 and anchor is None:
-                gen.update(hier_viol="1")
-
-        rows = self._challenge_rows("GLI", [f"FIXGLI-0200-{i:03d}" for i in range(6)], "P1", mutate=break_one)
-        verdict = ChallengeJudge(envelopes, bootstrap, "P1").judge(rows, "GLI", seed)
-        if verdict["verdict"] != "undecided" or verdict["failure_audit"]["n_failed"] != 1:
-            self.failures.append(f"single hier violation must give undecided, got {verdict['verdict']}")
-        # A real-side input failure is equally undecided (reference chain broken).
-        rows = self._challenge_rows(
-            "GLI",
-            [f"FIXGLI-0200-{i:03d}" for i in range(6)],
-            "P1",
-            mutate=lambda i, case, a, real, gen: real.update(input_fail="1") if i == 0 else None,
-        )
-        verdict = ChallengeJudge(envelopes, bootstrap, "P1").judge(rows, "GLI", seed)
-        if verdict["verdict"] != "undecided":
-            self.failures.append("real-side input failure must give undecided")
-
-        # Volume bias far outside the GLI WT margin -> fail.
-        rows = self._challenge_rows(
-            "GLI", [f"FIXGLI-0200-{i:03d}" for i in range(6)], "P1", mutate=lambda i, case, a, real, gen: gen.update(vol_wt_ml="80.0")
-        )
-        verdict = ChallengeJudge(envelopes, bootstrap, "P1").judge(rows, "GLI", seed)
-        if verdict["verdict"] != "fail" or all(q["passed"] for q in verdict["tost"]):
-            self.failures.append("60% WT volume bias must fail the GLI TOST")
-
-        # METS keeps its wide envelope: the same 60% bias is inside +-1.651 -> pass.
-        rows = self._challenge_rows(
-            "METS", [f"FIXMETS-0200-{i:03d}" for i in range(6)], "P1", mutate=lambda i, case, a, real, gen: gen.update(vol_wt_ml="80.0")
-        )
-        verdict = ChallengeJudge(envelopes, bootstrap, "P1").judge(rows, "METS", GLOBAL_SEED + CHALLENGE_SEED_OFFSET["METS"])
-        if not any(q["quantity"] == "vol_wt_rel" and q["passed"] for q in verdict["tost"]):
-            self.failures.append("METS wide volume envelope must carry the same bias as pass (resolving-power limit)")
-
-        # Centroid axis shift beyond E_r,centroid -> fail.
-        rows = self._challenge_rows(
-            "GLI",
-            [f"FIXGLI-0200-{i:03d}" for i in range(6)],
-            "P1",
-            mutate=lambda i, case, a, real, gen: gen.update(cx_wt_mm="130.0", cx_tc_mm="131.0", cx_et_mm="132.0"),
-        )
-        verdict = ChallengeJudge(envelopes, bootstrap, "P1").judge(rows, "GLI", seed)
-        if verdict["verdict"] != "fail":
-            self.failures.append("10mm centroid shift must fail GLI (E_r,centroid 5.38/4.79/4.41)")
-
-        # Real-side WT volume zero -> exclusion is counted, never silent; ET/WT margin = ET+WT.
-        rows = self._challenge_rows(
-            "GLI",
-            [f"FIXGLI-0200-{i:03d}" for i in range(6)],
-            "P1",
-            mutate=lambda i, case, a, real, gen: real.update(vol_et_ml="0.0", et_wt="") if i < 3 else None,
-        )
-        verdict = ChallengeJudge(envelopes, bootstrap, "P1").judge(rows, "GLI", seed)
-        et_vol = next(q for q in verdict["tost"] if q["quantity"] == "vol_et_rel")
-        et_wt = next(q for q in verdict["tost"] if q["quantity"] == "et_wt_rel")
-        if et_vol["n_excluded"] != 3 or et_wt["n_excluded"] != 3:
-            self.failures.append(f"real-side zero ET must exclude and count 3, got {et_vol['n_excluded']}/{et_wt['n_excluded']}")
-        # Late-binding guard: a zero real-side ET must NOT leak into the WT/TC
-        # quantities (their exclusions stay zero -- exclusion is per-quantity).
-        wt_vol = next(q for q in verdict["tost"] if q["quantity"] == "vol_wt_rel")
-        tc_vol = next(q for q in verdict["tost"] if q["quantity"] == "vol_tc_rel")
-        cent_wt = next(q for q in verdict["tost"] if q["quantity"] == "centroid_wt_x")
-        if wt_vol["n_excluded"] or tc_vol["n_excluded"] or cent_wt["n_excluded"]:
-            self.failures.append(
-                f"zero real ET leaked into WT/TC exclusions: wt={wt_vol['n_excluded']} tc={tc_vol['n_excluded']} cent={cent_wt['n_excluded']}"
-            )
-        if et_wt["margin"] != envelopes.e_r_vol("GLI", "ET") + envelopes.e_r_vol("GLI", "WT"):
-            self.failures.append("et_wt margin must be E_r,vol[ET] + E_r,vol[WT]")
-
-        # Generated-side empty prediction stays in the volume distribution at -1.0 (no exclusion).
-        rows = self._challenge_rows(
-            "METS",
-            [f"FIXMETS-0200-{i:03d}" for i in range(6)],
-            "P1",
-            mutate=lambda i, case, a, real, gen: gen.update(vol_wt_ml="0.0") if i < 3 else None,
-        )
-        verdict = ChallengeJudge(envelopes, bootstrap, "P1").judge(rows, "METS", GLOBAL_SEED + CHALLENGE_SEED_OFFSET["METS"])
-        vol_wt = next(q for q in verdict["tost"] if q["quantity"] == "vol_wt_rel")
-        if vol_wt["n_excluded"] != 0:
-            self.failures.append("generated-side empty prediction must not be excluded from the volume distribution")
-
-        # P3 cluster bootstrap: four anchor rounds per case enter as one cluster.
-        rows = self._challenge_rows(
-            "SSA", [f"FIXSSA-0200-{i:03d}" for i in range(5)], "P3", mutate=lambda i, case, a, real, gen: gen.update(vol_wt_ml="52.0")
-        )
-        verdict = ChallengeJudge(envelopes, bootstrap, "P3").judge(rows, "SSA", GLOBAL_SEED + CHALLENGE_SEED_OFFSET["SSA"])
-        if verdict["verdict"] != "pass":
-            self.failures.append(f"SSA P3 small shift should stay inside the wide SSA envelope, got {verdict['verdict']}")
-        vol_wt = next(q for q in verdict["tost"] if q["quantity"] == "vol_wt_rel")
-        if vol_wt["n_cases"] != 5:
-            self.failures.append(f"P3 cluster bootstrap must resample 5 cases, got {vol_wt['n_cases']}")
-
-        # P2 round-trip: high dice passes; collapsed dice fails; METS floor 0 is vacuous.
-        judge2 = ChallengeJudge(envelopes, bootstrap, "P2")
-        rows = self._challenge_rows("GLI", [f"FIXGLI-0200-{i:03d}" for i in range(6)], "P2")
-        verdict = judge2.judge(rows, "GLI", seed)
-        rt = {item["region"]: item for item in verdict["round_trip"]}
-        if verdict["verdict"] != "pass" or not all(item["passed"] for item in rt.values()):
-            self.failures.append("P2 round-trip with dice ~0.9+ must pass the D_r,low floors")
-        rows = self._challenge_rows(
-            "GLI", [f"FIXGLI-0200-{i:03d}" for i in range(6)], "P2", mutate=lambda i, case, a, real, gen: gen.update(cond_dice_et="0.10")
-        )
-        verdict = judge2.judge(rows, "GLI", seed)
-        if verdict["verdict"] != "fail":
-            self.failures.append("P2 collapsed ET round-trip dice must fail (floor 0.4093)")
-        rows = self._challenge_rows(
-            "METS", [f"FIXMETS-0200-{i:03d}" for i in range(6)], "P2", mutate=lambda i, case, a, real, gen: gen.update(cond_dice_wt="0.0")
-        )
-        verdict = judge2.judge(rows, "METS", GLOBAL_SEED + CHALLENGE_SEED_OFFSET["METS"])
-        rt = {item["region"]: item for item in verdict["round_trip"]}
-        if not all(item["vacuous_pass"] and item["passed"] for item in rt.values()):
-            self.failures.append("METS floor-0 round-trip must be an explicit vacuous pass")
-
-        # Report is aggregate: no case ids anywhere in JSON or markdown --
-        # including a verdict that CARRIES failures (undecided path).
-        def fail_one(index, case, anchor, real, gen):
-            if index == 1:
-                gen.update(run_fail="1")
-
-        failing_rows = self._challenge_rows("METS", [f"FIXMETS-0200-{i:03d}" for i in range(4)], "P2", mutate=fail_one)
-        failing_verdict = ChallengeJudge(envelopes, bootstrap, "P2").judge(failing_rows, "METS", GLOBAL_SEED + CHALLENGE_SEED_OFFSET["METS"])
-        if failing_verdict["verdict"] != "undecided":
-            self.failures.append("run_fail case must judge undecided for the report leak check")
-        report = AcceptanceReport(
-            "P2",
-            "p2-selftest",
-            self._bootstrap_b,
-            {"path": "/private/freeze-audit.json", "sha256": "0" * 64, "pinned": True},
-            provisional_challenges=["METS"],
-        ).build([verdict, failing_verdict], [])
-        blob = json.dumps(report) + "\n".join(
-            AcceptanceReport("P2", "p2-selftest", self._bootstrap_b, report["frozen_audit"], ["METS"])._markdown(report)
-        )
-        for challenge in CHALLENGES:
-            if f"FIX{challenge}" in blob:
-                self.failures.append(f"report leaks case ids for {challenge}")
-        if report["overall_verdict"] not in ("pass", "fail", "undecided"):
-            self.failures.append("overall verdict malformed")
-        if "METS" not in report["provisional_challenges"]:
-            self.failures.append("provisional challenge list lost in report")
-
-
 # ── CLI ─────────────────────────────────────────────────────────────────
 
 
@@ -1443,7 +1005,7 @@ def main(argv=None):
 
     p = sub.add_parser("evaluate", help="measurement CSV -> per-challenge verdicts and the report")
     p.add_argument("--phase", required=True, choices=PHASES)
-    p.add_argument("--table", required=True, help="measurement CSV (see nnunet_l2_final_acceptance_nifti measure)")
+    p.add_argument("--table", required=True, help="measurement CSV (see measurement_run measure)")
     p.add_argument("--freeze-audit", required=True, help="ADR-0003 §6 freeze-audit verdict JSON")
     p.add_argument("--any-verdict", action="store_true", help="accept a fresh re-run verdict (all_passed checked, pinned hash not)")
     p.add_argument(
@@ -1451,7 +1013,9 @@ def main(argv=None):
     )
     p.add_argument("--run-id", default=None)
     p.add_argument(
-        "--run", default=None, help="run.json of the frozen candidate (#53 contract); binds the report for attach --kind l2_report (issue #58)"
+        "--run",
+        default=None,
+        help="run.json of the frozen candidate (#53 contract); binds the report for attach --kind l2_report (issue #58) #140 migration",
     )
     p.add_argument("--bootstrap-b", type=int, default=BOOTSTRAP_B, help=f"bootstrap resamples (default {BOOTSTRAP_B}; selftest may lower it)")
     p.add_argument("--output-dir", required=True)
@@ -1461,11 +1025,6 @@ def main(argv=None):
     p.add_argument("--freeze-audit", required=True)
     p.add_argument("--any-verdict", action="store_true")
     p.set_defaults(handler="verify-frozen")
-
-    p = sub.add_parser("selftest", help="fixture-driven end-to-end check (synthetic ids, stdlib only)")
-    p.add_argument("--workdir", required=True)
-    p.add_argument("--bootstrap-b", type=int, default=400)
-    p.set_defaults(handler="selftest")
 
     args = parser.parse_args(argv)
     fingerprinter = ArtifactFingerprinter()
@@ -1543,13 +1102,7 @@ def main(argv=None):
             if report["overall_verdict"] != "pass":
                 return 1
             return 0
-        failures = SelfTest(args.workdir, bootstrap_b=args.bootstrap_b).run()
-        for failure in failures:
-            print("FAIL " + failure, file=sys.stderr)
-        if failures:
-            return 1
-        print("SELFTEST PASS")
-        return 0
+        raise ValueError(f"unhandled verb: {args.handler}")  # pragma: no cover - argparse constrains choices
     except AcceptanceError as error:
         print(f"ACCEPTANCE VIOLATION: {error}", file=sys.stderr)
         return 2

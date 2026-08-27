@@ -562,7 +562,7 @@ class DistributionReportValidator:
     forces ``pass``; the overall verdict is undecided > fail > pass.
     """
 
-    REPORT_SCHEMA = "l2-final-acceptance-report/1"  # mirrors scripts/nnunet_l2_final_acceptance.REPORT_SCHEMA
+    REPORT_SCHEMA = "l2-final-acceptance-report/1"  # mirrors the distribution final_acceptance REPORT_SCHEMA
 
     def __init__(self, schema=None):
         self._schema = schema or self.REPORT_SCHEMA

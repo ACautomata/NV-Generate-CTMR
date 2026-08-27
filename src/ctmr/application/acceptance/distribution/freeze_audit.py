@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Issue #37 冻结工件审计：对 L2 仪器全部受控工件做终态全量 hash 核验。
 
 对五个正式 run（GLI/MEN/METS/PED @ 52667a3、SSA @ be683ee）重算
@@ -12,14 +11,11 @@ hash 与完成审计一致即证明文件未变，其结论随 hash 成立。
 
 import argparse
 import json
-import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from nnunet_l2_instrument import (  # noqa: E402
+from ctmr.application.acceptance.distribution.instrument_training import (
     PERSISTENT_ROOT,
     TRAINER_CLASS,
     ArtifactHasher,

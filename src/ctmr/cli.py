@@ -9,31 +9,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unified ``ctmr`` console entry point (issue #130 / ADR-0015 §3).
+"""Unified ``ctmr`` console entry point (issues #130/#137/#140 / ADR-0015 §3).
 
-The five command families are pinned as the terminal CLI face; real verbs land
-family by family with the migration batches (M4 application layer). The
-``generate`` family is live for ``cross-modal`` (ticket 08): the verb grammar
-is deliberately thin -- each verb forwards its remaining argv verbatim to the
-family module entry (``train`` / ``dev-eval`` / ``generate baseline|candidate``),
-whose full argparse surface (and the argv↔namespace equivalence gate) lives in
-the module itself. ``ctmr generate cross-modal train`` derives torchrun itself
-(no WORLD_SIZE -> spawn the trainer child); everything else dispatches in-process.
+Five command families pinned as the terminal CLI face; verbs land family by
+family with the migration batches. Two doors are live:
 
-Because the entry argv is an arbitrary argparse surface of its own (``-e``,
-``-g``, ...), the CLI cannot pre-parse it -- ``run`` peels the fixed verb prefix
-off the raw argv and hands the remainder verbatim to the entry (argparse
-REMAINDER would reject the unknown options). The parser tree exists for
-``--help`` and for invalid invocations.
+``ctmr measure predict`` (issue #140) is the canonical frozen-instrument
+execution entry, replacing ``python -m ctmr.instrument.predict``.
 
-Stdlib-only like the rest of src/ctmr: importable on any machine without
-torch / monai (ADR-0013 §4) -- the heavy modules are imported lazily inside
-the handlers.
+``ctmr generate cross-modal`` (ticket 08) routes train/dev-eval/generate to the
+cross-modal family module; the verb grammar is deliberately thin -- each verb
+forwards its remaining argv verbatim to the family module entry
+(``train`` / ``dev-eval`` / ``generate baseline|candidate``), whose full
+argparse surface (and the argv↔namespace equivalence gate) lives in the module
+itself. Because that entry argv is an arbitrary argparse surface of its own,
+the CLI cannot pre-parse it -- ``run`` peels the fixed verb prefix off the raw
+argv and hands the remainder verbatim to the entry (argparse REMAINDER would
+reject the unknown options). The parser tree exists for ``--help`` and for
+invalid invocations.
+
+Both doors reach their handlers lazily (importlib on dispatch / in-function
+imports): torch / monai / nnunetv2 are only loaded when a verb actually runs,
+so this module stays importable on any machine without them -- pinned by the
+CLI purity gate in tests/test_cli_entry.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import sys
 
@@ -70,10 +74,35 @@ class CtmrCli:
             if family == "generate":
                 self._add_generate(subparsers, aliases, blurb)
                 continue
-            fam_parser = subparsers.add_parser(family, aliases=list(aliases), help=f"{blurb} -- not migrated yet")
-            fam_parser.add_argument("rest", nargs="*", metavar="verb", help="future verbs/flags of this family")
+            if family == "measure":  # its predict verb landed with #140; unknown verbs are argparse errors
+                fam_parser = subparsers.add_parser(family, aliases=list(aliases), help=blurb)
+            else:
+                fam_parser = subparsers.add_parser(family, aliases=list(aliases), help=f"{blurb} -- not migrated yet")
+            fam_parser.add_argument("rest", nargs="*", metavar="verb", help="verbs/flags of this family")
             fam_parser.set_defaults(run=self._not_migrated)
+            verb_parsers = {
+                "measure": self._build_measure_verbs,
+            }.get(family)
+            if verb_parsers is not None:
+                verb_parsers(fam_parser)
         return parser
+
+    @staticmethod
+    def _build_measure_verbs(fam_parser):
+        """Instrument-side verbs (ADR-0009/#140). Only the spelling lives in
+        argparse (help/usage/errors); flags after ``measure predict`` must reach
+        nnUNetv2's own parser verbatim, so routing happens in :meth:`run` --
+        argparse cannot hold a trailing star-slug of unknown dash-tokens."""
+        measure_subparsers = fam_parser.add_subparsers(dest="verb", metavar="<verb>")
+        measure_subparsers.add_parser(
+            "predict",
+            help="run the native nnUNetv2 predictor inside the weights_only allowlist scope (flags pass through to nnUNetv2)",
+            description=(
+                "Canonical frozen-instrument execution entry (ADR-0009 decision 3). "
+                "Everything after 'measure predict' goes straight to nnUNetv2's predictor parser, e.g. "
+                "-i IN -o OUT -d DATASET -c CONFIG -p PLANS -tr TRAINER -f FOLD."
+            ),
+        )
 
     def _add_generate(self, subparsers, aliases, blurb):
         fam_parser = subparsers.add_parser("generate", aliases=list(aliases), help=blurb)
@@ -87,13 +116,17 @@ class CtmrCli:
     def _not_migrated(self, args):
         """Answer any concrete call on a not-yet-migrated family with a pointer, not a traceback."""
         family = self._alias_to_family.get(args.family, args.family)
-        rest = getattr(args, "rest", ())
-        verbs = " " + " ".join(rest) if rest else ""
+        verbs = " " + " ".join(args.rest) if getattr(args, "rest", None) else ""
         print(
-            f"ctmr {family}{verbs}: not migrated yet -- " "this command family lands with the ADR-0015 migration batches (issue #129).",
+            f"ctmr {family}{verbs}: not migrated yet -- this command family lands with the ADR-0015 migration batches (issue #129).",
             file=sys.stderr,
         )
         return 2
+
+    def _invoke_verb(self, handler_module, handler_name, pass_through=None):
+        """Dispatch a routed verb; imports its handler module lazily so the CLI face stays stdlib-only."""
+        module = importlib.import_module(handler_module)
+        return getattr(module, handler_name)().run(list(pass_through or []))
 
     @staticmethod
     def _peel_generate(argv):
@@ -130,6 +163,8 @@ class CtmrCli:
     def run(self, argv=None):
         """Parse argv and dispatch; argparse errors/help exit inside parse_args."""
         argv = list(sys.argv[1:] if argv is None else argv)
+        if argv[:2] == ["measure", "predict"]:  # the frozen instrument door: everything after is nnUNetv2's business
+            return self._invoke_verb("ctmr.infrastructure.nnunet_runner", "MeasurePredictVerb", argv[2:])
         peeled = self._peel_generate(argv)
         if peeled is not None:
             handler, *payload = peeled

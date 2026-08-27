@@ -42,47 +42,38 @@ def _label_volume(shape_zyx, spacing_xyz):
     return image
 
 
-# ── l2_synth_domain_sugon.prep_one_case (axis-order bug fix -> continuum) ──────────────
+# ── synthetic_domain input preparation (successor of the retired sugon copy,
+#    whose ``prep_one_case`` gate this block carries over verbatim in spirit) ──────────────
 
 
-def test_l2_synth_domain_sugon_prep_matches_the_instrument_adapter(tmp_path):
-    from scripts.l2_synth_domain_sugon import NNUNET_CHANNELS, prep_one_case
-
-    modalities = {}
-    for mod_name in NNUNET_CHANNELS.values():
-        source = tmp_path / f"{mod_name}.nii.gz"
-        sitk.WriteImage(_smooth_volume((174, 241, 241), (0.94, 0.94, 1.36)), str(source))  # v1-DM footprint
-        modalities[mod_name] = str(source)
-
-    entry = {"challenge": "GLI", "case_id": "SYNTH-0001", "modalities": modalities}
-    prep_one_case(entry, tmp_path, tmp_path / "inputs")
-
-    for suffix, mod_name in NNUNET_CHANNELS.items():
-        produced = sitk.ReadImage(str(tmp_path / "inputs" / "GLI" / f"SYNTH-0001_{suffix}.nii.gz"))
-        expected = InstrumentGridAdapter.continuum().align(sitk.ReadImage(modalities[mod_name]))
-        assert np.array_equal(sitk.GetArrayFromImage(produced), sitk.GetArrayFromImage(expected))
-
-
-def test_l2_synth_domain_sugon_prep_is_axis_order_correct_and_centred(tmp_path):
+def test_input_preparation_is_axis_order_correct_and_centred(tmp_path):
     """The pre-adoption bug applied the xyz target to the zyx array (pad z towards
     240, crop x down to 155); adoption must land every axis on its intended size."""
-    from scripts.l2_synth_domain_sugon import prep_one_case
+    from ctmr.application.acceptance.distribution.synthetic_domain import InputPreparator
 
-    source = tmp_path / "t1n.nii.gz"
-    sitk.WriteImage(_smooth_volume((174, 241, 241), (0.94, 0.94, 1.36)), str(source))
-    entry = {"challenge": "MEN", "case_id": "SYNTH-0002", "modalities": {mod: str(source) for mod in ("t1n", "t1c", "t2w", "t2f")}}
-    prep_one_case(entry, tmp_path, tmp_path / "inputs")
+    modality_paths = {}
+    for mod_name in ("t1n", "t1c", "t2w", "t2f"):
+        source = tmp_path / f"{mod_name}.nii.gz"
+        sitk.WriteImage(_smooth_volume((174, 241, 241), (0.94, 0.94, 1.36)), str(source))  # v1-DM footprint
+        modality_paths[mod_name] = source
 
-    array = sitk.GetArrayFromImage(sitk.ReadImage(str(tmp_path / "inputs" / "MEN" / "SYNTH-0002_0000.nii.gz")))
+    case_dir = InputPreparator().prepare_case(
+        case_id="SYNTH-0002",
+        challenge="MEN",
+        modality_paths=modality_paths,
+        output_dir=tmp_path,
+    )
+
+    array = sitk.GetArrayFromImage(sitk.ReadImage(str(case_dir / "SYNTH-0002_0000.nii.gz")))
     assert array.shape == (155, 240, 240)  # every axis on its intended size
     assert array.any()  # the blob survives the centred z-crop (the bug's z-pad-to-240 buried it)
 
 
-# ── nnunet_l2_synthetic_domain_eval.InputPreparator (same-family axis fix) ─────────────
+# ── synthetic_domain.InputPreparator (same-family axis fix) ─────────────
 
 
 def test_synthetic_domain_eval_prepare_case_matches_the_instrument_adapter(tmp_path):
-    from scripts.nnunet_l2_synthetic_domain_eval import InputPreparator
+    from ctmr.application.acceptance.distribution.synthetic_domain import InputPreparator
 
     modality_paths = {}
     for mod_name in ("t1n", "t1c", "t2w", "t2f"):
@@ -105,7 +96,7 @@ def test_synthetic_domain_eval_prepare_case_matches_the_instrument_adapter(tmp_p
 
 
 def test_synthetic_domain_eval_prepare_case_handles_all_four_channels(tmp_path):
-    from scripts.nnunet_l2_synthetic_domain_eval import NNUNET_CHANNELS, InputPreparator
+    from ctmr.application.acceptance.distribution.synthetic_domain import NNUNET_CHANNELS, InputPreparator
 
     modality_paths = {}
     for mod_name in NNUNET_CHANNELS.values():
@@ -126,7 +117,7 @@ def test_synthetic_domain_eval_prepare_case_handles_all_four_channels(tmp_path):
         assert sitk.ReadImage(str(path)).GetSize() == (240, 240, 155)
 
 
-# ── brats_p1_l2_html_nifti.SliceScene (engine client, per-case TargetGrid) ─────────────
+# ── html_report_nifti.SliceScene (engine client, per-case TargetGrid) ─────────────
 
 
 def _reference_grid():
@@ -151,7 +142,7 @@ def test_slice_scene_real_modality_matches_the_direct_reference_behaviour():
     whose rounded extent lands exactly on GRID): the engine client output is
     bit-identical to the pre-adoption SetReferenceImage resample. This is the
     convergence-equivalence proof for the report side."""
-    from scripts.brats_p1_l2_html_nifti import SliceScene
+    from ctmr.application.acceptance.distribution.html_report_nifti import SliceScene
 
     reference = _reference_grid()
     grid = TargetGrid(size=tuple(reference.GetSize()), spacing=tuple(reference.GetSpacing()))
@@ -163,7 +154,7 @@ def test_slice_scene_real_modality_matches_the_direct_reference_behaviour():
 
 
 def test_slice_scene_label_prediction_matches_the_direct_reference_behaviour():
-    from scripts.brats_p1_l2_html_nifti import SliceScene
+    from ctmr.application.acceptance.distribution.html_report_nifti import SliceScene
 
     reference = _reference_grid()
     grid = TargetGrid(size=tuple(reference.GetSize()), spacing=tuple(reference.GetSpacing()))
@@ -189,7 +180,7 @@ def test_slice_scene_cross_frame_prediction_uses_the_engine_frame_semantics():
     registered in the #106 PR (report display only; no measurement path, no frozen
     numbers).
     """
-    from scripts.brats_p1_l2_html_nifti import GRID, SliceScene
+    from ctmr.application.acceptance.distribution.html_report_nifti import GRID, SliceScene
 
     prediction = _label_volume((155, 240, 240), (1.0, 1.0, 1.0))
     prediction.SetOrigin((0.0, 0.0, 0.0))  # the DM writes an identity affine: different frame
@@ -206,7 +197,7 @@ def test_slice_scene_builds_the_per_case_target_grid_from_the_raw_t1n(tmp_path):
     reconstructed from the raw t1n spacing/size (#58's reconstruction, now as the
     ADR-0008 grid value object; the raw origin/direction no longer drives the
     sampling -- engine frame semantics sample the input's own grid)."""
-    from scripts.brats_p1_l2_html_nifti import GRID, SliceScene
+    from ctmr.application.acceptance.distribution.html_report_nifti import GRID, SliceScene
 
     raw = _smooth_volume((155, 240, 240), (1.0, 1.0, 1.0))
     raw.SetOrigin((-23.0, 12.0, 5.0))
@@ -229,7 +220,7 @@ def test_slice_scene_build_case_falls_back_to_the_middle_slice(tmp_path, view, c
     the display grid: VIEW_AXIS indexes the zyx array while GRID is xyz, so the
     grid axis is mirrored (the pre-fix version indexed GRID by the array axis and
     picked a wrong/wrapping slice on the empty-prediction path)."""
-    from scripts.brats_p1_l2_html_nifti import MODALITIES, SliceScene
+    from ctmr.application.acceptance.distribution.html_report_nifti import MODALITIES, SliceScene
 
     gen_dir = tmp_path / "gen" / "GLI" / "SYNTH-0005"
     gen_dir.mkdir(parents=True)

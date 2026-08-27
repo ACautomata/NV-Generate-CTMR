@@ -14,7 +14,7 @@
 #
 set -euo pipefail
 
-# canonical 入口 python -m ctmr.instrument.predict 与 python -m scripts.* 需要
+# canonical 入口 python -m ctmr measure predict 与新家模块需要
 # src 树与仓库根在 sys.path（ADR-0009 #108 收编；两种部署形态的同族 shim）。
 # #131 迁入 deploy/jobs/ 后 src 经 ../../ 解析——一层 ../ 会落到 deploy/src。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,7 +38,7 @@ echo "============================================"
 # ── Step 0: 创建病例列表 ──
 echo ""
 echo "[Step 0] 创建评估病例列表..."
-python -m scripts.nnunet_l2_synthetic_domain_eval create-case-lists \
+python -m ctmr.application.acceptance.distribution.synthetic_domain create-case-lists \
     --nnunet-root "${NNUNET_ROOT}" \
     --output-dir "${EVAL_ROOT}/case_lists"
 
@@ -53,7 +53,7 @@ evaluate_mode() {
     # Step 1: 生成 v1 DM 直出样本
     echo ""
     echo "[Step 1] 生成 v1 DM 直出样本 (${MODE_NAME})..."
-    python -m scripts.nnunet_l2_synthetic_domain_eval generate \
+    python -m ctmr.application.acceptance.distribution.synthetic_domain generate \
         --mode "${MODE_NAME}" \
         --case-list "${EVAL_ROOT}/case_lists/${MODE_NAME}_cases.json" \
         --v1-model-dir "${V1_MODEL_DIR}" \
@@ -62,7 +62,7 @@ evaluate_mode() {
     # Step 2: 组装 nnU-Net 输入
     echo ""
     echo "[Step 2] 组装 nnU-Net 输入..."
-    python -m scripts.nnunet_l2_synthetic_domain_eval prep-inputs \
+    python -m ctmr.application.acceptance.distribution.synthetic_domain prep-inputs \
         --sample-dir "${EVAL_ROOT}/${MODE_NAME}_samples" \
         --nnunet-root "${NNUNET_ROOT}" \
         --output-dir "${EVAL_ROOT}/${MODE_NAME}_nnunet_inputs"
@@ -91,7 +91,7 @@ evaluate_mode() {
           [METS]=3d_fullres [PED]=3d_fullres )
 
         echo "  [PREDICT] ${CHALLENGE} (${DATASET_NAME[$CHALLENGE]})..."
-        python3 -m ctmr.instrument.predict \
+        python3 -m ctmr measure predict \
             -i "${INPUT_DIR}" \
             -o "${PRED_DIR}" \
             -d "${DATASET_NAME[$CHALLENGE]}" \
@@ -107,7 +107,7 @@ evaluate_mode() {
     # Step 4: 计算指标 + 生成报告
     echo ""
     echo "[Step 4] 计算指标并生成报告..."
-    python -m scripts.nnunet_l2_synthetic_domain_eval evaluate \
+    python -m ctmr.application.acceptance.distribution.synthetic_domain evaluate \
         --sample-dir "${EVAL_ROOT}/${MODE_NAME}_samples" \
         --input-dir "${EVAL_ROOT}/${MODE_NAME}_nnunet_inputs" \
         --pred-dir "${EVAL_ROOT}/${MODE_NAME}_predictions" \

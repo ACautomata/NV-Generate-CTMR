@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Prepare BraTS2023 nnU-Net datasets for the self-trained L2 measurement instrument (issue #34).
+"""Prepare BraTS2023 nnU-Net datasets for the self-trained L2 measurement instrument (issue #34; migrated from scripts/brats2023_nnunet_prep, ticket #140).
 
 Implements the pinned decisions of issues #13/#32:
 - case-level 70/10/20 split, ``split_id=brats2023-rflow-v1``, SHA-256 stable sort;
@@ -20,19 +20,12 @@ Implements the pinned decisions of issues #13/#32:
 Quotas below cover all five sub-challenges. METS is based on the available 238-case release
 (five-institution public training set); its separately hosted NYU portion (164 cases) is
 unavailable and is not a completeness gap (issue #42 re-pin, largest-remainder rounding).
-
-Usage (each subcommand is standalone; manifest first):
-    python scripts/brats2023_nnunet_prep.py manifest --brats-root DIR --out splits.json
-    python scripts/brats2023_nnunet_prep.py convert --manifest splits.json --nnunet-root DIR
-    python scripts/brats2023_nnunet_prep.py splits --manifest splits.json --nnunet-root DIR
-    python scripts/brats2023_nnunet_prep.py verify --manifest splits.json --nnunet-root DIR
+The script ``__main__`` glue and argparse block do not travel: a later CLI slice takes over.
 """
 
-import argparse
 import hashlib
 import json
 import shutil
-import sys
 from pathlib import Path
 
 import nibabel as nib
@@ -288,67 +281,3 @@ class NNUNetDatasetVerifier:
                 f"fold0_val={len(splits[0]['val'])} spot-checked={min(self.sample_n, len(ordered))}"
             )
         return self.failures
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p = sub.add_parser("manifest", help="scan sources and write the 70/10/20 split manifest")
-    p.add_argument("--brats-root", required=True, help="root holding per-challenge TrainingData dirs (or {CH}/ sample layout)")
-    p.add_argument("--out", required=True, help="output manifest json path (controlled data directory)")
-    p.add_argument("--challenges", default=",".join(QUOTAS), help="comma-separated sub-challenge codes (default: pinned quotas)")
-    p.set_defaults(command_name="manifest")
-
-    p = sub.add_parser("convert", help="build nnU-Net Dataset dirs (symlinks to raw NIfTI) + dataset.json")
-    p.add_argument("--manifest", required=True)
-    p.add_argument("--nnunet-root", required=True, help="output root for Dataset{ID}_* dirs")
-    p.add_argument("--copy", action="store_true", help="copy instead of symlink")
-    p.set_defaults(command_name="convert")
-
-    p = sub.add_parser("splits", help="write fold_0 80/20 splits_final.json + calibration val case lists")
-    p.add_argument("--manifest", required=True)
-    p.add_argument("--nnunet-root", required=True)
-    p.set_defaults(command_name="splits")
-
-    p = sub.add_parser("verify", help="reconcile counts, channel order, label semantics, affines")
-    p.add_argument("--manifest", required=True)
-    p.add_argument("--nnunet-root", required=True)
-    p.add_argument("--copy", action="store_true", help="verify copied (not linked) datasets")
-    p.add_argument("--sample-n", type=int, default=3, help="cases per challenge to spot-check (default 3)")
-    p.set_defaults(command_name="verify")
-
-    args = parser.parse_args(argv)
-    if args.command_name == "manifest":
-        challenges = [c for c in args.challenges.split(",") if c]
-        planner = BraTSSplitPlanner(SPLIT_ID, {k: v for k, v in QUOTAS.items() if k in challenges}, EXCLUSIONS)
-        manifest, failures = planner.build_manifest(args.brats_root)
-        for f in failures:
-            print("FAIL " + f, file=sys.stderr)
-        if failures:
-            return 1
-        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out).write_text(json.dumps(manifest, indent=2) + "\n")
-        for ch, info in manifest["challenges"].items():
-            c = info["cases"]
-            print(f"{ch}: train={len(c['train'])} dev={len(c['dev'])} holdout={len(c['holdout'])} (excluded: {len(info['excluded'])})")
-        print(f"wrote {args.out}")
-        return 0
-
-    manifest = json.loads(Path(args.manifest).read_text())
-    if args.command_name == "convert":
-        NNUNetDatasetBuilder(args.nnunet_root, manifest, copy=args.copy).build_datasets()
-    elif args.command_name == "splits":
-        NNUNetDatasetBuilder(args.nnunet_root, manifest).write_fold0_splits()
-    else:
-        failures = NNUNetDatasetVerifier(args.nnunet_root, manifest, copy=args.copy, sample_n=args.sample_n).verify()
-        for f in failures:
-            print("FAIL " + f, file=sys.stderr)
-        if failures:
-            return 1
-        print(f"VERIFY PASS ({len(manifest['challenges'])} challenges)")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

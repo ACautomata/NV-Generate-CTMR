@@ -1,11 +1,22 @@
-#!/usr/bin/env python3
-"""将经审计的 250-epoch trainer 安装进 external nnunetv2。
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-源模块仍独立受版本控制。本安装器只把 byte-identical 文件复制到
-nnunetv2 的 trainer-discovery package，并在受控 audit root 下写入简短 hash 记录。
+"""Install the audited 250-epoch trainer into external nnunetv2 (migrated from scripts/install_nnunet_trainer_250, ticket #140).
+
+The trainer module itself stays version-controlled in this package. This installer
+only copies the byte-identical file into nnunetv2's trainer-discovery package and
+writes a short hash record under the controlled audit root. The script ``__main__``
+glue and argparse block do not travel: a later CLI slice takes over.
 """
 
-import argparse
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -57,17 +68,3 @@ class TrainerInstaller:
 
     def _sha256(self, content: bytes) -> str:
         return hashlib.sha256(content).hexdigest()
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, required=True)
-    parser.add_argument("--audit", type=Path, required=True)
-    args = parser.parse_args()
-    result = TrainerInstaller(args.source, args.audit).install()
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

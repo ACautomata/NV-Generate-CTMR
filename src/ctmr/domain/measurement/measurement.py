@@ -46,7 +46,7 @@ from ctmr.domain.measurement.regions import REGION_NAMES
 
 # The canonical wide-row schema: mirror of the frozen judge MEASUREMENT_FIELDS
 # (ADR-0010 decision 5, #2). tests/measure pins this list equal to
-# scripts/nnunet_l2_final_acceptance.MEASUREMENT_FIELDS -- drift is the
+# the distribution final_acceptance MEASUREMENT_FIELDS -- drift is the
 # 收编 #110 trigger, not a silent edit.
 FINAL_ACCEPTANCE_FIELDS = [
     "obs_id",

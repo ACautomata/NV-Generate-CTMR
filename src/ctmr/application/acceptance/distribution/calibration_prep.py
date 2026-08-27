@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""组装 Issue #36 L2 仪器校准集并冻结预注册协议（校准前置步骤）。
+"""组装 Issue #36 L2 仪器校准集并冻结预注册协议（校准前置步骤；自顶层历史脚本平移，ticket #140）。
 
 校准集 = 10% 开发集 ∪ 仪器 fold_0 内部验证集（均为仪器未训练病例，逐病例标记
 来源）。本程序把四模态推理输入与 GT 以符号链接组入受控目录 ``inputs/``、
@@ -61,7 +60,7 @@ def load_case_lists(nnunet_root: Path) -> dict[str, dict[str, list[str]]]:
         fold_val = sorted((nnunet_root / SPLITS_DIRNAME / f"fold0_val_cases_{code}.txt").read_text().split())
         expected = EXPECTED_COUNTS[code]
         if len(dev) != expected["dev"] or len(fold_val) != expected["fold_val"]:
-            sys.exit(f"{code}: 计数不符协议钉板 dev={len(dev)}/{expected['dev']} " f"fold_val={len(fold_val)}/{expected['fold_val']}")
+            sys.exit(f"{code}: 计数不符协议钉板 dev={len(dev)}/{expected['dev']} fold_val={len(fold_val)}/{expected['fold_val']}")
         overlap = set(dev) & set(fold_val)
         if overlap:
             sys.exit(f"{code}: dev 与 fold_val 存在交集 {sorted(overlap)}")
