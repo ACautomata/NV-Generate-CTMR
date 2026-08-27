@@ -54,6 +54,8 @@ def test_measure_predict_runs_the_frozen_ssa_instrument_end_to_end(synthetic_cas
     if missing is not None:
         pytest.skip(f"DCU host prerequisite not met: {missing}")
     spec = INSTRUMENT_SPECS["SSA"]
-    argv = FrozenInstrumentCommand(spec).build(synthetic_case["input_dir"], synthetic_case["output_dir"] / "SSA")[5:]  # strip `<python> -m ctmr measure predict`
+    argv = FrozenInstrumentCommand(spec).build(synthetic_case["input_dir"], synthetic_case["output_dir"] / "SSA")[
+        5:
+    ]  # strip `<python> -m ctmr measure predict`
     code = MeasurePredictVerb().run(argv)
     assert code == 0
