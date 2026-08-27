@@ -83,9 +83,10 @@ def test_cli_route_dispatches_lazily_to_the_runner(monkeypatch):
 
 
 def test_cli_measure_predict_is_python_dash_m_runnable():
+    """The frozen argv runs the package itself (``-m ctmr``), not just the cli module."""
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
     result = subprocess.run(
-        [sys.executable, "-m", "ctmr.cli", "measure", "predict", "--help"],
+        [sys.executable, "-m", "ctmr", "measure", "predict", "--help"],
         env=env,
         capture_output=True,
         text=True,

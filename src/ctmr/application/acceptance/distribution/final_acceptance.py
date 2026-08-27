@@ -26,9 +26,10 @@ lives in ``measurement_run``, the NIfTI execution side of this package):
               asserts every case is holdout-side and flags provisional when the
               case count falls short of the frozen quota)
   predict     plan -> per-challenge frozen-instrument inference scripts
-              (python -m ctmr.instrument.predict, the ADR-0009 canonical entry
+              (ctmr measure predict, the ADR-0009 canonical entry
               sharing nnUNetv2_predict defaults: mirror TTA on by omission --
-              the flag is store_true, passing "False" enables it -- overlap 0.5,
+              the flag is store_true, appending a value is an argparse fatal
+              exit 2, not a TTA switch -- overlap 0.5,
               fold 0, nnUNetTrainer250Epochs; SSA uses the derived bs16 plans,
               ADR-0001)
   measure     (nifti side) plan + predictions -> per-observation measurement CSV
@@ -460,11 +461,12 @@ class PredictScriptWriter:
     """Per-challenge inference scripts under the frozen ADR-0003 §4 config.
 
     The command line is exactly ``FrozenInstrumentCommand.build`` (ADR-0009
-    decision 1): the canonical entry ``python -m ctmr.instrument.predict``, the
+    decision 1): the canonical entry ``ctmr measure predict``, the
     per-challenge frozen spec (SSA uses the ADR-0001 derived batch-16 plans and
     configuration), fold 0, ``nnUNetTrainer250Epochs``. Mirror TTA stays ON by
-    omission (--disable_tta is store_true; passing any value, including False,
-    would turn it off). The generated shell also puts this module's src tree on
+    omission (--disable_tta is store_true; appending a value, ``False``
+    included, is an argparse fatal exit 2, not a TTA switch). The generated
+    shell also puts this module's src tree on
     PYTHONPATH, so the canonical entry is importable from the fresh shell the
     script runs in (repo and flat-deployment spellings, the ADR-0009 decision 6
     shim).

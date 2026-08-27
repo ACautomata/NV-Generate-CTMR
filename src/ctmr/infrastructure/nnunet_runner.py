@@ -18,8 +18,9 @@ the one execution door shared by Python callers (``subprocess.run`` of
 inference behaviour identical to ``nnUNetv2_predict``. The verb passes its
 command-line tail straight through to the native nnUNetv2 ``predict_entry_point``
 (frozen defaults of that entry: mirror TTA on by omission -- the flag is
-``store_true``, passing any value including ``False`` enables it -- overlap 0.5,
-fold 0 unless ``-f``, ``nnUNetTrainer250Epochs`` via ``-tr``) and runs it inside
+``store_true``, so appending a value is not a TTA switch but an argparse
+fatal exit 2, the #78 correction -- overlap 0.5, fold 0 unless ``-f``,
+``nnUNetTrainer250Epochs`` via ``-tr``) and runs it inside
 the ``nnunet_safe_globals()`` scope. The scope keeps ``torch.load`` robust under
 the torch>=2.6 default ``weights_only=True`` (checkpoints carry numpy scalars /
 dtypes); importing this module never mutates global torch state.
@@ -77,7 +78,7 @@ class nnunet_safe_globals:
 class MeasurePredictVerb:
     """The ``ctmr measure predict`` verb body: argv pass-through plus scoped activation."""
 
-    def run(self, pass_through):
+    def run(self, pass_through: list[str]) -> int:
         """Run the native predictor on the caller-supplied nnUNetv2 flags.
 
         The verb's own argparse collects everything after ``measure predict``;

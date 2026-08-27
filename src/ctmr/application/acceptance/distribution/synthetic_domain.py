@@ -413,7 +413,7 @@ class InputPreparator:
 class InstrumentRunner:
     """运行冻结的 nnU-Net 仪器推理。
 
-    命令构造已收编 ADR-0009:canonical 入口 ``python -m ctmr.instrument.predict``
+    命令构造已收编 ADR-0009:canonical 入口 ``ctmr measure predict``
     (镜像 TTA on 靠省略;SSA 派生 plans/config 在 spec 内),argv 与
     ``FrozenInstrumentCommand.build`` 输出逐一相等。
     """

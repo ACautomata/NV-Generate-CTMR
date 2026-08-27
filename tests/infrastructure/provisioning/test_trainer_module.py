@@ -9,12 +9,9 @@ upstream base class and keeps the ``num_epochs = 250`` line the
 import inspect
 
 import pytest
+from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
 
-pytest.importorskip("nnunetv2")  # heavy tier; installed in the CI full-dependency set
-
-from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer  # noqa: E402
-
-from ctmr.infrastructure.provisioning.trainer_250_epochs import nnUNetTrainer250Epochs  # noqa: E402
+from ctmr.infrastructure.provisioning.trainer_250_epochs import nnUNetTrainer250Epochs
 
 pytestmark = pytest.mark.torch
 

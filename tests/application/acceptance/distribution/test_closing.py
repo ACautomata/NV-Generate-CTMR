@@ -16,11 +16,11 @@ import types
 from pathlib import Path
 
 import pytest
-import torch  # noqa: E402
+import torch
 
-from ctmr.application.acceptance.distribution import closing as closing_module  # noqa: E402
-from ctmr.application.acceptance.distribution.instrument_training import TRAINER_CLASS, TRAINER_MODULE  # noqa: E402
-from ctmr.infrastructure.provisioning.trainer_250_epochs import nnUNetTrainer250Epochs as TrainerClass  # noqa: E402
+from ctmr.application.acceptance.distribution import closing as closing_module
+from ctmr.application.acceptance.distribution.instrument_training import TRAINER_CLASS, TRAINER_MODULE
+from ctmr.infrastructure.provisioning.trainer_250_epochs import nnUNetTrainer250Epochs as TrainerClass
 
 pytestmark = pytest.mark.torch
 

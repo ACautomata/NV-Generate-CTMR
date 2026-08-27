@@ -16,10 +16,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-# weights_only 白名单已收编到 ADR-0009 的单一 scoped 定义(ctmr.instrument.
-# safeglobals.nnunet_safe_globals)：load 处 `with` 包裹，import 本模块不再
-# 改全局 torch 状态。sugon 部署须连同 src/ 树一起同步(同族 shim,见
-# 本包 measurement_run)。
+# weights_only 白名单已收编到 ADR-0009 的单一 scoped 定义
+# (ctmr.infrastructure.nnunet_runner.nnunet_safe_globals)：load 处 `with`
+# 包裹，import 本模块不再改全局 torch 状态。sugon 部署须连同 src/ 树一起
+# 同步(同族 shim,见本包 measurement_run)。
 import torch  # noqa: E402
 from monai.apps.nnunet import nnUNetV2Runner  # noqa: E402
 

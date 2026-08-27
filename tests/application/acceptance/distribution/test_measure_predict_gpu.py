@@ -10,13 +10,12 @@ those environments skipping.
 import os
 
 import pytest
+import SimpleITK as sitk
 
-pytest.importorskip("nnunetv2")  # heavy tier; installed in the CI full-dependency set
-
-from ctmr.application.acceptance.distribution.instrument_training import PERSISTENT_ROOT  # noqa: E402
-from ctmr.domain.grid import INSTRUMENT_GRID  # noqa: E402
-from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
-from ctmr.infrastructure.nnunet_runner import MeasurePredictVerb  # noqa: E402
+from ctmr.application.acceptance.distribution.instrument_training import PERSISTENT_ROOT
+from ctmr.domain.grid import INSTRUMENT_GRID
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
+from ctmr.infrastructure.nnunet_runner import MeasurePredictVerb
 
 pytestmark = [pytest.mark.torch, pytest.mark.gpu]
 
@@ -34,10 +33,6 @@ def _server_prerequisites() -> str | None:
 @pytest.fixture()
 def synthetic_case(tmp_path):
     """One synthetic observation-shaped case on the instrument grid contract."""
-    try:
-        import SimpleITK as sitk
-    except ImportError:  # pragma: no cover - the tier installs SimpleITK
-        pytest.skip("SimpleITK unavailable")
     shape = tuple(reversed(INSTRUMENT_GRID.size))  # array layout is zyx
     image = sitk.Image(shape[::-1], sitk.sitkUInt8)  # xyz size for sitk
     image.SetSpacing((1.0, 1.0, 1.0))
