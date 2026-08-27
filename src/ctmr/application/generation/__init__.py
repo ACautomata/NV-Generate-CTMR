@@ -9,17 +9,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pytest wrapper for the P3 ControlNet-candidate manifest selftest (issue #104 / ADR-0013 §2).
+"""Generation use-case families (ADR-0015 §2, issue #129).
 
-Calls the resident ``P3CandidatePlanSelfTest`` directly (the implementation
-stays in the production script; the ``selftest`` subcommand remains the
-sugon-side integration-gate entry and must not forward pytest).
+One subpackage per conditional generation family, named by the conditioning
+signal (``modality_label`` / ``mask`` / ``cross_modal``); the historical phase
+codenames stay in CONTEXT.md and ADR history only (ADR-0015 §7⑤). The family
+kernels inject into ``ctmr.application.shell``'s ``PhaseHarness``; the ``ctmr
+generate`` CLI verbs dispatch here.
 """
-
-from scripts.brats_p3_controlnet_manifest import P3CandidatePlanSelfTest
-
-
-def test_p3_controlnet_manifest_selftest(tmp_path):
-    failures = P3CandidatePlanSelfTest(tmp_path).run()
-
-    assert failures == []

@@ -26,7 +26,7 @@ pytest.importorskip("monai")
 
 from scripts.brats_p1_finetune import P1TrainKernel  # noqa: E402
 from scripts.brats_p2_finetune import P2TrainKernel  # noqa: E402
-from scripts.brats_p3_finetune import P3TrainKernel  # noqa: E402
+from ctmr.application.generation.cross_modal.train import TrainKernel  # noqa: E402
 
 # The pre-#111 checkpoint payload key sets, verbatim (do not edit).
 P1_PAYLOAD_KEYS = ["epoch", "loss", "num_train_timesteps", "scale_factor", "unet_state_dict"]
@@ -63,7 +63,7 @@ def test_p2_payload_key_set_is_kept():
 
 
 def test_p3_payload_key_set_is_kept():
-    kernel = P3TrainKernel(_kernel_args(), device=None, logger=None, local_rank=0)
+    kernel = TrainKernel(_kernel_args(), device=None, logger=None, local_rank=0)
     kernel._controlnet = _FakeModule()
     payload = kernel.checkpoint_payload(7, 0.75, 1.0)
     assert list(payload) == P3_PAYLOAD_KEYS

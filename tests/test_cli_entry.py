@@ -9,13 +9,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unified ``ctmr`` console-entry skeleton (issue #130 / ADR-0015 §3).
+"""Unified ``ctmr`` console-entry surface (issue #130 / ADR-0015 §3).
 
 Observed purely through the CLI seam: ``ctmr --help`` lists the five command
-families pinned by the ADR, and every concrete invocation of a family whose
-verbs have not landed yet answers a friendly "not migrated yet" message
-instead of an error traceback. The stdlib-only purity of ``ctmr.cli`` keeps
-the light sci-stack CI job able to exercise these paths (ADR-0013 §4).
+families pinned by the ADR; every concrete invocation of a family whose verbs
+have not landed yet answers a friendly "not migrated yet" message instead of an
+error traceback; the live ``generate cross-modal`` family hands its entry argv
+to the family module (ticket 08 -- the argv↔namespace gate lives there). The
+stdlib-only purity of ``ctmr.cli`` keeps the light sci-stack CI job able to
+exercise these paths (ADR-0013 §4).
 """
 
 import os
@@ -29,6 +31,7 @@ from ctmr import cli
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FAMILIES = ["generate", "measure", "accept", "data", "experiment"]
+NOT_MIGRATED_FAMILIES = ["measure", "accept", "data", "experiment"]
 
 _HEAVY_DEPS = [
     "torch",
@@ -58,18 +61,27 @@ def test_help_lists_all_five_command_families(capsys):
     assert "not migrated yet" in out
 
 
-def test_gen_alias_reaches_the_generate_family(capsys):
-    assert cli.main(["gen", "train"]) == 2
-    assert "ctmr generate" in capsys.readouterr().err
+def test_gen_alias_reaches_the_generate_family():
+    peeled = cli.CtmrCli._peel_generate(["gen", "cross-modal", "train", "--bad"])
+    assert peeled[0] is cli.CtmrCli._run_cross_modal_train
+    assert list(peeled[1]) == ["--bad"]
+    assert cli.CtmrCli._peel_generate(["gen", "cross-modal"]) is None
 
 
-def test_every_family_answers_not_migrated_for_any_concrete_call(capsys):
-    for family in FAMILIES:
+def test_every_not_migrated_family_answers_not_migrated_for_any_concrete_call(capsys):
+    for family in NOT_MIGRATED_FAMILIES:
         assert cli.main([family, "some-future-verb"]) == 2
         err = capsys.readouterr().err
         assert "not migrated yet" in err
         assert f"ctmr {family}" in err
         assert "some-future-verb" in err
+
+
+def test_not_migrated_generate_cases_still_answer_not_migrated(capsys):
+    assert cli.main(["generate", "modality-label", "train"]) == 2
+    assert "modality-label" in capsys.readouterr().err
+    assert cli.main(["gen", "mask", "watch"]) == 2
+    assert "mask" in capsys.readouterr().err
 
 
 def test_family_without_verb_also_answers_not_migrated(capsys):

@@ -9,9 +9,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""P3 dev light-acceptance sidecar: fixed image-conditioned samples + PSNR/SSIM trend (issue #61).
+"""Cross-modal dev light-acceptance sidecar: fixed image-conditioned samples + PSNR/SSIM trend (issue #61).
 
-Runs beside the P3 ControlNet finetune on a reserved GPU. For every ``epoch_<N>.pt`` the
+Runs beside the candidate finetune on a reserved GPU. For every ``epoch_<N>.pt`` the
 trainer persists (N a multiple of ``--eval-every``), it:
 
 1. generates the FIXED dev cohort — the dev-side cases × the 12 ordered src->tgt pairs,
@@ -19,11 +19,11 @@ trainer persists (N a multiple of ``--eval-every``), it:
    target modality label and **CFG off** (``cfg_guidance_scale=0``, issue #61 acceptance
    criterion 1-2), fixed per-(case, src, tgt) seed;
 2. scores every pair with 3D PSNR/SSIM against the case's REAL target volume (the paired
-   metric family the L1 acceptance uses): the real target is resampled onto the 256x256x128
-   generation grid (the same ``ReferenceGridWriter`` chain as the phase's reference_grid,
-   cached under ``reference_grid/``), both volumes run the pinned L1 [0,1] protocol
+   metric family the quantitative acceptance uses): the real target is resampled onto the 256x256x128
+   generation grid (the same ``ReferenceGridWriter`` chain as the baseline's reference_grid,
+   cached under ``reference_grid/``), both volumes run the pinned quantitative [0,1] protocol
    (per-volume 0-99.5 percentile, ``MRIntensityNormalizer``), then skimage PSNR and 3D SSIM
-   (``data_range=1.0``, ``win_size=7``) — identical parameters to ``P3PairMetricCalculator``;
+   (``data_range=1.0``, ``win_size=7``) — identical parameters to the quantitative pair metric calculator;
 3. applies the PRE-RECORDED early-stop rule and, when it fires, writes
    ``<ckpt_dir>/.early_stop``; ``select`` emits the final dev-side checkpoint selection
    (argmax mean SSIM) for the phase-run contract.
@@ -34,14 +34,17 @@ m(N) = mean over the four target modalities of the case-mean dev 3D SSIM at epoc
 evals produced no new best m (higher is better).
 
 The dev cohort / real bank / spacing / src-latent source are all filtered to the dev side:
-``p3_pairs.json`` mixes train (fold=1) and dev (fold=0); this script uses only fold=0.
+``p3_pairs.json`` mixes train (fold=1) and dev (fold=0); this sidecar uses only fold=0.
+
+Migrated from the retired cross-modal dev-eval script entry (ticket 08, ADR-0015
+§2); its ``selftest`` subcommand retired with it — its assertions live as pytest
+functions.
 
 Usage (sugon, one reserved GPU):
-    python -m scripts.brats_p3_dev_eval reference --dev-list ... --raw-root ... --eval-root DIR
-    python -m scripts.brats_p3_dev_eval watch --ckpt-dir ... --eval-root ... \
+    ctmr generate cross-modal dev-eval reference --dev-list ... --raw-root ... --eval-root DIR
+    ctmr generate cross-modal dev-eval watch --ckpt-dir ... --eval-root ... \
         --dev-list ... --raw-root ... --phase-root ... -e env.json -c config.json -t network_p3.json
-    python -m scripts.brats_p3_dev_eval select --eval-root DIR --ckpt-dir DIR
-    python -m scripts.brats_p3_dev_eval selftest --workdir TMP
+    ctmr generate cross-modal dev-eval select --eval-root DIR --ckpt-dir DIR
 """
 
 from __future__ import annotations
@@ -61,26 +64,24 @@ import numpy as np
 import torch
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
-from .brats_l1_quantitative import MRIntensityNormalizer
-from .brats_p1_dev_eval import (
-    COHORT_QUOTAS,
+from ctmr.application.generation.cross_modal.baseline import ReferenceGridWriter
+from ctmr.application.generation.cross_modal.plan import MODALITY_PAIRS, seed_of
+from ctmr.application.shell import (
     MODALITY_TOKENS,
     STOP_FILE,
     CheckpointWatcher,
     EarlyStopRule,
     TrendLedger,
 )
-from .brats_p3_controlnet_manifest import P3CandidateInferenceConfig
-from .brats_p3_stage0_generate import ReferenceGridWriter
-from .brats_phase_prep import MODALITIES as PAIR_MODALITIES
-from .diff_model_setting import load_config
-from .utils_infer import load_image_models, run_controlnet_conditioned_image_dm
+from ctmr.domain.intensity_protocol import MRIntensityNormalizer
+from ctmr.infrastructure.maiisi_engine.diff_model_setting import load_config
+from ctmr.infrastructure.maiisi_engine.utils_infer import load_image_models, run_controlnet_conditioned_image_dm
 
 LATENT = (4, 64, 64, 32)
 GRID = (256, 256, 128)
 SSIM_WIN = 7
 PSNR_CAP_DB = 100.0  # identical volumes (mse=0) are capped instead of inf so JSON stays finite
-P3_RULE_TEXT = (
+RULE_TEXT = (
     "metric m(N) = mean over t1n/t1c/t2w/t2f of dev case-mean 3D SSIM (skimage, data_range=1.0, "
     "win_size=7, per-volume 0-99.5 percentile [0,1] protocol) of candidates vs the real target "
     "resampled onto the generation grid; PSNR (same protocol) is recorded alongside; stop when "
@@ -111,7 +112,7 @@ def read_src_latent(src_image_path, device):
     return x[None].to(device)  # (1,C,H,W,D)
 
 
-class P3DevList:
+class DevList:
     """The dev (fold=0) view of the ``p3_pairs.json`` list, with raw tgt paths for the real bank."""
 
     def __init__(self, dev_list_path, eval_root):
@@ -130,17 +131,17 @@ class P3DevList:
         for entry in entries:
             if entry["fold"] != 0:
                 continue
-            # p3 image is the *embedding* path (embeddings/.../<case>-<mod>_emb.nii.gz);
+            # image is the *embedding* path (embeddings/.../<case>-<mod>_emb.nii.gz);
             # the real bank needs the raw tgt volume relative to --raw-root.
             raw = entry["image"].replace("embeddings/", "").replace("_emb.nii.gz", ".nii.gz")
             dev.append({**copy.deepcopy(entry), "image": raw})
         self._eval_root.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps({"training": dev}, indent=1) + "\n")
-        print(f"p3 dev list: {len(dev)} entries -> {out}")
+        print(f"cross-modal dev list: {len(dev)} entries -> {out}")
         return out
 
 
-class P3DevCohort:
+class DevCohort:
     """Builds the dev-case × 12-ordered-pair generation plan from the dev list."""
 
     def __init__(self, dev_list_path):
@@ -162,25 +163,25 @@ class P3DevCohort:
     def src_image_of(self, case, src_suffix):
         # list fields carry the long mapping keys (mri_*), translate the BraTS file suffix
         for entry in self._entries:
-            if entry["case"] == case and entry["src_modality"] == PAIR_MODALITIES[src_suffix][0]:
+            if entry["case"] == case and entry["src_modality"] == MODALITY_PAIRS[src_suffix][0]:
                 return entry["src_image"]
 
     def tgt_of(self, case, tgt_suffix):
         for entry in self._entries:
-            if entry["case"] == case and entry["modality"] == PAIR_MODALITIES[tgt_suffix][0]:
+            if entry["case"] == case and entry["modality"] == MODALITY_PAIRS[tgt_suffix][0]:
                 return entry["image"]
 
 
-class P3PairwiseScorer:
-    """3D PSNR/SSIM of candidates vs real targets under the pinned L1 [0,1] protocol.
+class PairwiseScorer:
+    """3D PSNR/SSIM of candidates vs real targets under the pinned quantitative [0,1] protocol.
 
     The real target is resampled onto the 256x256x128 generation grid (the same
     ``ReferenceGridWriter`` chain the phase's reference_grid uses, cached under
     ``<eval_root>/reference_grid/<CH>/<case>/<tgt>.nii.gz`` so each (case, tgt) is
-    resampled once across all eval points); each pair then runs the pinned L1
+    resampled once across all eval points); each pair then runs the pinned quantitative
     intensity protocol (per-volume 0-99.5 percentile -> [0,1]) and is scored with
     skimage PSNR and 3D SSIM (``data_range=1.0``, ``win_size=7``) — the identical
-    parameters ``P3PairMetricCalculator`` uses for the final L1 judgment, so the
+    parameters the quantitative pair metric calculator uses for the final judgment, so the
     dev-selection trend stays predictive of the acceptance verdict.
     """
 
@@ -198,7 +199,7 @@ class P3PairwiseScorer:
 
     @staticmethod
     def score_arrays(reference, sample):
-        """PSNR/SSIM of two same-shape raw intensity arrays under the pinned L1 [0,1] protocol."""
+        """PSNR/SSIM of two same-shape raw intensity arrays under the pinned quantitative [0,1] protocol."""
         normalizer = MRIntensityNormalizer()
         scaled_reference = normalizer.normalize(reference, "reference")
         scaled_sample = normalizer.normalize(sample, "candidate")
@@ -214,7 +215,7 @@ class P3PairwiseScorer:
             sample = np.asarray(nib.load(str(sample_path)).dataobj, dtype=np.float64)
             if reference.shape != sample.shape:
                 raise ValueError(f"shape mismatch reference {reference.shape} vs sample {sample.shape}")
-            return P3PairwiseScorer.score_arrays(reference, sample)
+            return PairwiseScorer.score_arrays(reference, sample)
         except Exception as error:
             return {"error": str(error)}
 
@@ -245,14 +246,14 @@ class P3PairwiseScorer:
                 cohort_source.spacing_of(sample["case"]),
             )
         with ProcessPoolExecutor(max_workers=self._workers, mp_context=mp.get_context("spawn")) as pool:
-            reference_results = list(pool.map(P3PairwiseScorer.reference_job, references.values()))
+            reference_results = list(pool.map(PairwiseScorer.reference_job, references.values()))
             reference_paths = {}
             for key, result in zip(references, reference_results):
                 if result["error"] is not None:
                     raise RuntimeError(f"reference grid failed for {key}: {result['error']}")
                 reference_paths[key] = result["path"]
             jobs = [(reference_paths[(s["sub"], s["case"], s["target_modality"])], s["path"]) for s in samples]
-            pair_results = list(pool.map(P3PairwiseScorer.score_job, jobs))
+            pair_results = list(pool.map(PairwiseScorer.score_job, jobs))
         per_modality = {modality: {"psnr": [], "ssim": []} for modality in MODALITY_TOKENS}
         for sample, result in zip(samples, pair_results):
             if result["error"] is not None:
@@ -271,8 +272,8 @@ class P3PairwiseScorer:
         return {"report": report, "m": m, "mean_psnr": mean_psnr}
 
 
-class P3CandidateSampler:
-    """Generates the fixed dev cohort with a P3 ControlNet checkpoint (cfg=0, 30 steps)."""
+class CandidateSampler:
+    """Generates the fixed dev cohort with a candidate ControlNet checkpoint (cfg=0, 30 steps)."""
 
     def __init__(self, args, device, logger):
         self._args = args
@@ -327,7 +328,7 @@ class P3CandidateSampler:
                 for tgt in MODALITY_TOKENS:
                     if src == tgt:
                         continue
-                    seed = P3CandidateInferenceConfig.seed_of(case["case"], src, tgt)
+                    seed = seed_of(case["case"], src, tgt)
                     src_latent = read_src_latent(phase_root / cohort_source.src_image_of(case["case"], src), self._device)
                     out = Path(out_dir) / case["sub"] / f"{case['case']}_{src}_to_{tgt}_seed{seed}.nii.gz"
                     if not out.is_file():
@@ -340,109 +341,12 @@ class P3CandidateSampler:
         return samples
 
 
-class P3DevEvalSelfTest:
-    """Fixture check of p3-specific logic: dev-view, cohort, src-latent read, cfg=0 (numpy/stdlib)."""
+def parse_args(argv=None):
+    """The sidecar entry argparse surface (verbatim from the retired dev-eval script entry).
 
-    def __init__(self, workdir):
-        self._workdir = Path(workdir)
-        self.failures = []
-
-    def run(self):
-        self._workdir.mkdir(parents=True, exist_ok=True)
-        src_entries = []
-        for challenge, quota in COHORT_QUOTAS.items():
-            for index in range(quota):
-                case = f"FIX{challenge}-{index:04d}-000"
-                for src in ("t1n", "t1c", "t2w", "t2f"):
-                    for tgt in ("t1n", "t1c", "t2w", "t2f"):
-                        if src == tgt:
-                            continue
-                        src_entries.append(
-                            {
-                                "image": f"embeddings/{challenge}/{case}/{case}-{tgt}_emb.nii.gz",
-                                "src_image": f"embeddings/{challenge}/{case}/{case}-{src}_emb.nii.gz",
-                                "label": f"labels/{challenge}/{case}/{case}-tumor129.nii.gz",
-                                "spacing": [1.0, 1.0, 1.0],
-                                "modality": PAIR_MODALITIES[tgt][0],
-                                "src_modality": PAIR_MODALITIES[src][0],
-                                "fold": 0,
-                                "sub": challenge,
-                                "case": case,
-                            }
-                        )
-        src = self._workdir / "p3_src.json"
-        src.write_text(json.dumps({"training": src_entries}))
-        out = P3DevList(src, self._workdir).build()
-        entries = json.loads(out.read_text())["training"]
-        expected = sum(quota for quota in COHORT_QUOTAS.values()) * 12
-        if len(entries) != expected:
-            self.failures.append(f"dev-view kept {len(entries)} entries, expected {expected} (12 ordered pairs per dev case)")
-        if not entries[0]["image"].endswith("-t1c.nii.gz") or "_emb" in entries[0]["image"]:
-            self.failures.append(f"raw tgt not derived from embedding path: {entries[0]['image']}")
-        if "src_image" not in entries[0]:
-            self.failures.append("dev-view dropped the src_image condition")
-
-        cohort_source = P3DevCohort(out)
-        cohort = cohort_source.cases()
-        n_cases = sum(quota for quota in COHORT_QUOTAS.values())
-        if len(cohort) != n_cases:
-            self.failures.append(f"cohort has {len(cohort)} dev cases, expected {n_cases}")
-        if {item["sub"] for item in cohort} != set(COHORT_QUOTAS):
-            self.failures.append("cohort missing a challenge")
-        # the real pairs list keys src_modality/modality by the long mapping keys (mri_*);
-        # the lookups must resolve the BraTS suffixes through that translation
-        for suffix in PAIR_MODALITIES:
-            if cohort_source.src_image_of(cohort[0]["case"], suffix) is None:
-                self.failures.append(f"src lookup unresolved for {cohort[0]['case']} {suffix}")
-
-        # src-latent channel-axis read: write a (H,W,D,C) NIfTI and confirm (C,H,W,D).
-        import nibabel as nib
-
-        latent = np.zeros((32, 32, 16, 4), dtype=np.float32)
-        latent[..., 0] = 1.0
-        latent_path = self._workdir / "latent.nii.gz"
-        nib.save(nib.Nifti1Image(latent, np.eye(4)), str(latent_path))
-        tensor = read_src_latent(latent_path, torch.device("cpu"))
-        if tuple(tensor.shape) != (1, 4, 32, 32, 16):
-            self.failures.append(f"src-latent read shape {tuple(tensor.shape)} != (1,4,32,32,16)")
-        elif float(tensor[0, 0].mean()) != 1.0:
-            self.failures.append("src-latent channel axis mis-read (channel 0 not the brain-modality slot)")
-
-        # early-stop rule + selection: P3 pre-registered the max direction (PSNR/SSIM higher is better)
-        rule = EarlyStopRule(patience=3, min_epoch=30, max_epoch=100, direction="max")
-        improving = [{"epoch": e, "m": 0.1 + 0.01 * e} for e in (5, 10, 15, 20, 25, 30)]
-        stop, _ = rule.should_stop(improving)
-        if stop:
-            self.failures.append("rule stopped an improving (max-direction) trend")
-        plateau = improving + [{"epoch": e, "m": 0.4} for e in (35, 40, 45)]
-        stop, reason = rule.should_stop(plateau)
-        if not stop:
-            self.failures.append(f"rule failed to stop a 3-eval plateau ({reason})")
-        selection = EarlyStopRule.selection(
-            [{"epoch": 5, "m": 1.2}, {"epoch": 10, "m": 0.8}, {"epoch": 20, "m": 0.8}], direction="max", metric_name="mean_ssim"
-        )
-        if selection["epoch"] != 5 or selection["mean_ssim"] != 1.2:
-            self.failures.append(f"max selection picked {selection}, expected epoch 5 m=1.2")
-
-        # pairwise scorer: identical volumes score ssim=1.0 and capped psnr; degraded ones score lower
-        rng = np.random.default_rng(0)
-        reference = (50 + 400 * rng.random((32, 32, 32))).astype(np.int16)
-        identical = P3PairwiseScorer.score_arrays(reference, reference)
-        if abs(identical["ssim"] - 1.0) > 1e-6 or identical["psnr"] != PSNR_CAP_DB:
-            self.failures.append(f"identical volumes scored {identical}, expected ssim=1.0 psnr=capped")
-        degraded = P3PairwiseScorer.score_arrays(
-            reference,
-            np.clip((reference.astype(np.float64) + rng.normal(0, 80, reference.shape)).round(), 0, None).astype(np.int16),
-        )
-        if degraded["ssim"] >= identical["ssim"] or degraded["psnr"] >= identical["psnr"]:
-            self.failures.append(f"degraded volume scored {degraded}, expected lower than identical")
-        shuffled = P3PairwiseScorer.score_arrays(reference, np.roll(reference, 8, axis=0))
-        if shuffled["ssim"] > 0.9:
-            self.failures.append(f"rolled volume scored ssim={shuffled['ssim']:.3f}, expected substantial degradation")
-        return self.failures
-
-
-def main(argv=None):
+    Exposed for the argv↔namespace equivalence gate (ADR-0015 Testing: the
+    assertion lives in tests/application/generation/cross_modal).
+    """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -474,23 +378,18 @@ def main(argv=None):
     p.add_argument("--ckpt-dir", required=True)
     p.add_argument("--out", required=True)
 
-    p = sub.add_parser("selftest")
-    p.add_argument("--workdir", required=True)
+    return parser.parse_args(argv)
 
-    args = parser.parse_args(argv)
 
-    if args.command == "selftest":
-        failures = P3DevEvalSelfTest(args.workdir).run()
-        for failure in failures:
-            print("FAIL " + failure, file=sys.stderr)
-        return 1 if failures else 0
+def main(argv=None):
+    args = parse_args(argv)
 
     eval_root = Path(args.eval_root)
     ledger = TrendLedger(eval_root)
 
     if args.command == "reference":
-        dev_list = P3DevList(args.dev_list, eval_root).build()
-        cohort_source = P3DevCohort(dev_list)
+        dev_list = DevList(args.dev_list, eval_root).build()
+        cohort_source = DevCohort(dev_list)
         raw_root, ref_root = Path(args.raw_root), eval_root / "reference_grid"
         references = {}
         for case in cohort_source.cases():
@@ -505,7 +404,7 @@ def main(argv=None):
                     cohort_source.spacing_of(case["case"]),
                 )
         with ProcessPoolExecutor(max_workers=args.score_workers, mp_context=mp.get_context("spawn")) as pool:
-            results = list(pool.map(P3PairwiseScorer.reference_job, references.values()))
+            results = list(pool.map(PairwiseScorer.reference_job, references.values()))
         failures = [f"reference {key}: {r['error']}" for key, r in zip(references, results) if r["error"] is not None]
         if failures:
             print("\n".join(failures[:10]), file=sys.stderr)
@@ -531,16 +430,16 @@ def main(argv=None):
         return 0
 
     # watch mode
-    dev_list = P3DevList(args.dev_list, eval_root).build()
+    dev_list = DevList(args.dev_list, eval_root).build()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    cohort_source = P3DevCohort(dev_list)
+    cohort_source = DevCohort(dev_list)
     cohort = cohort_source.cases()
     phase_root = Path(args.phase_root)
     rule = EarlyStopRule(args.patience, args.min_epoch, args.max_epoch, direction="max")
     (eval_root / "early_stop_rule.json").write_text(
         json.dumps(
             {
-                "rule": P3_RULE_TEXT.format(min_epoch=args.min_epoch, patience=args.patience),
+                "rule": RULE_TEXT.format(min_epoch=args.min_epoch, patience=args.patience),
                 "patience": args.patience,
                 "min_epoch": args.min_epoch,
                 "max_epoch": args.max_epoch,
@@ -553,8 +452,8 @@ def main(argv=None):
     merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
     merged.cfg_guidance_scale = 0.0
-    scorer = P3PairwiseScorer(workers=args.score_workers)
-    sampler = P3CandidateSampler(merged, device, None)
+    scorer = PairwiseScorer(workers=args.score_workers)
+    sampler = CandidateSampler(merged, device, None)
     watcher = CheckpointWatcher(args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()})
     idle_since = None
 

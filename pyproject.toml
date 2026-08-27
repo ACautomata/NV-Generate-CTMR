@@ -27,6 +27,7 @@ testpaths = ["tests"]
 pythonpath = ["src", "."]
 markers = [
     "torch: torch-level test; CPU-runnable real execution in the CI full-dependency tier (ADR-0015 §6)",
+    "gpu: needs a CUDA device; opt-in via CTMR_RUN_GPU_TESTS=1 on the server tier, auto-skipped locally and in CI (ADR-0015 §6)",
 ]
 
 [tool.ruff]

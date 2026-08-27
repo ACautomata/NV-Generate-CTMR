@@ -9,59 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Common phase-train CLI surface (ADR-0011 decision 1, issue #111).
-
-The public argparse set shared by every stage finetune entry (-e/-c/-t/-g,
---no_amp/--amp_dtype) plus the torchrun WORLD_SIZE cross-check, extracted from
-the three symmetric copies. Stage-specific flags (P1 --replay-list, P3
---data-list) ride in through ``stage_flags`` so the CLI face stays verbatim:
-same argv must yield an equal argparse namespace before and after the
-consolidation (the convergence gate in tests/harness).
-
-Stdlib-only: importable on any machine, no torch / monai (ADR-0013 §4).
+"""Thin forwarding shim -- the common finetune CLI surface moved to
+``ctmr.application.train_cli`` (ADR-0015 §2 application layer, ticket 08).
+The scripts-side consumers (P1/P2 finetune entries still in scripts/) keep
+importing from here until their migration batches relocate them; behaviour is
+unchanged.
 """
 
-from __future__ import annotations
+from ctmr.application.train_cli import TrainCli
 
-import argparse
-import os
-
-
-class TrainCli:
-    """The shared finetune argument surface, parameterized by stage."""
-
-    def __init__(self, description, stage="p2", formatter_class=argparse.RawDescriptionHelpFormatter):
-        self._parser = argparse.ArgumentParser(description=description, formatter_class=formatter_class)
-        self._parser.add_argument("-e", "--env_config_path", required=True)
-        self._parser.add_argument("-c", "--model_config_path", required=True)
-        self._parser.add_argument("-t", "--model_def_path", required=True)
-        self._parser.add_argument("-g", "--num_gpus", type=int, default=1)
-        self._add_stage_flags(stage)
-        self._parser.add_argument("--no_amp", dest="amp", action="store_false")
-        self._parser.add_argument("--amp_dtype", default="bf16", choices=["fp16", "bf16"], help="bf16 default (DCU)")
-
-    def _add_stage_flags(self, stage):
-        if stage == "p1":
-            self._parser.add_argument(
-                "--replay-list",
-                dest="replay_list",
-                action="append",
-                required=True,
-                help="MR-RATE replay data list (spec: list-level 1:1 mix; append once per list)",
-            )
-        elif stage == "p2":
-            return
-        elif stage == "p3":
-            self._parser.add_argument("--data-list", default=None, help="p3_pairs.json (defaults to env json_data_list)")
-        else:
-            raise ValueError(f"unknown stage '{stage}' (expected one of ['p1', 'p2', 'p3'])")
-
-    def parse(self, argv=None):
-        """Parse argv, then enforce the torchrun WORLD_SIZE agreement."""
-        args = self._parser.parse_args(argv)
-        # torchrun sets WORLD_SIZE when launched via torchrun; -g must agree or
-        # every worker would silently run as a world_size=1 replica on cuda:0.
-        torchrun_world = int(os.environ["WORLD_SIZE"]) if os.environ.get("WORLD_SIZE") else None
-        if torchrun_world is not None and torchrun_world != args.num_gpus:
-            raise ValueError(f"--num_gpus {args.num_gpus} disagrees with torchrun WORLD_SIZE {torchrun_world}")
-        return args
+__all__ = ["TrainCli"]
