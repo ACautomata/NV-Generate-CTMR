@@ -18,9 +18,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))  # repo src layout: python -m scripts.<this>
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon deployment: src/ synced next to the script
+
 import nibabel as nib
 import numpy as np
 from skimage.metrics import structural_similarity
+
+from ctmr.application.acceptance.contract.binding import FrozenRunBinding, FrozenRunBindingError  # noqa: E402
 
 SCHEMA = "brats-l1-report/1"
 FEATURE_EXTRACTOR = "radimagenet_resnet50"
@@ -247,42 +252,6 @@ class FeatureCohortCatalog:
         )
 
 
-@dataclass(frozen=True)
-class L1RunBinding:
-    """The immutable frozen-candidate fields copied into an L1 report."""
-
-    run_id: str
-    phase: str
-    manifest_sha256: str
-    candidate_checkpoint_sha256: str
-    samples_sha256: str
-
-    @classmethod
-    def from_run_record(cls, record):
-        try:
-            binding = cls(
-                run_id=record["run_id"],
-                phase=record["phase"],
-                manifest_sha256=record["manifest"]["sha256"],
-                candidate_checkpoint_sha256=record["selection"]["checkpoint"]["sha256"],
-                samples_sha256=record["samples"]["sha256"],
-            )
-        except (KeyError, TypeError) as error:
-            raise L1QuantitativeError(f"run record lacks frozen candidate binding: {error}") from error
-        if record.get("status") != "frozen":
-            raise L1QuantitativeError("L1 assessment requires a frozen run candidate")
-        return binding
-
-    def as_dict(self):
-        return {
-            "run_id": self.run_id,
-            "phase": self.phase,
-            "manifest_sha256": self.manifest_sha256,
-            "candidate_checkpoint_sha256": self.candidate_checkpoint_sha256,
-            "samples_sha256": self.samples_sha256,
-        }
-
-
 class L1ReportProducer:
     """Builds the versioned, candidate-bound L1 quantitative report."""
 
@@ -293,8 +262,16 @@ class L1ReportProducer:
         self._fid_assessor = ThreePlaneFidAssessor(FidScoreCalculator(), protocol)
         self._p3_assessor = P3DirectionAssessor(protocol)
 
+    @staticmethod
+    def _run_binding(run_record):
+        """The frozen-candidate five-key binding with the freeze gate built in (ADR-0012 决定 4)."""
+        try:
+            return FrozenRunBinding.from_record(run_record)
+        except FrozenRunBindingError as error:
+            raise L1QuantitativeError(str(error)) from error
+
     def produce(self, run_record, challenges, feature_records, p3_observations, feature_protocol):
-        binding = L1RunBinding.from_run_record(run_record)
+        binding = self._run_binding(run_record)
         catalog = FeatureCohortCatalog(feature_records)
         fid_results = self._fid_results(binding.phase, tuple(challenges), catalog)
         p3_results = self._p3_results(binding.phase, tuple(challenges), p3_observations)
@@ -885,7 +862,10 @@ class FrozenRunRecordReader:
 
     def read(self, path):
         record = self._documents.read(path, "run record")
-        L1RunBinding.from_run_record(record)
+        try:
+            FrozenRunBinding.from_record(record)  # freeze gate: binding extract validates the run state
+        except FrozenRunBindingError as error:
+            raise L1QuantitativeError(str(error)) from error
         return record
 
     def challenges(self, record):

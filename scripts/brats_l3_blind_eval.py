@@ -60,6 +60,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))  # repo src layout: python -m scripts.<this>
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon deployment: src/ synced next to the script
+
+from ctmr.application.acceptance.contract.binding import FrozenRunBinding, FrozenRunBindingError  # noqa: E402
+
 CATALOG_SCHEMA = "brats-l3-catalog/1"
 PACKAGE_SCHEMA = "brats-l3-package/1"
 BLIND_MAP_SCHEMA = "brats-l3-blind-map/1"
@@ -78,7 +83,6 @@ LIKERT_MIN, LIKERT_MAX = 1, 5
 NA = "NA"
 TURING_WINDOW = (0.40, 0.60)
 LIKERT_BOUND = 4.0
-STATUS_FROZEN = "frozen"
 TOTAL_ENTRIES = 200
 
 
@@ -183,8 +187,6 @@ class BlindPackageBuilder:
         self._per_cell = per_cell
 
     def build(self, run_record, catalog):
-        if run_record.get("status") != STATUS_FROZEN:
-            raise L3Error(f"run {run_record.get('run_id')} is {run_record.get('status')}; L3 blinds only frozen candidates")
         package, blind_map = BlindSampler(self._seed, self._per_cell).sample(catalog)
         sampling = {
             "seed": self._seed,
@@ -298,15 +300,12 @@ class L3ReportProducer:
     def _sha256_text(payload):
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
-    @staticmethod
-    def _binding(run_record):
-        return {
-            "run_id": run_record.get("run_id"),
-            "phase": run_record.get("phase"),
-            "manifest_sha256": run_record.get("manifest", {}).get("sha256"),
-            "candidate_checkpoint_sha256": run_record.get("selection", {}).get("checkpoint", {}).get("sha256"),
-            "samples_sha256": run_record.get("samples", {}).get("sha256"),
-        }
+    def _run_binding(self, run_record):
+        """The frozen-candidate five-key binding with the freeze gate built in (ADR-0012 决定 4)."""
+        try:
+            return FrozenRunBinding.from_record(run_record).as_dict()
+        except FrozenRunBindingError as error:
+            raise L3Error(str(error)) from error
 
     def _validate_responses(self, responses, expected_ids):
         if len(responses) < 2:
@@ -478,7 +477,7 @@ class L3ReportProducer:
         }
         return {
             "schema": REPORT_SCHEMA,
-            "binding": self._binding(run_record),
+            "binding": self._run_binding(run_record),
             "protocol": protocol,
             "coverage": coverage,
             "provenance": {

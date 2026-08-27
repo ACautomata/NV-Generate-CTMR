@@ -80,6 +80,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # flat sugon d
 
 from brats_phase_run_contract import ArtifactFingerprinter, ManifestSides  # noqa: E402
 
+from ctmr.application.acceptance.contract.binding import FrozenRunBinding, FrozenRunBindingError  # noqa: E402
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
 PLAN_SCHEMA = "l2-final-acceptance-plan/1"
@@ -210,42 +211,6 @@ class FrozenEnvelopes:
         return True
 
 
-# ── run-record binding ──────────────────────────────────────────────────
-
-
-class L2RunBinding:
-    """Freezes the #53 run-record identity of the candidate this L2 report judges.
-
-    ``evaluate --run`` binds the report to the frozen candidate (run id, phase,
-    manifest / candidate-checkpoint / samples SHA-256) exactly the way L1/L3
-    reports bind; the run contract's l2_report attachment (issue #58) then
-    refuses any report whose binding does not match the run it is attached to.
-    """
-
-    def __init__(self, run_record_path):
-        path = Path(run_record_path)
-        if not path.is_file():
-            raise AcceptanceError(f"run record not found: {path}")
-        record = json.loads(path.read_text())
-        if record.get("status") != "frozen":
-            raise AcceptanceError(f"run {record.get('run_id')} is {record.get('status')!r}; L2 final acceptance binds frozen candidates only")
-        selection = record.get("selection") or {}
-        self.run_id = record.get("run_id")
-        self.phase = record.get("phase")
-        self.manifest_sha256 = (record.get("manifest") or {}).get("sha256")
-        self.candidate_checkpoint_sha256 = (selection.get("checkpoint") or {}).get("sha256")
-        self.samples_sha256 = (record.get("samples") or {}).get("sha256")
-
-    def as_dict(self):
-        return {
-            "run_id": self.run_id,
-            "phase": self.phase,
-            "manifest_sha256": self.manifest_sha256,
-            "candidate_checkpoint_sha256": self.candidate_checkpoint_sha256,
-            "samples_sha256": self.samples_sha256,
-        }
-
-
 # ── freeze guard ────────────────────────────────────────────────────────
 
 
@@ -304,7 +269,7 @@ class RealReferenceResolver:
         for modality in MODALITIES:
             path = case_dir / f"{entry['case_id']}-{modality}.nii.gz"
             if not path.is_file():
-                raise AcceptanceError(f"real reference image not found: {path} " f"(supply real_paths for {entry['case_id']} or fix --real-root)")
+                raise AcceptanceError(f"real reference image not found: {path} (supply real_paths for {entry['case_id']} or fix --real-root)")
             paths[CHANNEL_SUFFIXES[modality]] = str(path)
         return paths
 
@@ -467,8 +432,7 @@ class AssemblyPlanner:
                 raise AcceptanceError(f"({entry['challenge']}, {entry['case_id']}) is not in the holdout manifest")
             if side != "holdout":
                 raise AcceptanceError(
-                    f"({entry['challenge']}, {entry['case_id']}) is {side}-side; final acceptance runs on the "
-                    "20% holdout side only (spec decision 3)"
+                    f"({entry['challenge']}, {entry['case_id']}) is {side}-side; final acceptance runs on the 20% holdout side only (spec decision 3)"
                 )
             observations += self._strategy.observations(entry, self._resolver)
             case_counts.setdefault(entry["challenge"], set()).add(entry["case_id"])
@@ -1142,7 +1106,7 @@ class SelfTest:
         }
         path = self._workdir / "run_bindtest.json"
         path.write_text(json.dumps(run_record))
-        binding = L2RunBinding(path).as_dict()
+        binding = self._bind(path).as_dict()
         expected = {
             "run_id": "p1-bindtest",
             "phase": "P1",
@@ -1155,9 +1119,17 @@ class SelfTest:
         open_record = dict(run_record, status="open")
         open_path = self._workdir / "run_open.json"
         open_path.write_text(json.dumps(open_record))
-        self.expect_reject(lambda: L2RunBinding(open_path), "binding an open run record")
+        self.expect_reject(lambda: self._bind(open_path), "binding an open run record")
         missing = self._workdir / "run_absent.json"
-        self.expect_reject(lambda: L2RunBinding(missing), "binding a missing run record")
+        self.expect_reject(lambda: self._bind(missing), "binding a missing run record")
+
+    @staticmethod
+    def _bind(path):
+        """Shared five-key binding with the frozen gate; translated to the L2 error surface."""
+        try:
+            return FrozenRunBinding.from_path(path)
+        except FrozenRunBindingError as error:
+            raise AcceptanceError(str(error)) from error
 
     def _fixture_entry(self, challenge, case, phase):
         real_paths = {m: f"/private/real/{challenge}/{case}/{case}-{m}.nii.gz" for m in MODALITIES}
@@ -1301,7 +1273,7 @@ class SelfTest:
         verdict = ChallengeJudge(envelopes, bootstrap, "P1").judge(rows, "GLI", seed)
         if verdict["verdict"] != "pass":
             self.failures.append(
-                f"GLI P1 equivalent volumes should pass, got {verdict['verdict']}: " f"{[q for q in verdict['tost'] if not q['passed']]}"
+                f"GLI P1 equivalent volumes should pass, got {verdict['verdict']}: {[q for q in verdict['tost'] if not q['passed']]}"
             )
 
         # One hierarchy violation anywhere -> undecided and it blocks.
@@ -1553,7 +1525,10 @@ def main(argv=None):
             challenges_missing = [ch for ch in CHALLENGES if ch not in challenges_present]
             binding = None
             if args.run:
-                binding = L2RunBinding(args.run)
+                try:
+                    binding = FrozenRunBinding.from_path(args.run)
+                except FrozenRunBindingError as error:
+                    raise AcceptanceError(str(error)) from error
                 bound = binding.as_dict()
                 if args.run_id and args.run_id != bound["run_id"]:
                     raise AcceptanceError(f"--run-id {args.run_id} contradicts the run record {bound['run_id']}")
