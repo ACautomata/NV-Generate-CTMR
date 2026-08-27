@@ -24,8 +24,8 @@
 
 | 产物 | 位置 | 内容 |
 |---|---|---|
-| #38 P1 判定报告 | `eval/l2-synth-domain/report_p1.md` | 五挑战 R_fail 全 0(0/20×3、0/14×2),细分 input/run/hier 全 0,METS 空 pred 2;总体 PASS |
-| #38 P3 判定报告 | `eval/l2-synth-domain/report_p3.md` | 五挑战 R_fail 全 0(0/80×3、0/56×2),细分全 0,空 pred METS 42、MEN 2;总体 PASS |
+| #38 P1 判定报告 | 原 `eval/l2-synth-domain/report_p1.md`(随 #145 出清;读数沉淀于 §3 与文末附录,全文见 git 历史) | 五挑战 R_fail 全 0(0/20×3、0/14×2),细分 input/run/hier 全 0,METS 空 pred 2;总体 PASS |
+| #38 P3 判定报告 | 原 `eval/l2-synth-domain/report_p3.md`（随 #145 出清；读数沉淀于 §3 与文末附录,全文见 git 历史） | 五挑战 R_fail 全 0(0/80×3、0/56×2),细分全 0,空 pred METS 42、MEN 2;总体 PASS |
 | #38 关票记录 | [issue #38 resolution](https://github.com/ACautomata/NV-Generate-CTMR/issues/38)(2026-08-20) | 判定口径「逐挑战 point ≤ 真实包络(=0)」、样本构成、Wilson 上界、undecided 判据落盘 |
 | 真实校准包络(对照基准) | `docs/adr/0002-l2-instrument-calibration-envelopes.md` | 五挑战 R_fail 全 0(0/900、0/42、0/720、0/171、0/72),E_r,vol / E_r,centroid / D_r,low 数值表 |
 | 校准协议(R_fail 定义与推理配置) | `docs/calibration/l2-instrument-calibration-protocol.md` | TTA on(不传 flag)为冻结配置之一 |
@@ -70,7 +70,7 @@ args = parser.parse_args()
 
 ### 2.3 #38 实际执行形态的三个分支与结论稳健性
 
-Issue #38 有完整预测输出且 run_fail=0(report_p1/p3.md),与「该 token 原样执行必 fatal」并存,只有三种解释:
+Issue #38 有完整预测输出且 run_fail=0(附录),与「该 token 原样执行必 fatal」并存,只有三种解释:
 
 - **分支 A**:sugon 环境下该 token 组合以某种途径被解析为 `disable_tta=True`(如 DCU 侧打包差异),预测产出且 TTA **off**——即 ticket 前设的状态;
 - **分支 B**:原样命令 fatal(exit 2)后被执行者发现并修正重跑(去掉 token 或不传 flag),最终读数产生于 TTA **on**,与报告声明一致;
@@ -88,9 +88,9 @@ ADR-0002 的全部包络数值(含 R_fail_real=0)产生于 #36 校准,其编排�
 
 判定规则(issue #38 resolution):每子挑战 R_fail_synth.point ≤ R_fail_real.point,而真实校准 R_fail.point = **0**(ADR-0002 五挑战全部 0/900、0/42、0/720、0/171、0/72)。即通过线是 **k=0 的离散零失败预算**:
 
-- 实测:P1 各挑战 0/20(GLI/MEN/METS)、0/14(PED/SSA);P3 各挑战 0/80(GLI/MEN/METS)、0/56(PED/SSA);细分 input_fail=run_fail=hier_viol=0(report_p1.md:16-20、report_p3.md:16-20)。
+- 实测:P1 各挑战 0/20(GLI/MEN/METS)、0/14(PED/SSA);P3 各挑战 0/80(GLI/MEN/METS)、0/56(PED/SSA);细分 input_fail=run_fail=hier_viol=0(逐挑战数字全文见文末附录)。
 - 「margin」的准确刻画:**当前余量 = 0 例失败;任何 1 例新增 fail 都会把该子挑战翻成不 PASS(#38 语境)/ undecided(终验语境)**。不存在「差多少百分点」的连续余量——翻转问题因此化归为「TTA 差异能否制造哪怕 1 例这三类失败」(§4:不能)。
-- Wilson 95% 上界(P1 ≤ 0.2153、P3 ≤ 0.0642;逐挑战见报告表)只是伴随诊断量,不作 gate(issue #38 resolution、`scripts/nnunet_l2_synthetic_domain_eval.py:615-636`)。
+- Wilson 95% 上界(P1 ≤ 0.2153、P3 ≤ 0.0642;逐挑战值见文末附录)只是伴随诊断量,不作 gate(issue #38 resolution、`scripts/nnunet_l2_synthetic_domain_eval.py:615-636`)。
 
 ### 3.2 观察项(非判定量):空 pred 计数
 
@@ -99,7 +99,7 @@ ADR-0002 的全部包络数值(含 R_fail_real=0)产生于 #36 校准,其编排�
 | P1 | 0 | 0 | **2/20** | 0 | 0 |
 | P3 | 0 | **2/80** | **42/80** | 0 | 0 |
 
-(来源:report_p1.md:8-12、report_p3.md:8-12。)空 pred 在 #38 与 ADR-0004 §6 的语义里均为「测量结果而非失败」;issue #38 resolution 明言「不影响输入/层级契约判定,留作终验伴随监控的重点观察对象」。这是 TTA 唯一可能触碰的读数(§4.4)。
+(来源:#38 判定报告原表,逐挑战转录于文末附录。)空 pred 在 #38 与 ADR-0004 §6 的语义里均为「测量结果而非失败」;issue #38 resolution 明言「不影响输入/层级契约判定,留作终验伴随监控的重点观察对象」。这是 TTA 唯一可能触碰的读数(§4.4)。
 
 ### 3.3 范围澄清:TOST / 分布对齐不属 #38
 
@@ -147,12 +147,37 @@ P3 的判定量同样是 R_fail(0/352 全过)+ 空 pred 观察项,不含任何 T
 1. **报告保真勘误**:#38 报告与 resolution 声明「仪器 = TTA on」,与涉事调用点的代码事实不符(实际形态为 §2.3 三分支之一)。若后续有人引用 #38 读数,宜在相关 issue 上补一条勘误注记,避免「读数产生于 TTA on」的错误引用扩散。改代码本身(修掉 3 处 token)是独立决策,不在本票范围。
 2. **可分辨性**:如需把 §2.3 三分支收敛为单一事实,sugon `predict.log`(`/root/private_data/l2-synth-eval/{p1,p3}_predictions/<CH>/predict.log`)的命令行回显即可一锤定音;纯取证,非结论必需。
 
+## 附录:#38 判定报告出清存档摘录
+
+两份判定报告(随 PR [#50](https://github.com/ACautomata/NV-Generate-CTMR/pull/50)、commit `797bdf5` 入库)已于 #145 遗留目录出清时从仓库删除;判定概要与空 pred 观察项此前已分别沉淀于 §1.1 与 §3.2,此处补齐笔记未曾覆盖的部分:**逐挑战 Wilson 上界全表**(此前仅存最大值摘要)与**两份报告的「方向说明」段**。原文全文锚在 git 历史:`git log --diff-filter=D --oneline -- eval/l2-synth-domain/` 定位出清提交,`git show <出清提交>^:eval/l2-synth-domain/report_<p>.md` 取回。
+
+### 十个子挑战判定数字(报告原表逐列转录)
+
+| 模式 | 挑战 | 样本数 | R_fail_synth (k/n) | Wilson 95% 上界 | R_fail_real | 空 pred | 判定 |
+|---|---|---|---|---|---|---|---|
+| P1 直出 | GLI | 20 | 0/20 | 0.1611 | 0/900 | 0 | PASS |
+| P1 直出 | MEN | 20 | 0/20 | 0.1611 | 0/720 | 0 | PASS |
+| P1 直出 | METS | 20 | 0/20 | 0.1611 | 0/171 | 2 | PASS |
+| P1 直出 | PED | 14 | 0/14 | 0.2153 | 0/72 | 0 | PASS |
+| P1 直出 | SSA | 14 | 0/14 | 0.2153 | 0/42 | 0 | PASS |
+| P3 img2img | GLI | 80 | 0/80 | 0.0458 | 0/900 | 0 | PASS |
+| P3 img2img | MEN | 80 | 0/80 | 0.0458 | 0/720 | 2 | PASS |
+| P3 img2img | METS | 80 | 0/80 | 0.0458 | 0/171 | 42 | PASS |
+| P3 img2img | PED | 56 | 0/56 | 0.0642 | 0/72 | 0 | PASS |
+| P3 img2img | SSA | 56 | 0/56 | 0.0642 | 0/42 | 0 | PASS |
+
+R_fail 细分 input_fail=run_fail=hier_viol 全 0(十个子挑战逐一);两份报告总体判定均为 **PASS**。
+
+### 方向说明摘录
+
+- **P1 报告**:P2 方向前置证据缺位已知情接受——掩码 ControlNet 训练前不存在 v1 可产样本,P2 依赖终验伴随监控兜底;P1 直出样本保留跨模态不一致性(独立采样),其 R_fail 只覆盖仪器对合成输入的运行/层级契约,不构成对 P2 配方产出的预测。
+- **P3 报告**:img2img 零训练基线(RF 插值 strength=0.9,无 ControlNet),每轮一个真实模态作锚、其余三模态以该锚为 src 生成,12 有序模态对全覆盖;真实锚通道直接用原始数据(重采样对齐),生成通道为 v1 DM img2img 输出。跨模态自洽性强于 P1 但弱于待训 P3 ControlNet,仅作合成域适用性前置证据。
+
 ## 来源索引
 
 | 事实 | 来源 |
 |---|---|
-| #38 P1 判定数字 | `eval/l2-synth-domain/report_p1.md:6-20` |
-| #38 P3 判定数字 | `eval/l2-synth-domain/report_p3.md:6-20` |
+| #38 P1/P3 判定数字 | 原 `eval/l2-synth-domain/report_{p1,p3}.md`,随 #145 出清;现存读数与原文取回方式见本文附录 |
 | #38 判定规则 / Wilson / 空 pred 语义 | [issue #38 resolution](https://github.com/ACautomata/NV-Generate-CTMR/issues/38)(2026-08-20T11:56:01Z) |
 | R_fail 三组件定义 | `scripts/nnunet_l2_synthetic_domain_eval.py:536-636` |
 | 真实校准 R_fail=0 与包络数值 | `docs/adr/0002-l2-instrument-calibration-envelopes.md:16-68` |

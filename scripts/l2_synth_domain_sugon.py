@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Issue #38 合成域评估——sugon 端执行脚本（ADR-0008 收编后）。
 
-几何（1mm 重采样 + 居中 crop/pad 到 240×240×155）已收编进 ``ctmr.grid``
+几何（1mm 重采样 + 居中 crop/pad 到 240×240×155）已收编进 ``ctmr.domain.grid``
 （InstrumentGridAdapter，B-spline 连续体）；本脚本不再是单文件自包含，
 sugon 部署时须连同 ``src/`` 树一起同步，并把 ``src/`` 加入 ``sys.path``
 （脚本内已内嵌与 final_acceptance_nifti 相同的 shim 规则）。
@@ -30,8 +30,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python scripts/<this>.py
 sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
 
-from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
-from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
+from ctmr.domain.grid import InstrumentGridAdapter  # noqa: E402
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
 # ── sugon 固定路径 ──────────────────────────────────────────────────────
 
@@ -227,7 +227,7 @@ def prep_one_case(entry: dict, sample_dir: Path, output_dir: Path) -> None:
     """组装一个病例的 nnU-Net 输入。
 
     ADR-0008 收编：几何（B-spline 重采样到 1mm + 居中 crop/pad 到 240×240×155）
-    由 ctmr.grid 的 continuum 适配器执行（修复了原 crop_or_pad 把 xyz target
+    由 ctmr.domain.grid 的 continuum 适配器执行（修复了原 crop_or_pad 把 xyz target
     直接作用于 zyx 数组的轴序 bug）。
     """
     challenge = entry["challenge"]

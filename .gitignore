@@ -2,3 +2,4 @@
 /datasets/
 __pycache__/
 *.egg-info/
+.venv/

@@ -33,12 +33,13 @@ jobs:
       - name: Run pre-commit
         run: pre-commit run --all-files
 
-  # Single full-dependency test job (ADR-0015 §6 revision, 2026-08-27): CPU torch +
-  # monai + all non-GPU deps in one job. torch-level tests MUST really execute —
-  # importorskip fallbacks and the light/heavy-stack split are void. GPU-level
-  # chains live on the sugon integration gate, not here.
-  test:
-    name: test (full dependency stack)
+  # Test job (ADR-0015 §6, rev. 2026-08-27): single full-dependency tier — CPU
+  # torch + monai installed so torch-level tests run for real on plain CPU
+  # instead of skipping. "Missing torch -> install it" replaces the retired
+  # ADR-0013 §4 light/skip design; GPU/cluster chains stay out of CI (sugon
+  # integration gate, pytest.mark.gpu).
+  test-torch:
+    name: test (torch stack)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
