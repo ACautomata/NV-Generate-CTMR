@@ -29,6 +29,7 @@ from scripts.nnunet_l2_synthetic_domain_eval import InstrumentRunner  # noqa: E4
 
 FIVE_CHALLENGES = sorted(INSTRUMENT_SPECS)
 REPO_ROOT = Path(__file__).resolve().parents[2]
+JOBS_DIR = REPO_ROOT / "deploy" / "jobs"
 
 
 # ── nnunet_l2_final_acceptance.PredictScriptWriter (frozen terminal acceptance) ──────
@@ -131,7 +132,8 @@ def test_synth_domain_sugon_predict_uses_the_builder_argv(tmp_path, monkeypatch)
     assert str(REPO_ROOT / "src") in captured["env"]["PYTHONPATH"]
 
 
-# ── shell orchestration (shared canonical entry, decision 3) ──────────────────────────
+# ── shell orchestration (shared canonical entry, decision 3; the three job recipes
+#    live under deploy/jobs since the ADR-0015 §5 ops-plane split) ──────────────────────
 
 SHELL_SCRIPTS = ["run_l2_synth_domain_eval.sh", "p1_predict_all.sh", "l2_calibration_predict.sh"]
 
@@ -155,14 +157,14 @@ def test_shell_scripts_declare_the_canonical_per_challenge_spec():
         "l2_calibration_predict.sh": {"DATASET": "dataset_id", "PLANS": "plans", "CONFIG": "config"},
     }
     for name, mappings in runners.items():
-        maps = _declared_maps((REPO_ROOT / "scripts" / name).read_text())
+        maps = _declared_maps((JOBS_DIR / name).read_text())
         for map_name, field in mappings.items():
             for challenge in FIVE_CHALLENGES:
                 assert maps[map_name][challenge] == getattr(INSTRUMENT_SPECS[challenge], field), (name, map_name, challenge)
 
 
 def test_p1_predict_all_sh_runs_the_canonical_command_per_challenge():
-    text = (REPO_ROOT / "scripts" / "p1_predict_all.sh").read_text()
+    text = (JOBS_DIR / "p1_predict_all.sh").read_text()
     assert "-m ctmr.instrument.predict" in text
     runs = {match[0]: (match[1], match[2], match[3]) for match in re.findall(r"run_pred (\w+)\s+\d+\s+(\S+)\s+(\S+)\s+(\S+)\s*&", text)}
     assert runs == {challenge: (spec.dataset_id, spec.plans, spec.config) for challenge, spec in INSTRUMENT_SPECS.items()}
@@ -170,21 +172,26 @@ def test_p1_predict_all_sh_runs_the_canonical_command_per_challenge():
 
 def test_shell_orchestration_calls_only_the_canonical_entry():
     for name in SHELL_SCRIPTS:
-        text = (REPO_ROOT / "scripts" / name).read_text()
+        text = (JOBS_DIR / name).read_text()
         assert "-m ctmr.instrument.predict" in text, name
         assert "nnUNetv2_predict_from_raw_data" not in text, name
         assert "l2_calibration_predict_entry" not in text, name
         assert "--disable_tta False" not in text, name  # the fatal token; bare mentions in comments are prose
 
 
-def test_no_fatal_token_or_legacy_entry_name_remains_anywhere_in_scripts_or_src():
+def test_no_fatal_token_or_legacy_entry_name_remains_anywhere_in_scripts_deploy_or_src():
     """Repo-wide drift guard: the fatal ``--disable_tta False`` token (argparse
     ``unrecognized arguments``, #78) and both legacy entry names must never come
-    back on the call-site side. ``src/`` is scanned for the fatal token only --
+    back on the call-site side. Shell recipes moved to deploy/ (ADR-0015 §5);
+    both the remaining transitional scripts/ shells and the deployed ones stay
+    in scope. ``src/`` is scanned for the fatal token only --
     its module docstrings deliberately narrate the promotion
     (``l2_calibration_predict_entry.py``), which is history, not a call site."""
     offenders = []
-    for path in sorted((REPO_ROOT / "scripts").glob("*.py")) + sorted((REPO_ROOT / "scripts").glob("*.sh")):
+    executable_call_sites = (
+        sorted((REPO_ROOT / "scripts").glob("*.py")) + sorted((REPO_ROOT / "scripts").glob("*.sh")) + sorted((REPO_ROOT / "deploy").rglob("*.sh"))
+    )
+    for path in executable_call_sites:
         text = path.read_text(errors="replace")
         for token in ("nnUNetv2_predict_from_raw_data", "l2_calibration_predict_entry", "--disable_tta False"):
             if token in text:

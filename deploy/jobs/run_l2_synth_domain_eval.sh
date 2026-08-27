@@ -2,7 +2,7 @@
 # Issue #38 L2 仪器合成域适用性评估——sugon DCU 集群执行脚本
 #
 # 用法：在 sugon DCU 集群上执行
-#   bash scripts/run_l2_synth_domain_eval.sh [p1|p3|all]
+#   bash deploy/jobs/run_l2_synth_domain_eval.sh [p1|p3|all]
 #
 # 前置条件：
 #   1. v1 DM 权重已部署到 /root/private_data/models/
@@ -14,10 +14,13 @@
 #
 set -euo pipefail
 
-# canonical 入口 python -m ctmr.instrument.predict 需要 src 树在 sys.path
-# （ADR-0009 #108 收编；两种部署形态的同族 shim）。
+# canonical 入口 python -m ctmr.instrument.predict 与 python -m scripts.* 需要
+# src 树与仓库根在 sys.path（ADR-0009 #108 收编；两种部署形态的同族 shim）。
+# #131 迁入 deploy/jobs/ 后 src 经 ../../ 解析——一层 ../ 会落到 deploy/src。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PYTHONPATH="$SCRIPT_DIR/../src:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+export PYTHONPATH="$PROJECT_ROOT/src:$PROJECT_ROOT:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+[ -d "$PROJECT_ROOT/src" ] || { echo "[FATAL] $PROJECT_ROOT/src missing — run from the repo checkout" >&2; exit 1; }
 
 EVAL_ROOT="/root/private_data/l2-synth-eval"
 NNUNET_ROOT="/root/private_data/brats2023_nnunet"
