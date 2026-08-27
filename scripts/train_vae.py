@@ -85,9 +85,7 @@ def load_data_lists(paths: list[str]) -> list[dict]:
         with open(path) as source:
             for item in json.load(source):
                 if item.get("class") not in VALID_CLASSES:
-                    raise ValueError(
-                        f"{path}: every entry needs \"class\" of {VALID_CLASSES}; got {item.get('class')!r}"
-                    )
+                    raise ValueError(f"{path}: every entry needs \"class\" of {VALID_CLASSES}; got {item.get('class')!r}")
                 entries.append({"image": item["image"], "class": item["class"]})
     return entries
 
@@ -98,24 +96,39 @@ def main(argv=None) -> int:
         description="Train the MAISI 3D autoencoder (VAE) with its adversarial loop.",
     )
     parser.add_argument(
-        "-t", "--model_def_path", type=str, default="./configs/config_network_rflow.json",
+        "-t",
+        "--model_def_path",
+        type=str,
+        default="./configs/config_network_rflow.json",
         help="Path to the network definition file (autoencoder_def).",
     )
     parser.add_argument(
-        "-c", "--config_path", type=str, default="./configs/config_maisi_vae_train.json",
+        "-c",
+        "--config_path",
+        type=str,
+        default="./configs/config_maisi_vae_train.json",
         help="Path to the VAE training configuration file.",
     )
     parser.add_argument(
-        "-e", "--environment_path", type=str, default="./configs/environment_maisi_vae_train.json",
+        "-e",
+        "--environment_path",
+        type=str,
+        default="./configs/environment_maisi_vae_train.json",
         help="Path to the environment configuration file (model_dir / finetune).",
     )
     parser.add_argument(
-        "--train-list", type=str, action="append", required=True,
-        help="JSON list of {\"image\", \"class\"} entries, one file per modality; repeatable.",
+        "--train-list",
+        type=str,
+        action="append",
+        required=True,
+        help='JSON list of {"image", "class"} entries, one file per modality; repeatable.',
     )
     parser.add_argument(
-        "--val-list", type=str, action="append", default=[],
-        help="JSON list of {\"image\", \"class\"} entries for validation; repeatable (optional).",
+        "--val-list",
+        type=str,
+        action="append",
+        default=[],
+        help='JSON list of {"image", "class"} entries for validation; repeatable (optional).',
     )
     args = parser.parse_args(argv)
 
@@ -158,9 +171,7 @@ def main(argv=None) -> int:
         select_channel=settings.select_channel,
     )
     dataset_train = CacheDataset(data=train_files, transform=train_transform, cache_rate=settings.cache, num_workers=8)
-    dataloader_train = DataLoader(
-        dataset_train, batch_size=settings.batch_size, num_workers=4, shuffle=True, drop_last=True
-    )
+    dataloader_train = DataLoader(dataset_train, batch_size=settings.batch_size, num_workers=4, shuffle=True, drop_last=True)
     dataloader_val = None
     if val_files:
         dataset_val = CacheDataset(data=val_files, transform=val_transform, cache_rate=settings.cache, num_workers=8)
@@ -229,9 +240,7 @@ def main(argv=None) -> int:
         scheduler_d.step()
         torch.save(autoencoder.state_dict(), autoencoder_path)
         torch.save(discriminator.state_dict(), discriminator_path)
-        train_sum = loss_weighted_sum(
-            train_losses, kl_weight=settings.kl_weight, perceptual_weight=settings.perceptual_weight
-        )
+        train_sum = loss_weighted_sum(train_losses, kl_weight=settings.kl_weight, perceptual_weight=settings.perceptual_weight)
         print(f"Epoch {epoch} train_vae_loss {train_sum:.4f}: {train_losses}.")
         print(f"Save trained autoencoder to {autoencoder_path}")
 
@@ -246,9 +255,7 @@ def main(argv=None) -> int:
                 autocast_device_type=device.type,
                 amp=settings.amp,
             )
-            val_sum = loss_weighted_sum(
-                val_losses, kl_weight=settings.kl_weight, perceptual_weight=settings.perceptual_weight
-            )
+            val_sum = loss_weighted_sum(val_losses, kl_weight=settings.kl_weight, perceptual_weight=settings.perceptual_weight)
             print(f"Epoch {epoch} val_vae_loss {val_sum:.4f}: {val_losses}.")
             if val_sum < best_val_loss:
                 best_val_loss = val_sum
