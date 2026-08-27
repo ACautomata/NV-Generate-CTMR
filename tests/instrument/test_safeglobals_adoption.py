@@ -29,10 +29,10 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ADOPTED_SCRIPTS = (SCRIPTS_DIR / "nnunet_l2_instrument.py", SCRIPTS_DIR / "nnunet_l2_closing_verification.py")
 UNTOUCHED_WHITELIST_SITES = (
-    "scripts/brats_p1_dev_eval.py",
-    "scripts/brats_p2_dev_eval.py",
     "scripts/brats_p1_finetune.py",
-    "scripts/brats_p2_finetune.py",
+    "src/ctmr/application/generation/mask/monitor.py",
+    "src/ctmr/application/generation/mask/train.py",
+    "src/ctmr/application/generation/trends.py",
 )
 
 

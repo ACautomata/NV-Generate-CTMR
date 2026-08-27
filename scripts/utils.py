@@ -31,6 +31,8 @@ from monai.utils import TransformBackends, convert_data_type, convert_to_dst_typ
 from scipy import ndimage, stats
 from torch import Tensor
 
+from ctmr.application.generation.mask.inference import binarize_labels  # noqa: F401  (shim re-export: train_controlnet.py imports from here)
+
 
 def remap_labels(mask, label_dict_remap_json):
     """
@@ -168,24 +170,6 @@ def dilate_one_img(mask_t: Tensor, filter_size: int | Sequence[int] = 3, pad_val
         .squeeze(0)
         .squeeze(0)
     )
-
-
-def binarize_labels(x: Tensor, bits: int = 8) -> Tensor:
-    """
-    Convert input tensor to binary representation.
-
-    This function takes an input tensor and converts it to a binary representation
-    using the specified number of bits.
-
-    Args:
-        x (Tensor): Input tensor with shape (B, 1, H, W, D).
-        bits (int, optional): Number of bits to use for binary representation. Defaults to 8.
-
-    Returns:
-        Tensor: Binary representation of the input tensor with shape (B, bits, H, W, D).
-    """
-    mask = 2 ** torch.arange(bits).to(x.device, x.dtype)
-    return x.unsqueeze(-1).bitwise_and(mask).ne(0).byte().squeeze(1).permute(0, 4, 1, 2, 3)
 
 
 def setup_ddp(rank: int, world_size: int) -> torch.device:

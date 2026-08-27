@@ -51,8 +51,8 @@ case "$PHASE" in
     ;;
   p2)
     RUN_ROOT="${RUN_ROOT:-/root/private_data/brats2023_rflow_p2}"
-    TRAIN_MODULE=scripts.brats_p2_finetune
-    WATCH_MODULE=scripts.brats_p2_dev_eval
+    TRAIN_MODULE=ctmr.application.generation.mask.train
+    WATCH_MODULE=ctmr.application.generation.mask.monitor
     TRAIN_CONFIG=configs/config_brats_p2_train.json
     NETWORK_CONFIG=configs/config_network_rflow.json
     ENV_JSON="$RUN_ROOT/environment_brats_p2_train.json"

@@ -170,7 +170,7 @@ Prerequisites (controlled storage only): the #52 phase lists/embeddings, the rep
 
 ## BraTS2023 P2 Mask→Image Candidate (ControlNet-only bypass)
 
-The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-CTMR/issues/51) decision 7, execution decisions in [ADR-0007](../adr/0007-p2-mask-conditioned-candidate-training-execution.md)) trains a mask-conditioned ControlNet bypass hung off the **frozen P1-DM** (`dm_source.json` registered candidate, ADR-0006). It does not use the upstream `train_controlnet.py` loop; the pinned deltas live in `scripts/brats_p2_finetune.py`:
+The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-CTMR/issues/51) decision 7, execution decisions in [ADR-0007](../adr/0007-p2-mask-conditioned-candidate-training-execution.md)) trains a mask-conditioned ControlNet bypass hung off the **frozen P1-DM** (`dm_source.json` registered candidate, ADR-0006). It does not use the upstream `train_controlnet.py` loop; the pinned deltas live in the `ctmr.application.generation.mask.train` entry (`ctmr generate mask train`):
 
 - **ControlNet-only** — DM and VAE untouched; the ControlNet is initialized from the frozen P1-DM encoder/mid (`copy_model_state`); only `controlnet.requires_grad=True`;
 - **Hyperparameters are frozen** in `configs/config_brats_p2_train.json`: `lr=1e-5`, `batch=1`, `cache_rate=0`, `n_epochs<=100`, L1 loss, Rectified Flow uniform timestep sampling (scale 1.4), PolynomialLR power 2.0, `weighted_loss=100` on `[129,130,131]`, `use_region_contrasive_loss=off` (ADR-0007 guard raises on any deviation);
@@ -181,7 +181,7 @@ The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-C
 
 ### Dev light acceptance, round-trip Dice and early stopping
 
-`scripts/brats_p2_dev_eval.py` runs beside the trainer on a reserved GPU. Every 5 epochs it generates the fixed 16-case dev cohort (4 modalities × fixed seed, cfg=10, 30 steps) **from the case's combined condition mask**, records the per-modality 2.5D RadImageNet FID trend against the dev real bank, runs the frozen L2 instruments on the generated four-modality volumes (WT/TC/ET volume medians + failure counts; trend only), and computes the **P2 condition round-trip Dice trend** (instrument-predicted mask vs the combined condition, nearest-neighbour aligned + remapped 0/1/2/3).
+`ctmr generate mask dev-eval watch` (`ctmr.application.generation.mask.monitor`) runs beside the trainer on a reserved GPU. Every 5 epochs it generates the fixed 16-case dev cohort (4 modalities × fixed seed, cfg=10, 30 steps) **from the case's combined condition mask**, records the per-modality 2.5D RadImageNet FID trend against the dev real bank, runs the frozen L2 instruments on the generated four-modality volumes (WT/TC/ET volume medians + failure counts; trend only), and computes the **P2 condition round-trip Dice trend** (instrument-predicted mask vs the combined condition, nearest-neighbour aligned + remapped 0/1/2/3).
 The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100) halts the trainer through `<ckpt_dir>/.early_stop`; the candidate is the `argmin` mean-FID epoch. See ADR-0007 for the rule text and the round-trip Dice semantics.
 
 ### Launch (sugon DCU, P2)
@@ -192,7 +192,7 @@ DM_SOURCE_CKPT=/root/private_data/brats2023_rflow_p1/ckpt/epoch_20.pt \
 bash scripts/brats_phase_launch_train.sh   # 7-GPU DDP + 1-GPU sidecar, nohup
 ```
 
-`DM_SOURCE_CKPT` must be the frozen P1-DM checkpoint from `dm_source.json` (#58), not the v1 base. Prerequisites: the #52 phase lists/embeddings/labels, the frozen P1-DM candidate checkpoint, the v1 autoencoder, and the dev real feature bank (`brats_p2_dev_eval reference`).
+`DM_SOURCE_CKPT` must be the frozen P1-DM checkpoint from `dm_source.json` (#58), not the v1 base. Prerequisites: the #52 phase lists/embeddings/labels, the frozen P1-DM candidate checkpoint, the v1 autoencoder, and the dev real feature bank (`ctmr generate mask dev-eval reference`).
 
 ### Run-contract wiring (P2)
 

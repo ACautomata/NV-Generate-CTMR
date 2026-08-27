@@ -63,9 +63,13 @@ def test_help_lists_all_five_command_families(capsys):
 
 def test_gen_alias_reaches_the_generate_family():
     peeled = cli.CtmrCli._peel_generate(["gen", "cross-modal", "train", "--bad"])
-    assert peeled[0] is cli.CtmrCli._run_cross_modal_train
-    assert list(peeled[1]) == ["--bad"]
+    assert peeled[0] is cli.CtmrCli._run_family_train
+    assert peeled[1] == "cross-modal"
+    assert list(peeled[2]) == ["--bad"]
     assert cli.CtmrCli._peel_generate(["gen", "cross-modal"]) is None
+    mask_peeled = cli.CtmrCli._peel_generate(["gen", "mask", "train", "--bad"])
+    assert mask_peeled[0] is cli.CtmrCli._run_family_train
+    assert mask_peeled[1] == "mask"
 
 
 def test_every_not_migrated_family_answers_not_migrated_for_any_concrete_call(capsys):
@@ -80,8 +84,12 @@ def test_every_not_migrated_family_answers_not_migrated_for_any_concrete_call(ca
 def test_not_migrated_generate_cases_still_answer_not_migrated(capsys):
     assert cli.main(["generate", "modality-label", "train"]) == 2
     assert "modality-label" in capsys.readouterr().err
-    assert cli.main(["gen", "mask", "watch"]) == 2
-    assert "mask" in capsys.readouterr().err
+
+
+def test_migrated_generate_case_rejects_an_unknown_verb_as_a_usage_error():
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["gen", "mask", "watch"])
+    assert excinfo.value.code == 2
 
 
 def test_family_without_verb_also_answers_not_migrated(capsys):

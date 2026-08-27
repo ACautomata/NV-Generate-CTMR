@@ -24,8 +24,9 @@ Two ways to use this file:
    (or its backward-compat alias ``ldm_conditional_sample_one_image``) and
    call it directly. The mask-specific preprocessing
    (``binarize_labels``, ``remove_tumors`` for CFG) and post-processing
-   (``crop_img_body_mask``) live in this file; the inner loop is delegated
-   to ``utils_infer.run_controlnet_conditioned_image_dm``.
+   (``crop_img_body_mask``) live in ``ctmr.application.generation.mask.inference``
+   and are re-exported below along with the wrapper and its alias; the inner
+   loop is delegated to ``utils_infer.run_controlnet_conditioned_image_dm``.
 
 2. **As a CLI** — run ``python -m scripts.infer_image_from_mask --mask
    /path/to/mask.nii.gz -t <network-config>.json -e <env-config>.json``
@@ -41,7 +42,6 @@ See ``skills/image-from-mask.md`` for the algorithm walkthrough.
 """
 
 import argparse
-import logging
 import os
 import sys
 from datetime import datetime
@@ -53,135 +53,22 @@ from monai.data import MetaTensor
 from monai.transforms import SaveImage
 from monai.utils import set_determinism
 
-from .augmentation import remove_tumors
-from .utils import binarize_labels
+# Forward shim (ticket 09 / ADR-0015 §2): the mask-conditioned wrapper moved to
+# ctmr.application.generation.mask.inference (shared with the mask family's
+# sampler); this CLI keeps its argparse face and re-exports the names the
+# backward-compat callers (LDMSampler, infer_image_from_mask_batch, sample.py)
+# import from here.
+from ctmr.application.generation.mask.inference import (  # noqa: E402
+    binarize_labels,  # noqa: F401  (shim re-export)
+    crop_img_body_mask,  # noqa: F401  (shim re-export: sample.py imports from here)
+    ldm_conditional_sample_one_image,  # noqa: F401  (shim re-export)
+    ldm_conditional_sample_one_image_from_mask,  # noqa: F401  (shim re-export)
+)
+
 from .utils_infer import (
     build_conditioning_tensors,
     load_image_models,
-    run_controlnet_conditioned_image_dm,
 )
-
-
-def ldm_conditional_sample_one_image_from_mask(
-    autoencoder,
-    diffusion_unet,
-    controlnet,
-    noise_scheduler,
-    scale_factor,
-    device,
-    combine_label_or,
-    spacing_tensor,
-    latent_shape,
-    output_size,
-    noise_factor,
-    top_region_index_tensor=None,
-    bottom_region_index_tensor=None,
-    modality_tensor=None,
-    num_inference_steps=1000,
-    autoencoder_sliding_window_infer_size=(96, 96, 96),
-    autoencoder_sliding_window_infer_overlap=0.6667,
-    cfg_guidance_scale=0,
-):
-    """
-    Generate a CT/MR image from a **3D label mask** via the ControlNet-
-    conditioned image LDM.
-
-    This is the **mask-specific** wrapper around the modality-agnostic core
-    ``run_controlnet_conditioned_image_dm``. It does three mask-specific things:
-
-      1. Pre-process: ``binarize_labels`` converts the 1-channel integer mask
-         to the 8-channel binary ControlNet conditioning tensor.
-      2. CFG (when ``cfg_guidance_scale > 0``): builds a tumor-free
-         unconditional counterpart via ``remove_tumors`` + ``binarize_labels``.
-      3. Post-process: ``crop_img_body_mask`` regularizes background voxels
-         to ``a_min`` (CT: -1000; MR: 0) using the mask.
-
-    A future image-conditioned variant would live in a sibling module
-    (e.g. ``scripts/infer_image_from_image.py``) and do its own preprocessing
-    while reusing the same ``run_controlnet_conditioned_image_dm`` core.
-
-    Returns ``(synthetic_image, combine_label)`` — the mask is returned for
-    downstream filtering (e.g. ``filter_mask_with_organs``).
-    """
-    # modality_tensor can be scalar (single mask) or shape (B,) (batch infer);
-    # collapse to a single int so `if` doesn't choke on a multi-element bool tensor.
-    if modality_tensor is not None and int(modality_tensor.flatten()[0]) <= 7:
-        a_min = -1000  # CT background floor
-    else:
-        a_min = 0  # MR background floor
-
-    combine_label = combine_label_or.to(device)
-    if output_size[0] != combine_label.shape[2] or output_size[1] != combine_label.shape[3] or output_size[2] != combine_label.shape[4]:
-        logging.info(
-            "output_size is not a desired value. Need to interpolate the mask to match with output_size. The result image will be very low quality."
-        )
-        combine_label = torch.nn.functional.interpolate(combine_label, size=output_size, mode="nearest")
-
-    # ── Mask-specific pre-processing ───────────────────────────────────────────
-    # NOTE (modality-specific): the next line converts mask → ControlNet
-    # conditioning. A future image-conditioned ControlNet would replace this
-    # with image normalization in its own wrapper module.
-    controlnet_cond_tensor = binarize_labels(combine_label.as_tensor().long()).half()
-
-    controlnet_uncond_tensor = None
-    if cfg_guidance_scale > 0:
-        # Mask-specific unconditional branch: same mask with tumors removed.
-        combine_label_no_tumor = torch.nn.functional.interpolate(
-            remove_tumors(combine_label.squeeze(0)).unsqueeze(0).float(),
-            size=output_size,
-            mode="nearest",
-        ).to(combine_label.dtype)
-        controlnet_uncond_tensor = binarize_labels(combine_label_no_tumor.as_tensor().long()).half()
-        del combine_label_no_tumor
-
-    # ── Modality-agnostic core ─────────────────────────────────────────────────
-    synthetic_images = run_controlnet_conditioned_image_dm(
-        autoencoder=autoencoder,
-        diffusion_unet=diffusion_unet,
-        controlnet=controlnet,
-        noise_scheduler=noise_scheduler,
-        scale_factor=scale_factor,
-        device=device,
-        controlnet_cond_tensor=controlnet_cond_tensor,
-        spacing_tensor=spacing_tensor,
-        latent_shape=latent_shape,
-        output_size=output_size,
-        noise_factor=noise_factor,
-        top_region_index_tensor=top_region_index_tensor,
-        bottom_region_index_tensor=bottom_region_index_tensor,
-        modality_tensor=modality_tensor,
-        num_inference_steps=num_inference_steps,
-        autoencoder_sliding_window_infer_size=autoencoder_sliding_window_infer_size,
-        autoencoder_sliding_window_infer_overlap=autoencoder_sliding_window_infer_overlap,
-        cfg_guidance_scale=cfg_guidance_scale,
-        controlnet_uncond_tensor=controlnet_uncond_tensor,
-    )
-
-    # ── Mask-specific post-processing ──────────────────────────────────────────
-    # Regularize background HU using the mask: voxels where mask==0 → a_min.
-    synthetic_images = crop_img_body_mask(synthetic_images, combine_label, a_min=a_min)
-    return synthetic_images, combine_label
-
-
-# Backward-compat alias — existing callers (LDMSampler, infer_image_from_mask_batch,
-# notebooks) import the old name. Keep it pointing at the mask wrapper.
-ldm_conditional_sample_one_image = ldm_conditional_sample_one_image_from_mask
-
-
-def crop_img_body_mask(synthetic_images, combine_label, a_min=-1000):
-    """
-    Crop the synthetic image using a body mask.
-
-    Args:
-        synthetic_images (torch.Tensor): The synthetic images.
-        combine_label (torch.Tensor): The body mask.
-
-    Returns:
-        torch.Tensor: The cropped synthetic images.
-    """
-    synthetic_images[combine_label == 0] = a_min
-    return synthetic_images
-
 
 # =============================================================================
 # CLI entry point

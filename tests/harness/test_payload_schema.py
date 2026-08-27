@@ -25,8 +25,8 @@ pytest.importorskip("torch")
 pytest.importorskip("monai")
 
 from ctmr.application.generation.cross_modal.train import TrainKernel  # noqa: E402
+from ctmr.application.generation.mask.train import TrainKernel as MaskTrainKernel  # noqa: E402
 from scripts.brats_p1_finetune import P1TrainKernel  # noqa: E402
-from scripts.brats_p2_finetune import P2TrainKernel  # noqa: E402
 
 # The pre-#111 checkpoint payload key sets, verbatim (do not edit).
 P1_PAYLOAD_KEYS = ["epoch", "loss", "num_train_timesteps", "scale_factor", "unet_state_dict"]
@@ -55,7 +55,7 @@ def test_p1_payload_key_set_is_kept():
 
 
 def test_p2_payload_key_set_is_kept():
-    kernel = P2TrainKernel(_kernel_args(), device=None, logger=None, local_rank=0)
+    kernel = MaskTrainKernel(_kernel_args(), device=None, logger=None, local_rank=0)
     kernel._controlnet = _FakeModule()
     payload = kernel.checkpoint_payload(5, 0.5, 1.0)
     assert list(payload) == P2_PAYLOAD_KEYS
