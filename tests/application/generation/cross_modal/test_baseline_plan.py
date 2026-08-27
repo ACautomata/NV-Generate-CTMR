@@ -138,7 +138,13 @@ def test_entries_carry_mislabel_guards_and_cover_twelve_ordered_pairs(tmp_path):
             assert set(generated) == {m for m in MODALITIES if m != anchor}  # the other three modalities
             for tgt, sample in generated.items():
                 covered.add((anchor, tgt))
-                expected = generated_root / entry["challenge"] / entry["case_id"] / f"a{anchor}" / f"{tgt}_seed{seed_of(entry['case_id'], anchor, tgt)}.nii.gz"
+                expected = (
+                    generated_root
+                    / entry["challenge"]
+                    / entry["case_id"]
+                    / f"a{anchor}"
+                    / f"{tgt}_seed{seed_of(entry['case_id'], anchor, tgt)}.nii.gz"
+                )
                 assert sample["path"] == str(expected)
                 assert sample["seed"] == seed_of(entry["case_id"], anchor, tgt)
         assert covered == set(builder.ordered_pairs(entry["case_id"]))  # all 12 ordered pairs per case

@@ -24,9 +24,9 @@ import pytest
 pytest.importorskip("torch")
 pytest.importorskip("monai")
 
+from ctmr.application.generation.cross_modal.train import TrainKernel  # noqa: E402
 from scripts.brats_p1_finetune import P1TrainKernel  # noqa: E402
 from scripts.brats_p2_finetune import P2TrainKernel  # noqa: E402
-from ctmr.application.generation.cross_modal.train import TrainKernel  # noqa: E402
 
 # The pre-#111 checkpoint payload key sets, verbatim (do not edit).
 P1_PAYLOAD_KEYS = ["epoch", "loss", "num_train_timesteps", "scale_factor", "unet_state_dict"]

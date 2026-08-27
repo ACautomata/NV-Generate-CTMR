@@ -44,9 +44,9 @@ from tqdm import tqdm
 
 from ctmr.infrastructure.maiisi_engine.diff_model_infer import load_models, prepare_tensors, save_image
 from ctmr.infrastructure.maiisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
-from ctmr.infrastructure.maiisi_engine.utils_infer import ReconModel
-from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
 from ctmr.infrastructure.maiisi_engine.inference_primitives import dynamic_infer
+from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
+from ctmr.infrastructure.maiisi_engine.utils_infer import ReconModel
 
 
 def set_random_seed(seed: int) -> int:

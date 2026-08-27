@@ -61,9 +61,6 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python -m scripts.<this>
 sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
 
-from ctmr.domain.grid import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler, InstrumentGridAdapter  # noqa: E402
-from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
-
 # Reverse shim (ticket 08 / ADR-0015 §2): the dev-eval engine (watch/select
 # machinery) and the shared cohort constants moved to ctmr.application.shell;
 # this script consumes them until its own migration batch relocates it.
@@ -76,6 +73,8 @@ from ctmr.application.shell import (  # noqa: E402
     EarlyStopRule,
     TrendLedger,
 )
+from ctmr.domain.grid import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler, InstrumentGridAdapter  # noqa: E402
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
 from .brats_l1_quantitative import FidScoreCalculator  # noqa: E402
 from .diff_model_setting import load_config  # noqa: E402

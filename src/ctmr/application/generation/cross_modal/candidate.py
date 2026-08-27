@@ -120,10 +120,13 @@ class CandidateInferenceConfig:
         self.cfg_guidance_scale = self._number(payload, "cfg_guidance_scale")
         if self.cfg_guidance_scale != 0:
             raise CandidatePlanError(
-                "cross-modal candidate cfg_guidance_scale must be 0 (default CFG off, zero latent unconditional branch; " "issue #61 acceptance criterion 1)"
+                "cross-modal candidate cfg_guidance_scale must be 0 (default CFG off, zero latent unconditional branch; "
+                "issue #61 acceptance criterion 1)"
             )
         if "strength" in payload:
-            raise CandidatePlanError("cross-modal candidate inference config must not carry strength (it conditions from noise, not an img2img start)")
+            raise CandidatePlanError(
+                "cross-modal candidate inference config must not carry strength (it conditions from noise, not an img2img start)"
+            )
         self.grid = self._grid(payload)
         self.modality_tokens = payload.get("modality_tokens")
         if not isinstance(self.modality_tokens, dict) or set(self.modality_tokens) != set(MODALITIES):

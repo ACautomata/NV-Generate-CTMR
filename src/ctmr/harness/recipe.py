@@ -14,6 +14,6 @@
 from here until the application batch relocates them; behaviour is unchanged.
 """
 
-from ctmr.domain.recipe import P1RecipeSpec, P2RecipeSpec, CrossModalRecipeSpec
+from ctmr.domain.recipe import CrossModalRecipeSpec, P1RecipeSpec, P2RecipeSpec
 
 __all__ = ["P1RecipeSpec", "P2RecipeSpec", "CrossModalRecipeSpec"]

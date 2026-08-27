@@ -137,7 +137,13 @@ def test_entries_carry_mislabel_guards_and_cover_twelve_ordered_pairs(tmp_path):
             assert set(generated) == {m for m in MODALITIES if m != anchor}
             for tgt, sample in generated.items():
                 covered.add((anchor, tgt))
-                expected = generated_root / entry["challenge"] / entry["case_id"] / f"a{anchor}" / f"{tgt}_seed{seed_of(entry['case_id'], anchor, tgt)}.nii.gz"
+                expected = (
+                    generated_root
+                    / entry["challenge"]
+                    / entry["case_id"]
+                    / f"a{anchor}"
+                    / f"{tgt}_seed{seed_of(entry['case_id'], anchor, tgt)}.nii.gz"
+                )
                 assert sample["path"] == str(expected)
                 assert sample["seed"] == seed_of(entry["case_id"], anchor, tgt)
         assert covered == set(builder.ordered_pairs(entry["case_id"]))
@@ -234,7 +240,9 @@ def test_run_guard_positive_path_returns_the_pinned_candidate_checkpoint(tmp_pat
         lambda record, dm, dm_sha, infer_sha, root: record(variant="stage0-baseline"),  # not the candidate variant
         lambda record, dm, dm_sha, infer_sha, root: record(status="open"),  # unfrozen
         lambda record, dm, dm_sha, infer_sha, root: record(selection={}),  # no candidate checkpoint
-        lambda record, dm, dm_sha, infer_sha, root: record(selection={"checkpoint": {"path": str(dm), "sha256": dm_sha}}),  # zero-training variant in disguise
+        lambda record, dm, dm_sha, infer_sha, root: record(
+            selection={"checkpoint": {"path": str(dm), "sha256": dm_sha}}
+        ),  # zero-training variant in disguise
         lambda record, dm, dm_sha, infer_sha, root: record(selection={"checkpoint": {"path": str(dm), "sha256": "0" * 64}}),
         lambda record, dm, dm_sha, infer_sha, root: record(configs=[]),  # no inference config pinned
         lambda record, dm, dm_sha, infer_sha, root: record(

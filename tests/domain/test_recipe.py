@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from ctmr.domain.recipe import P1RecipeSpec, P2RecipeSpec, CrossModalRecipeSpec
+from ctmr.domain.recipe import CrossModalRecipeSpec, P1RecipeSpec, P2RecipeSpec
 
 REPO = Path(__file__).resolve().parents[2]
 P2_TRAIN_CONFIG = json.loads((REPO / "configs/config_brats_p2_train.json").read_text())
