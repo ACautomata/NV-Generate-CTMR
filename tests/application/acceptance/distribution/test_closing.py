@@ -17,8 +17,6 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("nnunetv2")  # heavy tier of the CI full-dependency set
-
 import torch  # noqa: E402
 
 from ctmr.application.acceptance.distribution import closing as closing_module  # noqa: E402

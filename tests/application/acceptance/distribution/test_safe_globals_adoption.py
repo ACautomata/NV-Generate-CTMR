@@ -19,8 +19,6 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("nnunetv2")
-
 pytestmark = pytest.mark.torch
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
