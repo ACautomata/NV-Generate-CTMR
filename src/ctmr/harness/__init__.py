@@ -14,8 +14,8 @@
 The mechanical skeletons shared by every stage's finetune entry live here:
 ``cli`` is the public argparse set + torchrun WORLD_SIZE check; ``train_shell``
 is the PhaseHarness epoch loop (early-stop file polling at epoch boundaries and
-mid-epoch, DDP/amp mechanics, loss all_reduce, atomic checkpoint publishing +
-latest.json) driven by an injected ``PhaseTrainKernel`` Protocol (composition,
+mid-epoch, DDP/amp mechanics, loss all_reduce -- checkpoint storage delegated to
+the ``ctmr.infrastructure.checkpoints`` repository, ADR-0015 section 4) driven by an injected ``PhaseTrainKernel`` Protocol (composition,
 never implementation inheritance), with the recipe guard as a first-class hook.
 Stage kernels stay in their thin script entries -- the shell holds no recipe
 values and no domain decisions.

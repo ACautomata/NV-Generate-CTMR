@@ -14,7 +14,9 @@
 ``PhaseHarness`` owns the whole mechanical sequence the three symmetric stage
 finetunes used to copy: the epoch loop with early-stop file polling at epoch
 boundaries and mid-epoch, autocast + GradScaler mechanics, loss all_reduce,
-atomic checkpoint publication (``epoch_<N>.pt`` tmp + replace, ``latest.json``),
+atomic checkpoint publication (delegated to the
+``ctmr.infrastructure.checkpoints`` repository, ADR-0015 section 4 -- ``epoch_<N>.pt``
+tmp + rename then the ``latest.json`` pointer),
 rank-0 gating for the recipe guard / mkdir / provenance. Stage-specific work
 rides in through ``PhaseTrainKernel`` (composition, never implementation
 inheritance) and a ``recipe_check`` first-class hook; the shell holds no
@@ -37,6 +39,8 @@ from typing import Any, Protocol
 import torch
 import torch.distributed as dist
 from torch.amp import GradScaler, autocast
+
+from ctmr.infrastructure.checkpoints import CheckpointRepository
 
 STOP_FILE = ".early_stop"
 
@@ -106,6 +110,7 @@ class PhaseHarness:
         self._logger = logger
         self._recipe_check = recipe_check
         self._provenance = provenance
+        self._checkpoints = CheckpointRepository(model_dir)
 
     def run(self):
         """Drive one full training run: recipe guard -> provenance -> loop -> cleanup."""
@@ -168,14 +173,10 @@ class PhaseHarness:
     def _publish_checkpoint(self, epoch, ctx, loss_totals):
         average = (loss_totals[0] / loss_totals[1]).item()
         payload = self._kernel.checkpoint_payload(epoch + 1, average, ctx.scale)
-        path = Path(self._model_dir) / f"epoch_{epoch + 1}.pt"
-        tmp = path.with_name(path.name + ".tmp")
-        # Atomically publish the checkpoint: the dev sidecar polls epoch_*.pt and
-        # must never observe a partial write.
-        torch.save(payload, tmp)
-        tmp.replace(path)
-        (Path(self._model_dir) / "latest.json").write_text(json.dumps({"epoch": epoch + 1, "checkpoint": str(path)}) + "\n")
-        self._logger.info(f"epoch {epoch + 1} average loss: {average:.4f} -> {path}")
+        # Storage lives in the infrastructure repository (ADR-0015 section 4):
+        # atomic tmp+rename first, latest.json pointer only after the rename completed.
+        published = self._checkpoints.publish(payload, epoch + 1)
+        self._logger.info(f"epoch {epoch + 1} average loss: {average:.4f} -> {published}")
 
 
 class TrainProvenanceWriter:
