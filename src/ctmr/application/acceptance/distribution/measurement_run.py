@@ -45,10 +45,11 @@ NNUNET_TARGET_SIZE = INSTRUMENT_GRID.size
 PREDICTION_SHAPE = tuple(reversed(NNUNET_TARGET_SIZE))  # array layout is zyx
 
 # P2 condition combined mask -> instrument label space (mirrors the dev sidecar
-# COMBINED_TO_INSTRUMENT in scripts/brats_p2_dev_eval.py). The combined mask is
-# stored in the BraTS 2023 label ids (22/129/130/131); the instrument predicts
-# 0/1/2/3, so the round-trip Dice must remap first -- comparing raw ids against
-# REGION_LABELS (1/2/3) matches nothing and yields a spurious exact 0.
+# COMBINED_TO_INSTRUMENT in ctmr.application.generation.mask.monitor). The
+# combined mask is stored in the BraTS 2023 label ids (22/129/130/131); the
+# instrument predicts 0/1/2/3, so the round-trip Dice must remap first --
+# comparing raw ids against REGION_LABELS (1/2/3) matches nothing and yields a
+# spurious exact 0.
 COMBINED_TO_INSTRUMENT = {22: 0, 129: 1, 130: 2, 131: 3}
 
 # The DM emits generated volumes (and the #52 condition masks) on the RAS grid,

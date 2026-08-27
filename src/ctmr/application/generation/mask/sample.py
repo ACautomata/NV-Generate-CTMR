@@ -3,35 +3,42 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #     http://www.apache.org/licenses/LICENSE-2.0
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""P2 final-holdout mask-conditioned sample generation (issue #59).
+"""Mask-conditioned final-holdout sample generation (issue #59, ticket 09).
 
 Generates the four target-modality samples for final-holdout cases with the
-frozen P2 ControlNet candidate hung off the frozen P1-DM, using exactly the
-dev sidecar sampling convention (``P2CandidateSampler``: RFlowScheduler,
+frozen mask ControlNet candidate hung off the frozen P1-DM, using exactly the
+dev sidecar sampling convention (``CandidateSampler``: RFlowScheduler,
 cfg=10, 30 steps, fp16, autoencoder decode, ``x1000`` int16 MR scale, seed =
 sha256(case|modality)). The condition is the case's ``-combined.nii.gz``
-(brain=22 union + 1/2/3 -> 129/130/131 tumour remap) built by ``brats_phase_prep
-labels --sides holdout``. The per-case post-resize spacing is replicated from
-the raw t1n header with the issue #52 companion formula (``spacing_i =
-pixdim_i * shape_i / GRID_i``, GRID = 256x256x128), because holdout cases
-carry no embedding companion. The driver writes the L2 assembly-samples
-manifest (``phase/challenge/case_id/condition_mask/samples{path,seed}/
-real_paths``) over the holdout side.
+(brain=22 union + 1/2/3 -> 129/130/131 tumour remap) built by the phase
+``labels`` prep over the holdout side. The per-case post-resize spacing is
+replicated from the raw t1n header with the issue #52 companion formula
+(``spacing_i = pixdim_i * shape_i / GRID_i``, GRID = 256x256x128), because
+holdout cases carry no embedding companion. The driver writes the L2
+assembly-samples manifest (``phase/challenge/case_id/condition_mask/
+samples{path,seed}/real_paths``) over the holdout side.
 
 Sharding: ``--shard i --num-shards n`` takes every n-th case of the
 deterministic cohort order; each shard writes ``samples_shard_<i>.json`` and
 shares the idempotent ``generated/`` tree, so shards run concurrently on
 separate GPUs and their manifests concatenate into the final samples.json.
 
+The sampler is the SAME class the dev-eval sidecar (``monitor``) drives, so
+dev-trend samples and holdout deliverables share one sampling definition.
+
+Migrated from the retired mask holdout-generate script entry (ticket 09,
+ADR-0015 §2); the argv namespace is unchanged.
+
 Usage::
 
-    python -m scripts.brats_p2_holdout_generate \
+    ctmr generate mask generate \
         --run runs/p2-xxx/run.json \
         --manifest /ctrl/phase/phase_manifest.json \
         --out-root /ctrl/p2/holdout_generated \
@@ -46,7 +53,10 @@ The merged ``samples.json`` is structured for ``ctmr.application.acceptance.dist
 assemble --phase P2 --samples`` (one condition mask, four modalities per case).
 """
 
+from __future__ import annotations
+
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -55,15 +65,130 @@ import nibabel as nib
 import numpy as np
 import torch
 
-# Reverse shim (ticket 10 / ADR-0015 §2): the shared cohort constants live in
-# ctmr.application.shell until this script's own migration batch relocates it.
-from ctmr.application.shell import MODALITY_TOKENS, TARGET_MODALITIES  # noqa: E402
-
-from .brats_p2_dev_eval import P2CandidateSampler
-from .diff_model_setting import load_config
+from ctmr.application.generation.mask.inference import ldm_conditional_sample_one_image_from_mask
+from ctmr.application.shell import MODALITY_TOKENS, TARGET_MODALITIES
+from ctmr.infrastructure.maiisi_engine.diff_model_setting import load_config
+from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
 
 GRID = (256, 256, 128)
 IDENTITY_AFFINE = np.diag([1.0, 1.0, 1.0, 1.0])
+
+
+class CandidateSampler:
+    """Generates the fixed dev cohort samples with a mask ControlNet checkpoint (cfg=10, 30 steps)."""
+
+    def __init__(self, args, device, logger):
+        self._args = args
+        self._device = device
+        self._logger = logger
+
+    @staticmethod
+    def seed_of(case, modality):
+        return int(hashlib.sha256(f"{case}|{modality}".encode()).hexdigest()[:8], 16) % (2**31 - 1)
+
+    def load_models(self, checkpoint_path):
+        autoencoder = define_instance(self._args, "autoencoder_def").to(self._device)
+        ae_ckpt = torch.load(self._args.trained_autoencoder_path, map_location=self._device, weights_only=True)
+        if "unet_state_dict" in ae_ckpt:
+            ae_ckpt = ae_ckpt["unet_state_dict"]
+        autoencoder.load_state_dict(ae_ckpt)
+        unet = define_instance(self._args, "diffusion_unet_def").to(self._device)
+        dm_ckpt = torch.load(self._args.trained_diffusion_path, map_location=self._device, weights_only=True)
+        unet.load_state_dict(dm_ckpt["unet_state_dict"], strict=False)
+        controlnet = define_instance(self._args, "controlnet_def").to(self._device)
+        cn_ckpt = torch.load(checkpoint_path, map_location=self._device, weights_only=True)
+        controlnet.load_state_dict(cn_ckpt["controlnet_state_dict"], strict=False)
+        for model in (autoencoder, unet, controlnet):
+            model.eval()
+        # Upstream inference convention is fp16 on the DCU (float16 latents); a
+        # half-precision model keeps the conv input/weight/bias set consistent
+        # with the HIP bf16 SDPA flash adapter that emits fp16 (P1 convention).
+        autoencoder = autoencoder.half()
+        unet = unet.half()
+        controlnet = controlnet.half()
+        scale = float(dm_ckpt["scale_factor"])
+        return autoencoder, unet, controlnet, scale
+
+    @staticmethod
+    def load_condition_mask(mask_source, case, device):
+        """Loads the case's combined mask as a (1,1,H,W,D) long tensor on the grid."""
+        from monai.transforms import Compose, EnsureChannelFirstd, EnsureTyped, LoadImaged, Orientationd
+
+        path = mask_source.path_of(case)
+        if not path.is_file():
+            raise FileNotFoundError(f"combined mask missing: {path}")
+        transform = Compose(
+            [
+                LoadImaged(keys=["label"], image_only=True),
+                EnsureChannelFirstd(keys=["label"]),
+                Orientationd(keys=["label"], axcodes="RAS"),
+                EnsureTyped(keys=["label"], dtype=torch.long),
+            ]
+        )
+        label = transform({"label": str(path)})["label"]
+        if label.ndim == 4:
+            label = label.unsqueeze(0)
+        return label.to(device)
+
+    @torch.inference_mode()
+    def sample_one(self, autoencoder, unet, controlnet, scale, modality_token, spacing, seed, condition):
+        from monai.networks.schedulers import RFlowScheduler
+
+        torch.manual_seed(seed)
+        noise_scheduler = RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"})
+        noise_scheduler.set_timesteps(
+            num_inference_steps=self._args.diffusion_unet_inference["num_inference_steps"],
+            input_img_size_numel=torch.prod(torch.tensor((64, 64, 32))),
+        )
+        spacing_tensor = torch.tensor([[s * 1e2 for s in spacing]], device=self._device)
+        modality_tensor = torch.tensor([modality_token], device=self._device)
+        # Returns (synthetic_image, combine_label); only the image is used here.
+        synthetic, _returned_label = ldm_conditional_sample_one_image_from_mask(
+            autoencoder=autoencoder,
+            diffusion_unet=unet,
+            controlnet=controlnet,
+            noise_scheduler=noise_scheduler,
+            scale_factor=scale,
+            device=self._device,
+            combine_label_or=condition,
+            spacing_tensor=spacing_tensor,
+            latent_shape=(4, 64, 64, 32),
+            output_size=(256, 256, 128),
+            noise_factor=1.0,
+            modality_tensor=modality_tensor,
+            num_inference_steps=self._args.diffusion_unet_inference["num_inference_steps"],
+            autoencoder_sliding_window_infer_size=(96, 96, 96),
+            autoencoder_sliding_window_infer_overlap=0.25,
+            cfg_guidance_scale=self._args.cfg_guidance_scale,
+        )
+        data = synthetic.squeeze().float().cpu().numpy()
+        return np.clip(data, 0, None).astype(np.int16)
+
+    def generate_cohort(self, checkpoint_path, cohort, spacings, masks, out_dir):
+        autoencoder, unet, controlnet, scale = self.load_models(checkpoint_path)
+        samples = []
+        for item in cohort:
+            condition = self.load_condition_mask(masks, item["case"], self._device)
+            for modality in TARGET_MODALITIES:
+                seed = self.seed_of(item["case"], modality)
+                out = Path(out_dir) / item["sub"] / f"{item['case']}_{modality}_seed{seed}.nii.gz"
+                if not out.is_file():
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    data = self.sample_one(
+                        autoencoder,
+                        unet,
+                        controlnet,
+                        scale,
+                        MODALITY_TOKENS[modality],
+                        spacings.spacing_of(item["case"]),
+                        seed,
+                        condition,
+                    )
+                    nib.save(nib.Nifti1Image(data, np.diag([1.0, 1.0, 1.0, 1.0])), out)
+                samples.append({"sub": item["sub"], "case": item["case"], "modality": modality, "path": str(out)})
+        del autoencoder, unet, controlnet
+        torch.cuda.empty_cache()
+        return samples
 
 
 class HoldoutSpacingSource:
@@ -93,7 +218,7 @@ class HoldoutSpacingSource:
 
 
 class HoldoutMaskSource:
-    """Per-case P2 condition mask (``-combined.nii.gz``) under the phase label root."""
+    """Per-case mask condition (``-combined.nii.gz``) under the phase label root."""
 
     def __init__(self, label_root, manifest):
         self._label_root = Path(label_root)
@@ -128,8 +253,8 @@ class HoldoutCohortBuilder:
         return cohort
 
 
-class P2HoldoutSampleWriter:
-    """Runs the P2 candidate sampler over the holdout cohort and writes the L2 samples manifest."""
+class HoldoutSampleWriter:
+    """Runs the mask candidate sampler over the holdout cohort and writes the L2 samples manifest."""
 
     def __init__(self, merged, run_record, raw_root, out_root, device, logger):
         self._merged = merged
@@ -141,7 +266,7 @@ class P2HoldoutSampleWriter:
 
     def write(self, cohort, spacings, masks):
         checkpoint_path = self._run_record["selection"]["checkpoint"]["path"]
-        sampler = P2CandidateSampler(self._merged, self._device, self._logger)
+        sampler = CandidateSampler(self._merged, self._device, self._logger)
         autoencoder, unet, controlnet, scale = sampler.load_models(checkpoint_path)
         self._logger(f"[gen] candidate checkpoint: {checkpoint_path} (epoch {self._run_record['selection']['checkpoint'].get('epoch')})")
         entries = []
@@ -150,13 +275,13 @@ class P2HoldoutSampleWriter:
         try:
             for item in cohort:
                 challenge, case = item["sub"], item["case"]
-                condition = P2CandidateSampler.load_condition_mask(masks, case, self._device)
+                condition = CandidateSampler.load_condition_mask(masks, case, self._device)
                 case_dir = generated_dir / challenge / case
                 case_dir.mkdir(parents=True, exist_ok=True)
                 spacing = spacings.spacing_of(case)
                 sample_paths = {}
                 for modality in TARGET_MODALITIES:
-                    seed = P2CandidateSampler.seed_of(case, modality)
+                    seed = CandidateSampler.seed_of(case, modality)
                     out = case_dir / f"{case}_{modality}_seed{seed}.nii.gz"
                     if not out.is_file():
                         data = sampler.sample_one(
@@ -190,9 +315,13 @@ class P2HoldoutSampleWriter:
         return entries
 
 
-def main(argv=None):
+def parse_args(argv=None):
+    """The holdout sample-generation entry argparse surface (verbatim from the retired entry).
+
+    Exposed for the argv↔namespace equivalence gate (ADR-0015 Testing).
+    """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--run", required=True, help="P2 brats-phase-run record with a recorded selection")
+    parser.add_argument("--run", required=True, help="mask brats-phase-run record with a recorded selection")
     parser.add_argument("--manifest", required=True, help="pinned phase phase_manifest.json")
     parser.add_argument("--out-root", required=True, help="controlled output root")
     parser.add_argument("--raw-root", required=True, help="phase raw root (holdout images land here)")
@@ -205,7 +334,11 @@ def main(argv=None):
     parser.add_argument("--limit", type=int, default=None, help="max holdout cases per challenge")
     parser.add_argument("--challenge", default=None, help="restrict to one challenge")
     parser.add_argument("--only-cases", nargs="*", default=None)
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
 
     run_record = json.loads(Path(args.run).read_text())
     if not run_record.get("selection"):
@@ -222,7 +355,7 @@ def main(argv=None):
         return 1
     spacings = HoldoutSpacingSource(args.raw_root, manifest)
     masks = HoldoutMaskSource(args.label_root, manifest)
-    writer = P2HoldoutSampleWriter(merged, run_record, args.raw_root, args.out_root, device, print)
+    writer = HoldoutSampleWriter(merged, run_record, args.raw_root, args.out_root, device, print)
     entries = writer.write(cohort, spacings, masks)
     suffix = f"_shard_{args.shard}" if args.num_shards > 1 else ""
     manifest_path = Path(args.out_root) / f"samples{suffix}.json"

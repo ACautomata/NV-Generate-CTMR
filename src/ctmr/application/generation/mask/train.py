@@ -3,13 +3,14 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #     http://www.apache.org/licenses/LICENSE-2.0
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""P2 mask-conditioned ControlNet candidate training (issue #59, spec #51 decision 7).
+"""Mask-conditioned ControlNet candidate training (issue #59, spec #51 decision 7, ADR-0007).
 
 Mask-to-image candidate: a ControlNet-only bypass hung off the FROZEN P1-DM (the
 registered DM source, ADR-0006). The DM and VAE are untouched; the ControlNet is
@@ -20,7 +21,7 @@ epochs, AdamW, PolynomialLR power 2.0, L1, cache_rate=0, weighted_loss=100 on
 
 Deltas against the upstream ``train_controlnet.py`` loop, all pinned:
 - ``scale_factor`` is REUSED from the frozen P1-DM checkpoint (never recomputed;
-  the P2 recipe has no recompute sanity since the P1-DM already froze it);
+  the mask recipe has no recompute sanity since the P1-DM already froze it);
 - the training list is the #52 ``p2_mask_cond.json`` (fold=0 -> train side is
   fold!=0 as the MAISI loader partitions; the val loader is DISCARDED, never used
   to select a checkpoint — the dev-eval sidecar does the selection, spec #51);
@@ -30,14 +31,19 @@ Deltas against the upstream ``train_controlnet.py`` loop, all pinned:
   pre-recorded early-stop rule (sidecar) can end the run;
 - bf16 autocast is the default (DCU), fp32 fallback via ``--no_amp``.
 
-Thin entry since the harness consolidation (ADR-0011, #111): the domain kernel
-(``P2TrainKernel``, four-method injection) rides the shared
-``ctmr.harness.PhaseHarness`` shell; the CLI face is unchanged.
+The ControlNet is initialized from the frozen P1-DM encoder/mid and is NEVER
+warm-started from a ControlNet checkpoint — only the P1-DM checkpoint is read.
 
-Usage (torchrun on the DCU):
-    torchrun --nproc_per_node=7 -m scripts.brats_p2_finetune \
-        -e run/environment.json -c configs/config_brats_p2_train.json \
+Migrated from the retired mask finetune script entry (ticket 09, ADR-0015
+§2): the domain kernel (``TrainKernel``, four-method injection) rides the shared
+``PhaseHarness`` shell (checkpoint publication via ``CheckpointRepository``);
+the CLI face is unchanged.
+
+Usage (CLI, torchrun spawn is derived by the ctmr launcher):
+    ctmr generate mask train -e run/environment.json -c configs/config_brats_p2_train.json \
         -t configs/config_network_rflow.json
+    # or directly under torchrun (same argv namespace):
+    torchrun --nproc_per_node=7 -m ctmr.application.generation.mask.train ...
 """
 
 from __future__ import annotations
@@ -50,19 +56,78 @@ import monai
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from monai.data import CacheDataset, partition_dataset
 from monai.networks.utils import copy_model_state
+from monai.transforms import Compose, EnsureTyped, Lambdad, LoadImaged, Orientationd
 from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import DataLoader
 
-from ctmr.harness.cli import TrainCli
-from ctmr.harness.recipe import P2RecipeSpec
-from ctmr.harness.train_shell import PhaseHarness, TrainContext, TrainProvenanceWriter
+from ctmr.application.generation.mask.inference import binarize_labels
+from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWriter
+from ctmr.application.train_cli import TrainCli
+from ctmr.domain.recipe import MaskRecipeSpec
+from ctmr.infrastructure.dataio.list_assembly import add_data_dir2path
+from ctmr.infrastructure.maiisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
+from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
 
-from .diff_model_setting import initialize_distributed, load_config, setup_logging
-from .utils import binarize_labels, define_instance, prepare_maisi_controlnet_json_dataloader
+
+def prepare_maisi_controlnet_json_dataloader(
+    json_data_list,
+    data_base_dir,
+    batch_size=1,
+    fold=0,
+    cache_rate=0.0,
+    rank=0,
+    world_size=1,
+    modality_mapping=None,
+):
+    """Mask-family dataloader: image (tgt latent), label (the combined condition mask).
+
+    The upstream MAISI loader, verbatim: the transform set carries the
+    ``top_region_index``/``bottom_region_index`` companions (the mask list
+    entries provide them) and joins ``image``/``label`` via
+    ``add_data_dir2path`` (fold=0 side returns as the val loader, which the
+    trainer discards).
+    """
+    use_ddp = world_size > 1
+    if isinstance(json_data_list, list):
+        list_train = []
+        list_valid = []
+        for data_list, data_root in zip(json_data_list, data_base_dir):
+            json_data = json.loads(Path(data_list).read_text())["training"]
+            train, val = add_data_dir2path(json_data, data_root, fold)
+            list_train += train
+            list_valid += val
+    else:
+        json_data = json.loads(Path(json_data_list).read_text())["training"]
+        list_train, list_valid = add_data_dir2path(json_data, data_base_dir, fold)
+
+    common_transform = [
+        LoadImaged(keys=["image", "label"], image_only=True, ensure_channel_first=True),
+        Orientationd(keys=["image", "label"], axcodes="RAS"),
+        EnsureTyped(keys=["label"], dtype=torch.long, track_meta=True),
+        Lambdad(keys="top_region_index", func=lambda x: torch.FloatTensor(x), allow_missing_keys=True),
+        Lambdad(keys="bottom_region_index", func=lambda x: torch.FloatTensor(x), allow_missing_keys=True),
+        Lambdad(keys="spacing", func=lambda x: torch.FloatTensor(x)),
+        Lambdad(keys=["top_region_index", "bottom_region_index", "spacing"], func=lambda x: x * 1e2, allow_missing_keys=True),
+        Lambdad(keys=["modality"], func=lambda x: modality_mapping[x], allow_missing_keys=True),
+        EnsureTyped(keys=["modality"], dtype=torch.long, allow_missing_keys=True),
+    ]
+    train_transforms, val_transforms = Compose(common_transform), Compose(common_transform)
+
+    if use_ddp:
+        list_train = partition_dataset(data=list_train, shuffle=True, num_partitions=world_size, even_divisible=True)[rank]
+    train_ds = CacheDataset(data=list_train, transform=train_transforms, cache_rate=cache_rate, num_workers=8)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    if use_ddp:
+        list_valid = partition_dataset(data=list_valid, shuffle=True, num_partitions=world_size, even_divisible=False)[rank]
+    val_ds = CacheDataset(data=list_valid, transform=val_transforms, cache_rate=cache_rate, num_workers=8)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=False)
+    return train_loader, val_loader
 
 
-class P2DataCatalog:
-    """The P2 mask-conditioned training list (pure BraTS, no replay) — one record per (case, modality)."""
+class DataCatalog:
+    """The mask-conditioned training list (pure BraTS, no replay) — one record per (case, modality)."""
 
     def __init__(self, args, logger):
         self._args = args
@@ -70,10 +135,10 @@ class P2DataCatalog:
 
     def load_entries(self):
         payload = json.loads(Path(self._args.json_data_list).read_text())["training"]
-        self._logger.info(f"[data] p2 list: {len(payload)} entries from {self._args.json_data_list} (no replay)")
+        self._logger.info(f"[data] mask list: {len(payload)} entries from {self._args.json_data_list} (no replay)")
         for entry in payload:
             if "label" not in entry:
-                raise ValueError(f"P2 list entry missing mask condition 'label': {entry.get('case')}")
+                raise ValueError(f"mask list entry missing mask condition 'label': {entry.get('case')}")
         return payload
 
     def file_records(self):
@@ -101,8 +166,8 @@ class P2DataCatalog:
         return records
 
 
-class P2TrainKernel:
-    """P2 kernel: mask-conditioned data, frozen-DM ControlNet hook-up, weighted L1.
+class TrainKernel:
+    """Mask-conditioned kernel: mask data, frozen-DM ControlNet hook-up, weighted L1.
 
     The four-method ``PhaseTrainKernel`` boundary. Recipe values live here, not
     in the shell: AdamW + lr + PolynomialLR power 2.0 (ADR-0007).
@@ -121,7 +186,7 @@ class P2TrainKernel:
     def build_loader(self):
         args = self._args
         if self._local_rank == 0:
-            self._logger.info(f"num_files_train (p2, no replay): {len(P2DataCatalog(args, self._logger).file_records())}")
+            self._logger.info(f"num_files_train (mask family, no replay): {len(DataCatalog(args, self._logger).file_records())}")
         world_size = dist.get_world_size() if dist.is_initialized() else 1
         train_loader, _val_loader = prepare_maisi_controlnet_json_dataloader(
             json_data_list=args.json_data_list,
@@ -133,8 +198,9 @@ class P2TrainKernel:
             world_size=world_size,
             modality_mapping=args.modality_mapping,
         )
-        # The val split (fold==fold) is DISCARDED: P2 selects its candidate by the
-        # dev-eval sidecar, never by training/validation loss (spec #51 decision 7).
+        # The val split (fold==fold) is DISCARDED: the mask family selects its
+        # candidate by the dev-eval sidecar, never by training/validation loss
+        # (spec #51 decision 7).
         return train_loader
 
     def load_models(self, loader):
@@ -176,7 +242,7 @@ class P2TrainKernel:
         return TrainContext(trainable=controlnet, optimizer=optimizer, scheduler=lr_scheduler, scale=scale_tensor, device=self._device)
 
     def _weighted_target(self, labels, images):
-        """weights = 1, with weighted_loss on the tumor subregions {129,130,131}."""
+        """weights = 1, with weighted_loss on the tumour subregions {129,130,131}."""
         args = self._args
         if args.controlnet_train.get("weighted_loss", 1.0) <= 1.0:
             return None
@@ -198,6 +264,8 @@ class P2TrainKernel:
         noise = torch.randn_like(images)
         timesteps = self._noise_scheduler.sample_timesteps(images)
         noisy_latent = self._noise_scheduler.add_noise(original_samples=images, noise=noise, timesteps=timesteps)
+        # The ONLY structural difference vs the cross-modal family: condition on
+        # the binarized 8ch mask, not the src-image latent.
         controlnet_cond = binarize_labels(labels.as_tensor().to(torch.long)).float()
         down, mid = self._controlnet(x=noisy_latent, timesteps=timesteps, controlnet_cond=controlnet_cond, class_labels=modality_tensor)
         model_output = self._unet(
@@ -240,8 +308,8 @@ def main(argv=None):
         merged.modality_mapping = json.load(handle)
 
     local_rank, _world, device = initialize_distributed(args.num_gpus)
-    logger = setup_logging("p2-finetune")
-    kernel = P2TrainKernel(merged, device, logger, local_rank)
+    logger = setup_logging("mask-finetune")
+    kernel = TrainKernel(merged, device, logger, local_rank)
     return PhaseHarness(
         kernel=kernel,
         model_dir=merged.model_dir,
@@ -250,7 +318,7 @@ def main(argv=None):
         amp_dtype=args.amp_dtype,
         local_rank=local_rank,
         logger=logger,
-        recipe_check=P2RecipeSpec(merged.controlnet_train, logger).check,
+        recipe_check=MaskRecipeSpec(merged.controlnet_train, logger).check,
         provenance=TrainProvenanceWriter(
             merged,
             local_rank,

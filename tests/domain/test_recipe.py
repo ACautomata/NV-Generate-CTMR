@@ -11,7 +11,7 @@
 
 """Convergence-gate tests for the pinned recipe specs (ADR-0011 decision 4, #111).
 
-``P2RecipeSpec`` reproduces the pre-#111 ``P2RecipeGuard`` behaviour verbatim
+``MaskRecipeSpec`` reproduces the pre-#111 ``P2RecipeGuard`` behaviour verbatim
 (ADR-0007 values, raise messages, the ``is not False`` identity check on RCL and
 the missing-``n_epochs`` default); ``P1RecipeSpec`` is the runtime guard
 ADR-0005 pinned but never had (validation only, no recipe value change);
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from ctmr.domain.recipe import CrossModalRecipeSpec, P1RecipeSpec, P2RecipeSpec
+from ctmr.domain.recipe import CrossModalRecipeSpec, MaskRecipeSpec, P1RecipeSpec
 
 REPO = Path(__file__).resolve().parents[2]
 P2_TRAIN_CONFIG = json.loads((REPO / "configs/config_brats_p2_train.json").read_text())
@@ -39,45 +39,45 @@ class _QuietLogger:
         self.messages = getattr(self, "messages", []) + [message]
 
 
-# ── P2: the pre-#111 P2RecipeGuard behaviour, verbatim (ADR-0007 values) ──
+# ── mask: the pre-#111 P2RecipeGuard behaviour, verbatim (ADR-0007 values) ──
 
 
-def test_p2_accepts_the_pinned_config():
+def test_mask_accepts_the_pinned_config():
     logger = _QuietLogger()
-    assert P2RecipeSpec(dict(P2_TRAIN_CONFIG["controlnet_train"]), logger).check() is True
-    assert "P2 recipe guard OK: lr=1e-05 batch=1 weighted_loss=100@[129, 130, 131] RCL=off" in logger.messages
+    assert MaskRecipeSpec(dict(P2_TRAIN_CONFIG["controlnet_train"]), logger).check() is True
+    assert "mask recipe guard OK: lr=1e-05 batch=1 weighted_loss=100@[129, 130, 131] RCL=off" in logger.messages
 
 
 @pytest.mark.parametrize(
     "field,value,message",
     [
-        ("lr", 2e-05, "pinned P2 lr is 1e-05, got 2e-05 (ADR-0007)"),
-        ("batch_size", 2, "pinned P2 batch_size is 1, got 2 (ADR-0007)"),
-        ("weighted_loss", 50, "pinned P2 weighted_loss is 100, got 50 (ADR-0007)"),
-        ("weighted_loss_label", [129, 130], "pinned P2 weighted_loss_label is [129, 130, 131], got [129, 130] (ADR-0007)"),
-        ("cache_rate", 1, "pinned P2 cache_rate is 0, got 1 (ADR-0007)"),
-        ("n_epochs", 101, "pinned P2 max n_epochs is 100, got 101 (ADR-0007)"),
+        ("lr", 2e-05, "pinned mask lr is 1e-05, got 2e-05 (ADR-0007)"),
+        ("batch_size", 2, "pinned mask batch_size is 1, got 2 (ADR-0007)"),
+        ("weighted_loss", 50, "pinned mask weighted_loss is 100, got 50 (ADR-0007)"),
+        ("weighted_loss_label", [129, 130], "pinned mask weighted_loss_label is [129, 130, 131], got [129, 130] (ADR-0007)"),
+        ("cache_rate", 1, "pinned mask cache_rate is 0, got 1 (ADR-0007)"),
+        ("n_epochs", 101, "pinned mask max n_epochs is 100, got 101 (ADR-0007)"),
     ],
 )
-def test_p2_deviation_raises_with_the_verbatim_message(field, value, message):
+def test_mask_deviation_raises_with_the_verbatim_message(field, value, message):
     config = dict(P2_TRAIN_CONFIG["controlnet_train"])
     config[field] = value
     with pytest.raises(ValueError, match=re.escape(message)):
-        P2RecipeSpec(config, _QuietLogger()).check()
+        MaskRecipeSpec(config, _QuietLogger()).check()
 
 
 @pytest.mark.parametrize("rcl", [True, None, 0], ids=["true", "null", "zero"])
-def test_p2_rcl_identity_check_is_not_truthiness(rcl):
+def test_mask_rcl_identity_check_is_not_truthiness(rcl):
     config = dict(P2_TRAIN_CONFIG["controlnet_train"])
     config["use_region_contrasive_loss"] = rcl
-    with pytest.raises(ValueError, match="P2 recipe forbids use_region_contrasive_loss \\(must be OFF, ADR-0007\\)"):
-        P2RecipeSpec(config, _QuietLogger()).check()
+    with pytest.raises(ValueError, match="mask recipe forbids use_region_contrasive_loss \\(must be OFF, ADR-0007\\)"):
+        MaskRecipeSpec(config, _QuietLogger()).check()
 
 
-def test_p2_missing_n_epochs_defaults_to_the_max_cap():
+def test_mask_missing_n_epochs_defaults_to_the_max_cap():
     config = dict(P2_TRAIN_CONFIG["controlnet_train"])
     del config["n_epochs"]
-    assert P2RecipeSpec(config, _QuietLogger()).check() is True
+    assert MaskRecipeSpec(config, _QuietLogger()).check() is True
 
 
 # ── P1: the ADR-0005 runtime guard (added, never a recipe change) ──

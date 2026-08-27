@@ -75,11 +75,9 @@ def test_run_derives_the_child_and_relays_its_exit_code(monkeypatch):
 def _fake_train(monkeypatch):
     """Pre-seed a fake train module so the in-process branch never touches torch.
 
-    ``from ctmr.application.generation import modality_label`` then
-    ``modality_label.train.main`` resolves the attribute on the already-imported
-    package first; once any torch-tier test has imported the real module that
-    attribute points at it. Patch both the package attribute and ``sys.modules``
-    so the fake wins in either stack.
+    The in-process branch resolves the module through ``importlib.import_module``,
+    which hits ``sys.modules`` first; pre-seeding the fake there keeps the torch
+    stack out of this stdlib-only module.
     """
     import ctmr.application.generation.modality_label as modality_label_pkg
 
@@ -108,7 +106,7 @@ def test_cli_spawns_torchrun_when_world_size_is_absent(monkeypatch, _fake_train)
 
     monkeypatch.setattr(launcher_mod.subprocess, "run", _fake_run)
     monkeypatch.delenv("WORLD_SIZE", raising=False)
-    rc = cli.CtmrCli()._run_modality_label_train(["-e", "env.json", "-g", "4"])
+    rc = cli.CtmrCli()._run_family_train("modality-label", ["-e", "env.json", "-g", "4"])
     assert rc == 0
     assert captured["cmd"][:2] == ["torchrun", "--nproc_per_node"]  # the spawn derivation fired
     assert captured["cmd"][2] == "4"
@@ -121,6 +119,6 @@ def test_cli_dispatches_in_process_when_already_a_torchrun_worker(monkeypatch, _
 
     monkeypatch.setattr(launcher_mod.subprocess, "run", _no_spawn)
     monkeypatch.setenv("WORLD_SIZE", "4")
-    rc = cli.CtmrCli()._run_modality_label_train(["-e", "env.json"])
+    rc = cli.CtmrCli()._run_family_train("modality-label", ["-e", "env.json"])
     assert rc == 0
     assert _fake_train == [["-e", "env.json"]]  # the train entry ran in-process with argv verbatim

@@ -9,18 +9,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unified ``ctmr`` console entry point (issues #130/#137/#140 / ADR-0015 §3).
+"""Unified ``ctmr`` console entry point (issues #130/#137/#138/#139/#140 / ADR-0015 §3).
 
-Five command families pinned as the terminal CLI face; verbs land family by
-family with the migration batches. Two doors are live:
+The five command families are pinned as the terminal CLI face; real verbs land
+family by family with the migration batches (M4 application layer). The
+``generate`` family is live for ``cross-modal`` (ticket 08), ``mask``
+(ticket 09) and ``modality-label`` (ticket 10): the verb grammar is
+deliberately thin -- each verb forwards its remaining argv verbatim to the
+family module entry (``train`` / ``dev-eval`` / ``generate``), whose full
+argparse surface (and the argv↔namespace equivalence gate) lives in the module
+itself. ``ctmr generate <case> train`` derives torchrun itself
+(no WORLD_SIZE -> spawn the trainer child); everything else dispatches
+in-process.
 
 ``ctmr measure predict`` (issue #140) is the canonical frozen-instrument
 execution entry, replacing ``python -m ctmr.instrument.predict``.
 
 ``ctmr generate cross-modal`` (ticket 08) routes train/dev-eval/generate to the
-cross-modal family module; ``ctmr generate modality-label`` (ticket 10) routes
-train/dev-eval to the modality-label family module the same way. The verb
-grammar is deliberately thin -- each verb
+cross-modal family module; ``ctmr generate mask`` (ticket 09) and
+``ctmr generate modality-label`` (ticket 10) route to their family modules the
+same way. The verb grammar is deliberately thin -- each verb
 forwards its remaining argv verbatim to the family module entry
 (``train`` / ``dev-eval`` / ``generate baseline|candidate``), whose full
 argparse surface (and the argv↔namespace equivalence gate) lives in the module
@@ -43,8 +51,11 @@ import importlib
 import os
 import sys
 
-TRAIN_MODULE = "ctmr.application.generation.cross_modal.train"
-MODALITY_LABEL_TRAIN_MODULE = "ctmr.application.generation.modality_label.train"
+TRAIN_MODULES = {
+    "cross-modal": "ctmr.application.generation.cross_modal.train",
+    "mask": "ctmr.application.generation.mask.train",
+    "modality-label": "ctmr.application.generation.modality_label.train",
+}
 
 _VARIANTS = ("baseline", "candidate")
 
@@ -112,16 +123,12 @@ class CtmrCli:
         cases = fam_parser.add_subparsers(dest="case", metavar="<case>", required=True)
         migrated = {
             "modality-label": "modality-label-conditioned chain (train/dev-eval)",
+            "mask": "mask-conditioned chain (train/dev-eval/generate)",
             "cross-modal": "image-conditioned cross-modality chain (train/dev-eval/generate)",
         }
-        for case, help_text in (*migrated.items(), ("mask", "mask chain -- not migrated yet")):
-            case_parser = cases.add_parser(case, help=help_text)
-            if case == "mask":
-                case_parser.add_argument("rest", nargs="*", metavar="verb", help="future verbs/flags of this case")
-                case_parser.set_defaults(run=self._not_migrated)
-            else:
-                # a bare case (no verb) answers a usage pointer, not a traceback
-                case_parser.set_defaults(run=self._bare_generate_case)
+        for case, help_text in migrated.items():
+            # a bare case (no verb) answers a usage pointer, not a traceback
+            cases.add_parser(case, help=help_text).set_defaults(run=self._bare_generate_case)
 
     def _bare_generate_case(self, args):
         """Answer a bare ``generate <case>`` (no verb) with a usage pointer, not a traceback."""
@@ -146,7 +153,7 @@ class CtmrCli:
 
     @staticmethod
     def _peel_generate(argv):
-        """Peel the fixed ``generate <case> <verb> [variant]`` prefix; (handler, rest) or None.
+        """Peel the fixed ``generate <case> <verb> [variant]`` prefix; (handler, ...) or None.
 
         ``None`` means the argv does not fit a migrated verb -- fall back to the
         parser tree (help / argparse error). This deliberately does not parse
@@ -157,26 +164,23 @@ class CtmrCli:
         if argv[0] not in ("generate", "gen"):
             return None
         case = argv[1]
-        if case == "mask":
-            args = argparse.Namespace(family=argv[0], case=case, rest=argv[1:])
-            return (CtmrCli._not_migrated, args)
-        if case not in ("modality-label", "cross-modal"):
+        if case not in ("modality-label", "mask", "cross-modal"):
             return None
         if len(argv) < 3:
             return None
         verb = argv[2]
         rest = argv[3:]
+        if verb == "train":
+            return (CtmrCli._run_family_train, case, rest)
         if case == "modality-label":
-            if verb == "train":
-                return (CtmrCli._run_modality_label_train, rest)
             if verb == "dev-eval":
                 return (CtmrCli._run_modality_label_dev_eval, rest)
             return None
-        if verb == "train":
-            return (CtmrCli._run_cross_modal_train, rest)
         if verb == "dev-eval":
-            return (CtmrCli._run_cross_modal_dev_eval, rest)
+            return (CtmrCli._run_mask_dev_eval, rest) if case == "mask" else (CtmrCli._run_cross_modal_dev_eval, rest)
         if verb == "generate":
+            if case == "mask":
+                return (CtmrCli._run_mask_generate, rest)
             if len(rest) >= 1 and rest[0] in _VARIANTS:
                 return (CtmrCli._run_cross_modal_generate, rest[0], rest[1:])
             return None
@@ -194,28 +198,31 @@ class CtmrCli:
         args = self._parser.parse_args(argv)
         return args.run(args)
 
-    def _run_modality_label_train(self, rest):
-        """Dispatch the finetune entry; outside torchrun, derive the torchrun child."""
-        from ctmr.application.generation import modality_label
-        from ctmr.application.generation.launcher import TorchrunLauncher, num_gpus_of
-
-        if os.environ.get("WORLD_SIZE"):
-            return modality_label.train.main(rest)
-        return TorchrunLauncher(MODALITY_LABEL_TRAIN_MODULE, rest, num_gpus_of(rest)).run()
-
     def _run_modality_label_dev_eval(self, rest):
         from ctmr.application.generation.modality_label import monitor
 
         return monitor.main(rest)
 
-    def _run_cross_modal_train(self, rest):
+    def _run_family_train(self, case, rest):
         """Dispatch the finetune entry; outside torchrun, derive the torchrun child."""
-        from ctmr.application.generation.cross_modal import train
+        import importlib
+
         from ctmr.application.generation.launcher import TorchrunLauncher, num_gpus_of
 
+        module = TRAIN_MODULES[case]
         if os.environ.get("WORLD_SIZE"):
-            return train.main(rest)
-        return TorchrunLauncher(TRAIN_MODULE, rest, num_gpus_of(rest)).run()
+            return importlib.import_module(module).main(rest)
+        return TorchrunLauncher(module, rest, num_gpus_of(rest)).run()
+
+    def _run_mask_dev_eval(self, rest):
+        from ctmr.application.generation.mask import monitor
+
+        return monitor.main(rest)
+
+    def _run_mask_generate(self, rest):
+        from ctmr.application.generation.mask import sample
+
+        return sample.main(rest)
 
     def _run_cross_modal_dev_eval(self, rest):
         from ctmr.application.generation.cross_modal import monitor

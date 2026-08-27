@@ -62,9 +62,13 @@ def test_help_lists_all_five_command_families(capsys):
 
 def test_gen_alias_reaches_the_generate_family():
     peeled = cli.CtmrCli._peel_generate(["gen", "cross-modal", "train", "--bad"])
-    assert peeled[0] is cli.CtmrCli._run_cross_modal_train
-    assert list(peeled[1]) == ["--bad"]
+    assert peeled[0] is cli.CtmrCli._run_family_train
+    assert peeled[1] == "cross-modal"
+    assert list(peeled[2]) == ["--bad"]
     assert cli.CtmrCli._peel_generate(["gen", "cross-modal"]) is None
+    mask_peeled = cli.CtmrCli._peel_generate(["gen", "mask", "train", "--bad"])
+    assert mask_peeled[0] is cli.CtmrCli._run_family_train
+    assert mask_peeled[1] == "mask"
 
 
 def test_every_family_without_verbs_answers_not_migrated_for_any_concrete_call(capsys):
@@ -89,17 +93,18 @@ def test_measure_bare_invocation_still_answers_not_migrated(capsys):
     assert "not migrated yet" in err
 
 
-def test_not_migrated_generate_cases_still_answer_not_migrated(capsys):
-    assert cli.main(["gen", "mask", "watch"]) == 2
-    assert "mask" in capsys.readouterr().err
-    assert cli.main(["generate", "mask", "train"]) == 2
-    assert "mask" in capsys.readouterr().err
+def test_migrated_generate_case_rejects_an_unknown_verb_as_a_usage_error():
+    for argv in (["gen", "mask", "watch"], ["generate", "modality-label", "manifest"]):
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main(argv)
+        assert excinfo.value.code == 2
 
 
 def test_live_generate_cases_peel_to_their_family_handlers():
     train_peeled = cli.CtmrCli._peel_generate(["generate", "modality-label", "train", "-e", "env.json"])
-    assert train_peeled[0] is cli.CtmrCli._run_modality_label_train
-    assert list(train_peeled[1]) == ["-e", "env.json"]
+    assert train_peeled[0] is cli.CtmrCli._run_family_train
+    assert train_peeled[1] == "modality-label"
+    assert list(train_peeled[2]) == ["-e", "env.json"]
     dev_peeled = cli.CtmrCli._peel_generate(["generate", "modality-label", "dev-eval", "select", "--out", "o.json"])
     assert dev_peeled[0] is cli.CtmrCli._run_modality_label_dev_eval
     assert list(dev_peeled[1]) == ["select", "--out", "o.json"]
@@ -110,6 +115,8 @@ def test_bare_generate_case_answers_a_usage_pointer_not_a_traceback(capsys):
     err = capsys.readouterr().err
     assert "needs a verb" in err and "modality-label" in err
     assert cli.main(["gen", "cross-modal"]) == 2
+    assert "needs a verb" in capsys.readouterr().err
+    assert cli.main(["generate", "mask"]) == 2
     assert "needs a verb" in capsys.readouterr().err
 
 

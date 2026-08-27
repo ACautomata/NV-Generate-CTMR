@@ -11,8 +11,8 @@
 
 """Pinned-recipe guards, first-class PhaseHarness hooks (ADR-0011 decision 4).
 
-Each spec pins the frozen recipe values of one stage (ADR-0005 P1 / ADR-0007 P2
-/ the mask-equivalent-plus-CFG=0 cross-modal) and raises on any deviation. P1's guard is
+Each spec pins the frozen recipe values of one stage (ADR-0005 P1 / ADR-0007
+mask / the mask-equivalent-plus-CFG=0 cross-modal) and raises on any deviation. P1's guard is
 the runtime validation ADR-0005 pinned but never had -- it changes no recipe
 value. Guards are value objects over plain config dicts: stdlib-only, so the
 convergence gate runs on any machine (ADR-0013 §4).
@@ -21,8 +21,8 @@ convergence gate runs on any machine (ADR-0013 §4).
 from __future__ import annotations
 
 
-class P2RecipeSpec:
-    """Pinned-recipe guard for the frozen P2 recipe (ADR-0007).
+class MaskRecipeSpec:
+    """Pinned-recipe guard for the frozen mask-conditioned recipe (ADR-0007).
 
     Behaviour reproduces the pre-#111 ``P2RecipeGuard`` verbatim, including the
     identity check (``is not False``) on ``use_region_contrasive_loss`` and the
@@ -43,21 +43,21 @@ class P2RecipeSpec:
     def check(self):
         cfg = self._cfg
         if cfg.get("lr") != self.PINNED_LR:
-            raise ValueError(f"pinned P2 lr is {self.PINNED_LR}, got {cfg.get('lr')} (ADR-0007)")
+            raise ValueError(f"pinned mask lr is {self.PINNED_LR}, got {cfg.get('lr')} (ADR-0007)")
         if cfg.get("batch_size") != self.PINNED_BATCH:
-            raise ValueError(f"pinned P2 batch_size is {self.PINNED_BATCH}, got {cfg.get('batch_size')} (ADR-0007)")
+            raise ValueError(f"pinned mask batch_size is {self.PINNED_BATCH}, got {cfg.get('batch_size')} (ADR-0007)")
         if cfg.get("weighted_loss") != self.PINNED_WEIGHTED_LOSS:
-            raise ValueError(f"pinned P2 weighted_loss is {self.PINNED_WEIGHTED_LOSS}, got {cfg.get('weighted_loss')} (ADR-0007)")
+            raise ValueError(f"pinned mask weighted_loss is {self.PINNED_WEIGHTED_LOSS}, got {cfg.get('weighted_loss')} (ADR-0007)")
         if cfg.get("weighted_loss_label") != self.PINNED_WEIGHTED_LABELS:
-            raise ValueError(f"pinned P2 weighted_loss_label is {self.PINNED_WEIGHTED_LABELS}, got {cfg.get('weighted_loss_label')} (ADR-0007)")
+            raise ValueError(f"pinned mask weighted_loss_label is {self.PINNED_WEIGHTED_LABELS}, got {cfg.get('weighted_loss_label')} (ADR-0007)")
         if cfg.get("use_region_contrasive_loss", False) is not False:
-            raise ValueError("P2 recipe forbids use_region_contrasive_loss (must be OFF, ADR-0007)")
+            raise ValueError("mask recipe forbids use_region_contrasive_loss (must be OFF, ADR-0007)")
         if cfg.get("cache_rate") != self.PINNED_CACHE_RATE:
-            raise ValueError(f"pinned P2 cache_rate is {self.PINNED_CACHE_RATE}, got {cfg.get('cache_rate')} (ADR-0007)")
+            raise ValueError(f"pinned mask cache_rate is {self.PINNED_CACHE_RATE}, got {cfg.get('cache_rate')} (ADR-0007)")
         if cfg.get("n_epochs", self.MAX_EPOCHS) > self.MAX_EPOCHS:
-            raise ValueError(f"pinned P2 max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')} (ADR-0007)")
+            raise ValueError(f"pinned mask max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')} (ADR-0007)")
         self._logger.info(
-            f"P2 recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} "
+            f"mask recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} "
             f"weighted_loss={self.PINNED_WEIGHTED_LOSS}@{self.PINNED_WEIGHTED_LABELS} RCL=off"
         )
         return True
