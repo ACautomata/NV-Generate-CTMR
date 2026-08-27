@@ -10,7 +10,7 @@ Training data preparation can be found in [../data/README.md](../data/README.md)
 
 ## 3D Autoencoder (VAE) Training
 
-Please refer to [train_vae_tutorial.ipynb](../train_vae_tutorial.ipynb) for the tutorial for MAISI VAE model training.
+The VAE training loop lives in [`ctmr.application.vae_train`](../src/ctmr/application/vae_train.py) -- the single in-repo implementation of the MAISI autoencoder GAN loop (alternating generator/discriminator updates, three-phase LR warmup, AMP GradScaler pairs).
 
 The information for the training hyperparameters and data processing parameters, like learning rate and patch size, are stored in [../configs/config_maisi_vae_train.json](../configs/config_maisi_vae_train.json). The provided configuration works for 16G V100 GPU. Please feel free to tune the parameters for your datasets and device.
 
@@ -38,8 +38,6 @@ The information for the training hyperparameters and data processing parameters,
 
 ## 3D Latent Diffusion Training
 
-Please refer to [train_diff_unet_tutorial.ipynb](../train_diff_unet_tutorial.ipynb) for the tutorial for MAISI diffusion model training.
-
 ```bash
 export NUM_GPUS_PER_NODE=8
 network="rflow"
@@ -66,8 +64,6 @@ generate_version="ddpm-ct"
 ```
 
 ## 3D ControlNet Training
-
-Please refer to [train_controlnet_tutorial.ipynb](../train_controlnet_tutorial.ipynb) for the tutorial for MAISI controlnet model training.
 
 We provide a [training config](../configs/config_maisi_controlnet_train.json) executing finetuning for pretrained ControlNet with a new class (i.e., Kidney Tumor).
 When finetuning with other new class names, please update the `weighted_loss_label` in training config
@@ -118,8 +114,6 @@ torchrun \
     --master_addr=localhost --master_port=1234 \
     -m scripts.train_controlnet -t ./configs/config_network_${network}.json -c ./configs/config_maisi_controlnet_train_${generate_version}.json -e ./configs/environment_maisi_controlnet_train_${generate_version}.json -g ${NUM_GPUS_PER_NODE}
 ```
-
-Please also check [train_controlnet_tutorial.ipynb](../train_controlnet_tutorial.ipynb) for more details about data preparation and training parameters.
 
 ## Training GPU Memory Usage
 
