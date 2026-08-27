@@ -97,6 +97,15 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ctmr.application.acceptance.binding import BINDING_KEYS, expected_binding
+from ctmr.application.acceptance.registry import (
+    ATTACH_KINDS,
+    FORMAL_LAYER_KINDS,
+    L1_SCHEMA,
+    L2_SCHEMA,
+    L3_SCHEMA,
+    LAYER_KINDS,
+)
 from ctmr.infrastructure.dmsource import DmSourceRepository
 
 SCHEMA = "brats-phase-run/1"
@@ -104,15 +113,12 @@ PHASES = ("P1", "P2", "P3")
 P3_VARIANTS = ("controlnet-candidate", "stage0-baseline")
 STAGE0_BASELINE = "stage0-baseline"  # zero-training img2img P3 baseline (issue #60 / spec #51 decision 8)
 CONTROLNET_CANDIDATE = "controlnet-candidate"  # trained image-conditioned P3 ControlNet candidate (issue #61)
-FORMAL_LAYER_KINDS = ("l1_report", "l2_report", "l3_report")
 STATUS_OPEN = "open"
 STATUS_FROZEN = "frozen"
 LIST_SIDES = ("train", "dev", "replay")  # holdout is never a data-list side; replay is the
 # P1-only external MR-RATE cohort (spec #51 decision 6): its entries carry the
 # replay study identity and must NOT collide with the BraTS split manifest.
-ATTACH_KINDS = ("l1_report", "l2_report", "l3_report", "env")
 UPSTREAM_PHASE = "P1"  # P2 and P3 both hang off the same frozen P1-DM
-L1_SCHEMA = "brats-l1-report/1"
 L1_MODALITIES = ("t1n", "t1c", "t2w", "t2f")
 L1_PLANES = ("xy", "yz", "zx")
 L1_VERDICTS = ("pass", "fail", "undecided")
@@ -120,7 +126,6 @@ L1_T1N_TO_T1C = ("t1n", "t1c")
 L1_FEATURE_EXTRACTOR = "radimagenet_resnet50"
 L1_MR_PREPROCESSING = "percentile_0_99.5_to_0_1_ras_1mm_zero_pad"
 
-L3_SCHEMA = "brats-l3-report/1"
 L3_MODALITIES = ("t1n", "t1c", "t2w", "t2f")
 L3_DIMENSIONS = (
     "overall_realism",
@@ -132,7 +137,6 @@ L3_TURING_WINDOW = (0.40, 0.60)
 L3_LIKERT_BOUND = 4.0
 L3_VERDICTS = ("pass", "fail")
 
-L2_SCHEMA = "l2-final-acceptance-report/1"  # mirrors scripts/nnunet_l2_final_acceptance.REPORT_SCHEMA
 L2_CHALLENGES = ("GLI", "SSA", "MEN", "METS", "PED")  # the frozen five; formal L2 evidence covers all
 L2_VERDICTS = ("pass", "fail", "undecided")
 
@@ -577,20 +581,14 @@ class L1ReportValidator:
 
     def _binding(self, record, report, failures):
         binding = report.get("binding")
-        expected = {
-            "run_id": record.get("run_id"),
-            "phase": record.get("phase"),
-            "manifest_sha256": record.get("manifest", {}).get("sha256"),
-            "candidate_checkpoint_sha256": record.get("selection", {}).get("checkpoint", {}).get("sha256"),
-            "samples_sha256": record.get("samples", {}).get("sha256"),
-        }
+        expected = expected_binding(record)
         if report.get("schema") != L1_SCHEMA:
             failures.append(f"L1 report schema != {L1_SCHEMA}")
         if not isinstance(binding, dict):
             failures.append("L1 report binding must be an object")
             return
-        for key, value in expected.items():
-            if binding.get(key) != value:
+        for key in BINDING_KEYS:
+            if binding.get(key) != expected[key]:
                 failures.append(f"L1 report binding {key} does not match frozen run")
 
     def _challenges(self, record, failures):
@@ -789,20 +787,14 @@ class L3ReportValidator:
 
     def _binding(self, record, report, failures):
         binding = report.get("binding")
-        expected = {
-            "run_id": record.get("run_id"),
-            "phase": record.get("phase"),
-            "manifest_sha256": record.get("manifest", {}).get("sha256"),
-            "candidate_checkpoint_sha256": record.get("selection", {}).get("checkpoint", {}).get("sha256"),
-            "samples_sha256": record.get("samples", {}).get("sha256"),
-        }
+        expected = expected_binding(record)
         if report.get("schema") != L3_SCHEMA:
             failures.append(f"L3 report schema != {L3_SCHEMA}")
         if not isinstance(binding, dict):
             failures.append("L3 report binding must be an object")
             return
-        for key, value in expected.items():
-            if binding.get(key) != value:
+        for key in BINDING_KEYS:
+            if binding.get(key) != expected[key]:
                 failures.append(f"L3 report binding {key} does not match frozen run")
 
     def _challenges(self, record, failures):
@@ -1041,20 +1033,14 @@ class L2ReportValidator:
 
     def _binding(self, record, report, failures):
         binding = report.get("binding")
-        expected = {
-            "run_id": record.get("run_id"),
-            "phase": record.get("phase"),
-            "manifest_sha256": record.get("manifest", {}).get("sha256"),
-            "candidate_checkpoint_sha256": record.get("selection", {}).get("checkpoint", {}).get("sha256"),
-            "samples_sha256": record.get("samples", {}).get("sha256"),
-        }
+        expected = expected_binding(record)
         if report.get("schema") != L2_SCHEMA:
             failures.append(f"L2 report schema != {L2_SCHEMA}")
         if not isinstance(binding, dict):
             failures.append("L2 report binding must be an object (evaluate with --run to bind the frozen candidate)")
             return
-        for key, value in expected.items():
-            if binding.get(key) != value:
+        for key in BINDING_KEYS:
+            if binding.get(key) != expected[key]:
                 failures.append(f"L2 report binding {key} does not match frozen run")
 
     def _coverage(self, report, failures):
@@ -1271,8 +1257,6 @@ class FinalAcceptanceJudge:
     registers the DM source for P2/P3 (issue #58 acceptance criterion 3).
     """
 
-    LAYER_KINDS = {"L1": "l1_report", "L2": "l2_report", "L3": "l3_report"}
-
     def __init__(self, store, fingerprinter):
         self._store = store
         self._fingerprinter = fingerprinter
@@ -1302,7 +1286,7 @@ class FinalAcceptanceJudge:
         if problems:
             raise ContractViolationError("final acceptance blocked before judgement: " + "; ".join(problems))
         blocked_reasons = []
-        for layer_name in self.LAYER_KINDS:
+        for layer_name in LAYER_KINDS:
             blocked_reasons += self._layer_reasons(layer_name, layers[layer_name])
         verdict = "pass" if not blocked_reasons else "blocked"
         entry = {
@@ -1331,7 +1315,7 @@ class FinalAcceptanceJudge:
         }
         layers = {}
         problems = []
-        for layer_name, kind in self.LAYER_KINDS.items():
+        for layer_name, kind in LAYER_KINDS.items():
             attachments = [a for a in record.get("attachments", []) if a.get("kind") == kind]
             if len(attachments) > 1:
                 problems.append(f"run has more than one formal {kind} attachment")
@@ -1408,17 +1392,17 @@ class FinalAcceptanceJudge:
         if verdict_record.get("run_id") != record.get("run_id") or verdict_record.get("phase") != record.get("phase"):
             problems.append("verdict record does not bind this run")
         layers = verdict_record.get("layers")
-        if not isinstance(layers, dict) or set(layers) != set(self.LAYER_KINDS):
+        if not isinstance(layers, dict) or set(layers) != set(LAYER_KINDS):
             problems.append("verdict record must carry exactly the L1/L2/L3 layer entries")
             return problems
         for layer_name, layer in layers.items():
             attachment = layer.get("attachment") or {}
-            current = [a for a in record.get("attachments", []) if a.get("kind") == self.LAYER_KINDS[layer_name]]
+            current = [a for a in record.get("attachments", []) if a.get("kind") == LAYER_KINDS[layer_name]]
             if len(current) != 1 or current[0]["sha256"] != attachment.get("sha256"):
                 problems.append(f"verdict record {layer_name} attachment no longer matches the run record")
         # Re-derive the AND: the recorded verdict must follow from its layer verdicts
         # (an edited/flipped verdict file fails verification even with intact attachments).
-        layer_verdicts = [layers[name].get("verdict") for name in self.LAYER_KINDS]
+        layer_verdicts = [layers[name].get("verdict") for name in LAYER_KINDS]
         if all(verdict == "pass" for verdict in layer_verdicts):
             expected = "pass" if verdict_record.get("blocked_reasons") == [] else "blocked"
         else:
