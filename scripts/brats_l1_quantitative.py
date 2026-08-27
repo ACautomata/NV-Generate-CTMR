@@ -26,20 +26,11 @@ import numpy as np
 from skimage.metrics import structural_similarity
 
 from ctmr.application.acceptance.contract.binding import FrozenRunBinding, FrozenRunBindingError  # noqa: E402
+from ctmr.application.acceptance.quantitative.fid import FidScoreCalculator, L1QuantitativeError  # noqa: E402
 
 SCHEMA = "brats-l1-report/1"
 FEATURE_EXTRACTOR = "radimagenet_resnet50"
 MR_PREPROCESSING = "percentile_0_99.5_to_0_1_ras_1mm_zero_pad"
-
-
-class L1QuantitativeError(Exception):
-    """Raised when L1 inputs cannot produce an auditable quantitative conclusion."""
-
-
-# Forward shim (ticket 09 / ADR-0015 §2): the Fréchet-distance kernel moved to
-# ctmr.domain.measurement.metrics (shared with the dev-side plane-FID trend);
-# this script consumes that one definition until its own migration batch.
-from ctmr.domain.measurement.metrics import FidScoreCalculator  # noqa: E402, F401
 
 
 @dataclass(frozen=True)
@@ -291,7 +282,7 @@ class L1ReportProducer:
                             "verdict": verdict,
                         }
                     )
-                except (L1QuantitativeError, ValueError) as error:  # the domain FID kernel validates with ValueError
+                except L1QuantitativeError as error:
                     results.append(
                         {
                             "challenge": challenge,

@@ -9,17 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ctmr.instrument -- the execution side of the frozen instrument call (ADR-0009, #107).
+"""ctmr.instrument -- superseded reverse shim (issue #140; ADR-0015 §2).
 
-Since the ADR-0015 §2 domain split (#133) the frozen command construction (the
-``InstrumentSpec`` value object, per-challenge specs and
-``FrozenInstrumentCommand.build`` -- pure argv) lives in
-``ctmr.domain.instrument_spec``; this package keeps what executes it:
-``safeglobals`` holds the single allowlist definition and its scoped activation
-``nnunet_safe_globals``, and ``predict`` is the canonical execution entry
-(``python -m ctmr.instrument.predict``). Mirror TTA stays ON by omission -- a
-frozen invariant of the spec (see ``ctmr.domain.instrument_spec``).
-
-This package re-exports nothing: ``safeglobals`` needs torch and ``predict``
-needs nnunetv2 -- import the submodules directly (ADR-0013 §4).
+The execution side of the frozen instrument call moved to
+``ctmr.infrastructure.nnunet_runner`` (predictor execution + the weights_only
+allowlist), exposed canonically as ``ctmr measure predict``; the frozen command
+construction had already moved to ``ctmr.domain.instrument_spec`` (#133). The
+submodules here re-export the new home until their last not-yet-migrated
+consumer (the modality-label chain, ticket #140's sibling tickets) switches;
+they then go away with the ADR-0015 batches.
 """

@@ -65,7 +65,7 @@ import numpy as np
 import torch
 
 from ctmr.application.generation.mask.sample import CandidateSampler
-from ctmr.application.generation.trends import (
+from ctmr.application.generation.trend import (
     PLANES,
     DevCohortBuilder,
     L2TrendRunner,
@@ -91,8 +91,6 @@ INSTRUMENT_REGION_LABELS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
 # path -- the parity is machine-guarded in tests/application/generation/mask.
 DM_GRID_TO_LPS_AXIS_FLIP = (1, 2)
 PREDICTION_SHAPE = tuple(reversed(INSTRUMENT_GRID.size))  # array layout is zyx
-
-torch.serialization.add_safe_globals([np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.Float64DType])
 
 
 class DevList:

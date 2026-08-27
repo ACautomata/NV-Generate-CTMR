@@ -23,9 +23,9 @@ this interface exposes no TTA parameter at all and ``build`` never emits
 fatal argparse error, #78).
 
 ``build`` is a pure transform: it only produces argv for the canonical entry
-point ``python -m ctmr.instrument.predict`` (ADR-0009 decision 3) -- no
-execution, no file IO; running it (subprocess / writing a shell script) stays
-with the caller.
+point ``python -m ctmr measure predict`` (ADR-0009 decision 3, executed by
+``ctmr.infrastructure.nnunet_runner`` since #140) -- no execution, no file IO;
+running it (subprocess / writing a shell script) stays with the caller.
 """
 
 import sys
@@ -53,7 +53,7 @@ INSTRUMENT_SPECS = {
 }
 """Per-challenge frozen specs. Both nnUNetv2 spellings of a dataset id resolve
 to the same model directory; the unambiguous full name is the canonical form
-(the ADR-0002 calibration entry and ``brats_p1_dev_eval`` already use it)."""
+(the ADR-0002 calibration entry and ``ctmr.application.generation.trend`` already use it)."""
 
 
 class FrozenInstrumentCommand:
@@ -74,7 +74,9 @@ class FrozenInstrumentCommand:
         return [
             sys.executable,
             "-m",
-            "ctmr.instrument.predict",
+            "ctmr",
+            "measure",
+            "predict",
             "-i",
             str(input_dir),
             "-o",

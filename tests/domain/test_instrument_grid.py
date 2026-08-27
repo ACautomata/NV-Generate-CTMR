@@ -19,7 +19,7 @@ class FinalAcceptanceReferenceGeometry:
     """Byte-for-byte snapshot of the pre-#105 terminal-acceptance geometry.
 
     The frozen convergence standard of ADR-0008: the private methods of
-    ``GeneratedVolumeResampler`` in ``scripts/nnunet_l2_final_acceptance_nifti.py``
+    ``GeneratedVolumeResampler`` in the distribution ``measurement_run``
     before the ``ctmr.domain.grid`` extraction. Do not edit -- drift here is exactly
     what this gate exists to catch.
     """
@@ -101,7 +101,7 @@ def test_label_adapter_aligns_onto_the_instrument_grid_without_inventing_labels(
 
 def test_terminal_acceptance_continuum_geometry_matches_the_frozen_reference(tmp_path):
     pytest.importorskip("scipy")  # the script imports scipy at module level (ADR-0013 skip pattern)
-    from scripts.nnunet_l2_final_acceptance_nifti import GeneratedVolumeResampler
+    from ctmr.application.acceptance.distribution.measurement_run import GeneratedVolumeResampler
 
     zz, yy, xx = np.mgrid[0:80, 0:130, 0:300]  # zyx; xyz size (300, 130, 80) -> crop x/y, pad z
     image = sitk.GetImageFromArray((800.0 * np.exp(-(((zz - 40.0) ** 2 + (yy - 65.0) ** 2 + (xx - 150.0) ** 2) / 2.0e4))).astype(np.float32))
@@ -128,7 +128,7 @@ def test_terminal_acceptance_continuum_geometry_matches_the_frozen_reference(tmp
 
 def test_terminal_acceptance_label_geometry_matches_the_frozen_reference(tmp_path):
     pytest.importorskip("scipy")  # the script imports scipy at module level (ADR-0013 skip pattern)
-    from scripts.nnunet_l2_final_acceptance_nifti import GeneratedVolumeResampler
+    from ctmr.application.acceptance.distribution.measurement_run import GeneratedVolumeResampler
 
     array = np.zeros((200, 100, 120), dtype=np.uint8)  # zyx; xyz size (120, 100, 200) @ (0.5, 1.0, 1.0)
     array[40:160, 20:80, 10:110] = 1

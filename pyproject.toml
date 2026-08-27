@@ -27,7 +27,7 @@ testpaths = ["tests"]
 pythonpath = ["src", "."]
 markers = [
     "torch: torch-level test; CPU-runnable real execution in the CI full-dependency tier (ADR-0015 §6)",
-    "gpu: needs a CUDA device; opt-in via CTMR_RUN_GPU_TESTS=1 on the server tier, auto-skipped locally and in CI (ADR-0015 §6)",
+    "gpu: needs a real GPU/cluster host; auto-skipped locally & in CI, opt-in on servers via --run-gpu or CTMR_RUN_GPU_TESTS=1 (ADR-0015 §6)",
 ]
 
 [tool.ruff]
@@ -40,9 +40,8 @@ select = ["E", "F", "I", "N", "W", "UP"]
 ignore = ["E501", "N812", "N813"]  # E501: line length handled by formatter; N812: `functional as F` is standard PyTorch convention; N813: `SimpleITK as sitk` is the documented SimpleITK convention
 
 [tool.ruff.lint.per-file-ignores]
-"scripts/compute_fid_2-5d_ct.py" = ["N999"]  # hyphenated filename cannot be renamed
-"scripts/nnunet_trainer_250_epochs.py" = ["N801"]  # nnUNet trainer class naming convention
-"src/ctmr/instrument/safeglobals.py" = ["N801"]  # ADR-0009-pinned interface name; class-shaped context manager like torch.serialization.safe_globals
+"src/ctmr/infrastructure/nnunet_runner.py" = ["N801"]  # ADR-0009-pinned interface name; class-shaped context manager like torch.serialization.safe_globals
+"src/ctmr/infrastructure/provisioning/trainer_250_epochs.py" = ["N801"]  # nnunetv2 registry-pinned class name (ADR-0015 §7 exemption)
 
 [tool.ruff.format]
 quote-style = "double"

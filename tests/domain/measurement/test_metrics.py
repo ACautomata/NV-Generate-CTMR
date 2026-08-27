@@ -69,7 +69,7 @@ def test_dice_matches_the_frozen_condition_dice_reference():
         assert DiceScore.of(first, second) == expected
 
 
-# The frozen reference: nnunet_l2_calibration_metrics.wilson_upper, verbatim.
+# The frozen reference: the calibration wilson_upper, verbatim.
 class CalibrationWilsonReference:
     Z95 = 1.959963984540054
 

@@ -50,7 +50,7 @@ src/ctmr/
     ├── checkpoints.py         # CheckpointRepository（见决定 4）
     ├── dmsource.py            # dm_source.json 账本读写
     ├── nnunet_runner.py       # ← ctmr/instrument/predict＋safeglobals（argv 执行与 weights_only 白名单）
-    ├── instrument_provisioning/  # 仪器供给：nnunet_prep/ddp_preflight/plan_variant/install_trainer/trainer_250_epochs（trainer 类名受 nnunetv2 注册契约钉死除外籍改名）
+    ├── provisioning/          # 仪器供给：nnunet_prep/ddp_preflight/plan_variant/install_trainer/trainer_250_epochs（trainer 类名受 nnunetv2 注册契约钉死除外籍改名）
     ├── maiisi_engine/         # 上游 MAISI 引擎收编：diff_model_setting/diff_model_infer/diff_model_train/create_training_data/sample/utils_infer 等可复用件
     └── dataio/                # transforms/augmentation/quality_check/find_masks/sample_mask/utils_plot/NIfTI·下载装配
 ```
@@ -116,7 +116,7 @@ CLAUDE.md 的实验记录段同步改址。其余 10 个 .sh 按 §2/§3 吸收�
 | M0 | 本 ADR ＋ CONTEXT.md 词条更新 ＋ CLAUDE.md 改址 | 文档评审 |
 | M1 | dataio 工具库迁入（§2 表） | pytest 绿 |
 | M2 | domain 层成形（四深模块归位＋identity/recipe/losses/acceptance 新建），tests 同步重排 | 收敛门禁逐条搬家不丢 |
-| M3 | infrastructure（checkpoints/dmsource/nnunet_runner/instrument_provisioning/maisi_engine），payload schema 断言 | 保持 |
+| M3 | infrastructure（checkpoints/dmsource/nnunet_runner/provisioning/maisi_engine），payload schema 断言 | 保持 |
 | M4 | application（generation 三族/acceptance 三层＋contract/shell/vae_train），`ctmr` CLI 上线，判官簇按既有 7 条 import 边整体搬家 | argparse namespace 等价断言延续到子命令 |
 | M5 | 上游残件与 `scripts/__init__.py` 拆除、pyproject/CI 收尾（pythonpath 移除、pip -e） | 活代码与活文档 `grep 'scripts/'` 归零 |
 | M6 | notebook：先抽 VAE 循环，随后五件连引删除 | docs/training.md VAE 节换实现引用 |

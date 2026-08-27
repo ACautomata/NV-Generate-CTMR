@@ -246,9 +246,3 @@ def test_train_cli_derives_num_gpus_from_the_entry_argv():
 def test_mask_train_module_is_pinned_for_the_launcher():
     """The torchrun child module path stays the mask family train entry."""
     assert cli.TRAIN_MODULES["mask"] == "ctmr.application.generation.mask.train"
-
-
-def test_modality_label_case_still_answers_not_migrated():
-    peeled = cli.CtmrCli._peel_generate(["generate", "modality-label", "train", "-e", "e.json"])
-    assert peeled is not None
-    assert peeled[0] is cli.CtmrCli._not_migrated

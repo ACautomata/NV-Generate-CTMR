@@ -87,7 +87,7 @@ echo $! > /root/private_data/<run_dir>/predict.pid
 | `run_l2_synth_domain_eval.sh` | #38 合成域适用性评估全链：病例列表→v1 DM 直出样本→nnU-Net 输入组装→冻结仪器推理→R_fail_synth 指标报告 | `bash deploy/jobs/run_l2_synth_domain_eval.sh [p1\|p3\|all]` | 报告落 `$EVAL_ROOT/report_<mode>/`，脚本末尾自动汇总打印 |
 | `p1_predict_all.sh` | #38 五挑战并行预测（每挑战一卡，TTA 保持开启），通常作为上一条 Step 3 的替代入口 | `bash deploy/jobs/p1_predict_all.sh [p1\|p3]` | 进度看 `$BASE/logs/predict-status.txt` |
 
-三个配方的仪器调用全部走 canonical 入口 `python -m ctmr.instrument.predict`（ADR-0009 收编），逐挑战 dataset/plans/config 由收编门禁测试钉死与 `INSTRUMENT_SPECS` 逐字一致——改 spec 请改 `src/ctmr/instrument/command.py`，勿手调配方参数。
+三个配方的仪器调用全部走 canonical 入口 `ctmr measure predict`（ADR-0009 收编，#140 迁至 `src/ctmr/infrastructure/nnunet_runner.py`），逐挑战 dataset/plans/config 由收编门禁测试钉死与 `INSTRUMENT_SPECS` 逐字一致——改 spec 请改 `src/ctmr/domain/instrument_spec.py`，勿手调配方参数。
 
 ## 数据获取
 

@@ -9,31 +9,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Canonical execution entry of the frozen instrument call (ADR-0009 decision 3, issue #107).
+"""Reverse shim: the canonical entry is now ``ctmr measure predict`` (issue #140).
 
-``python -m ctmr.instrument.predict`` runs the native nnUNetv2
-``predict_entry_point`` inside the ``nnunet_safe_globals()`` scope -- the one
-entry shared by Python callers (``subprocess.run(cmd.build(...))``) and shell
-orchestration, inference behaviour identical to ``nnUNetv2_predict`` (this is
-the promotion of ``scripts/l2_calibration_predict_entry.py``). The scope keeps
-``torch.load`` robust under the torch>=2.6 default ``weights_only=True``
-(checkpoints carry numpy scalars / dtypes). ``src`` must be on ``sys.path``
-(PYTHONPATH or a deployment shim) -- that wiring is ADR-0009 decision 1's
-call-site rollout, not this module's concern.
+Kept importable and ``python -m`` runnable for consumers not yet migrated by
+their own tickets; new call sites must target the canonical verb.
 """
 
 import sys
 
-from nnunetv2.inference.predict_from_raw_data import predict_entry_point
-
-from ctmr.instrument.safeglobals import nnunet_safe_globals
+from ctmr.infrastructure.nnunet_runner import main
 
 
-def main():
-    """Run the native predictor inside the frozen safe-globals scope."""
-    with nnunet_safe_globals():
-        return predict_entry_point()
+def run(argv=None):
+    """Thin dispatch to the merged runner implementation."""
+    return main(list(sys.argv[1:] if argv is None else argv))
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

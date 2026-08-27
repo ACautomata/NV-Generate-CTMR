@@ -2,7 +2,7 @@
 
 ## Overview
 
-We provide the `compute_fid_2-5d_ct.py` script that calculates the Frechet Inception Distance (FID) between two 3D medical datasets (e.g., **real** vs. **synthetic** images). It uses a **2.5D** feature-extraction approach across three orthogonal planes (XY, YZ, ZX) and leverages **distributed GPU processing** (via PyTorch's `torch.distributed` and NCCL) for efficient, large-scale computations.
+We provide the `ctmr.application.acceptance.quantitative.fid_2d5` module that calculates the Frechet Inception Distance (FID) between two 3D medical datasets (e.g., **real** vs. **synthetic** images). It uses a **2.5D** feature-extraction approach across three orthogonal planes (XY, YZ, ZX) and leverages **distributed GPU processing** (via PyTorch's `torch.distributed` and NCCL) for efficient, large-scale computations.
 
 ## Key Features
 
@@ -28,7 +28,7 @@ case003.nii.gz
 You also have a **synthetic** dataset in `path/to/synth_images` with a corresponding `synth_filelist.txt`. You can run the script as follows:
 
 ```bash
-torchrun --nproc_per_node=2 compute_fid_2-5d_ct.py \
+torchrun --nproc_per_node=2 -m ctmr.application.acceptance.quantitative.fid_2d5 \
   --model_name "radimagenet_resnet50" \
   --real_dataset_root "path/to/real_images" \
   --real_filelist "path/to/real_filelist.txt" \
@@ -53,7 +53,7 @@ This command will:
 3. Apply 2.5D feature extraction across the XY, YZ, and ZX planes.
 4. Compute FID to compare **real** vs. **synthetic** feature distributions.
 
-For more details, see the in-code docstring in [`../scripts/compute_fid_2-5d_ct.py`](../scripts/compute_fid_2-5d_ct.py) or consult our documentation for a deeper dive into function arguments and the underlying implementation.
+For more details, see the in-code docstring in [`../src/ctmr/application/acceptance/quantitative/fid_2d5.py`](../src/ctmr/application/acceptance/quantitative/fid_2d5.py) or consult our documentation for a deeper dive into function arguments and the underlying implementation.
 
 ## BraTS L1 quantitative acceptance
 
@@ -81,7 +81,7 @@ The stage-0 side of that manifest comes from `ctmr generate cross-modal generate
 protocol (12 ordered pairs per case). Its `pairs.json` records carry the baseline volume plus a
 `reference_grid/` copy of the real target resampled onto the generation grid (RAS + trilinear
 256×256×128, raw intensity domain), so baseline/reference/candidate triplets share shape and affine by
-construction; its `samples.json` feeds `nnunet_l2_final_acceptance assemble --phase P3` directly. The
+construction; its `samples.json` feeds the distribution judge chain (`python -m ctmr.application.acceptance.distribution.final_acceptance assemble --phase P3`) directly. The
 baseline run never attaches formal L1/L2/L3 reports or concludes final acceptance — it is only the
 comparison floor.
 

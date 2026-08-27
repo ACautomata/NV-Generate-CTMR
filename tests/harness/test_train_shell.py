@@ -254,5 +254,5 @@ def test_provenance_writer_is_rank0_only(tmp_path):
 def test_provenance_script_and_git_commit_are_self_referential(tmp_path):
     writer = TrainProvenanceWriter(_provenance_args(tmp_path), 0, logging.getLogger("test-harness"), domain_fields=lambda: {})
     data = json.loads(writer.write(tmp_path / "train_provenance.json").read_text())
-    assert data["script"].endswith(("shell.py", "train_shell.py", "brats_p1_finetune.py", "train.py"))
+    assert data["script"].endswith(("shell.py", "train_shell.py", "train.py"))
     assert data["git_commit"] is None or len(data["git_commit"]) == 40  # repo HEAD, or absent git
