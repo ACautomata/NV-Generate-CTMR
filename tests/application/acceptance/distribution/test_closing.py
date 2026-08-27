@@ -16,7 +16,6 @@ import types
 from pathlib import Path
 
 import pytest
-
 import torch  # noqa: E402
 
 from ctmr.application.acceptance.distribution import closing as closing_module  # noqa: E402
