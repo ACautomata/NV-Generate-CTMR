@@ -23,7 +23,7 @@
 
 ### 2. 甲案分层包映射
 
-```
+```text
 src/ctmr/
 ├── cli.py                     # [project.scripts] 唯一入口 ctmr；子命令分派
 ├── domain/                    # 纯逻辑：无 IO、无进程派生；torch 张量运算允许
@@ -76,7 +76,7 @@ infrastructure/checkpoints.py 唯一承担：state_dict payload 存取（payload
 
 新建顶层 `deploy/`（不进 Python 包、不受 ruff 分层与 pytest 管束）：
 
-```
+```text
 deploy/
 ├── README.md                  # 手册：pip 安装、DTK 环境、作业提交/nohup 模式
 ├── jobs/                      # 集群作业提交配方：l2_calibration_predict.sh、run_l2_synth_domain_eval.sh、p1_predict_all.sh
@@ -116,7 +116,7 @@ CLAUDE.md 的实验记录段同步改址。其余 10 个 .sh 按 §2/§3 吸收�
 | M2 | domain 层成形（四深模块归位＋identity/recipe/losses/acceptance 新建），tests 同步重排 | 收敛门禁逐条搬家不丢 |
 | M3 | infrastructure（checkpoints/dmsource/nnunet_runner/instrument_provisioning/maisi_engine），payload schema 断言 | 保持 |
 | M4 | application（generation 三族/acceptance 三层＋contract/shell/vae_train），`ctmr` CLI 上线，判官簇按既有 7 条 import 边整体搬家 | argparse namespace 等价断言延续到子命令 |
-| M5 | 上游残件与 scripts/__init__.py 拆除、pyproject/CI 收尾（pythonpath 移除、pip -e） | 活代码与活文档 `grep 'scripts/'` 归零 |
+| M5 | 上游残件与 `scripts/__init__.py` 拆除、pyproject/CI 收尾（pythonpath 移除、pip -e） | 活代码与活文档 `grep 'scripts/'` 归零 |
 | M6 | notebook：先抽 VAE 循环，随后五件连引删除 | docs/training.md VAE 节换实现引用 |
 | M7 | skills 7 件＋README/docs 活文档清扫收官 | 全仓 grep 校验 |
 
