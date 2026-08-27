@@ -61,21 +61,28 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .brats_p1_dev_eval import (
-    COHORT_QUOTAS,
-    MODALITY_TOKENS,
+# Reverse shim (ticket 10 / ADR-0015 §2): the dev-eval engine (watch/select
+# machinery + shared cohort constants) lives in ctmr.application.shell and the
+# shared trend machinery in ctmr.application.generation.trend; this script
+# consumes them until its own migration batch relocates it.
+from ctmr.application.generation.trend import (  # noqa: E402
     PLANES,
-    STOP_FILE,
-    TARGET_MODALITIES,
-    CheckpointWatcher,
     DevCohortBuilder,
-    EarlyStopRule,
     L2TrendRunner,
     MrTrendFeatures,
     RealReferenceBank,
     TrendFid,
+)
+from ctmr.application.shell import (  # noqa: E402
+    COHORT_QUOTAS,
+    MODALITY_TOKENS,
+    STOP_FILE,
+    TARGET_MODALITIES,
+    CheckpointWatcher,
+    EarlyStopRule,
     TrendLedger,
 )
+
 from .diff_model_setting import load_config
 from .infer_image_from_mask import ldm_conditional_sample_one_image_from_mask
 

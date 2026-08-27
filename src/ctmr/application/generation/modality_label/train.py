@@ -3,13 +3,14 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #     http://www.apache.org/licenses/LICENSE-2.0
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""P1 image-only tumour candidate training (issue #57, spec #51 decision 6).
+"""Modality-label-conditioned full-parameter DM continuation (issue #57, spec #51 decision 6).
 
 Full-parameter DM continuation of the frozen rflow-mr-brain v1 checkpoint with
 the VAE untouched, pinned hyperparameters (lr=2e-6, batch=1, <=100 epochs,
@@ -21,7 +22,7 @@ Deltas against the upstream ``diff_model_train.py`` loop, all pinned:
 - ``scale_factor`` is REUSED from the base checkpoint (never recomputed); the
   recomputed 1/std(z) of the first batch is logged and asserted against it as
   a sanity check (issue #10 §7);
-- the training list is the concatenation of the BraTS P1 train list
+- the training list is the concatenation of the BraTS train list
   (env ``json_data_list``) and the MR-RATE replay list(s) (``--replay-list``);
 - checkpoints persist per epoch as ``epoch_<N>.pt`` (upstream key layout) for
   the dev-eval sidecar and the contract selection;
@@ -29,14 +30,15 @@ Deltas against the upstream ``diff_model_train.py`` loop, all pinned:
   pre-recorded early-stop rule (sidecar) can end the run without a kill;
 - bf16 autocast is the default (DCU), fp32 fallback via --no_amp.
 
-Thin entry since the harness consolidation (ADR-0011, #111): the domain kernel
-(``P1TrainKernel``, four-method injection) rides the shared
-``ctmr.harness.PhaseHarness`` shell; the CLI face is unchanged.
+Migrated from the retired modality-label finetune script entry (ticket 10,
+ADR-0015 §2): the domain kernel (``TrainKernel``, four-method injection) rides
+the shared ``PhaseHarness`` shell; the CLI face is unchanged.
 
-Usage (torchrun on the DCU):
-    torchrun --nproc_per_node=7 -m scripts.brats_p1_finetune \
-        -e run/environment.json -c configs/config_brats_p1_train.json \
+Usage (CLI, torchrun spawn is derived by the ctmr launcher):
+    ctmr generate modality-label train -e run/environment.json -c configs/config_brats_p1_train.json \
         -t configs/config_network_rflow.json --replay-list run/lists/p1_mrrate_replay.json
+    # or directly under torchrun (same argv namespace):
+    torchrun --nproc_per_node=7 -m ctmr.application.generation.modality_label.train ...
 """
 
 from __future__ import annotations
@@ -52,18 +54,17 @@ from monai.data import DataLoader, partition_dataset
 from monai.transforms import Compose
 from torch.nn.parallel import DistributedDataParallel
 
-from ctmr.harness.cli import TrainCli
-from ctmr.harness.recipe import P1RecipeSpec
-from ctmr.harness.train_shell import PhaseHarness, TrainContext, TrainProvenanceWriter
-
-from .diff_model_setting import initialize_distributed, load_config, setup_logging
-from .diff_model_train import augment_modality_label
-from .utils import define_instance
+from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWriter
+from ctmr.application.train_cli import TrainCli
+from ctmr.domain.recipe import P1RecipeSpec
+from ctmr.infrastructure.maiisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
+from ctmr.infrastructure.maiisi_engine.diff_model_train import augment_modality_label
+from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
 
 SCALE_FACTOR_RELATIVE_TOLERANCE = 0.5  # issue #10 §7: sanity assert, not a re-pin
 
 
-class P1TrainDataCatalog:
+class DataCatalog:
     """The 1:1 BraTS + MR-RATE replay training list (spec #51 decision 6)."""
 
     def __init__(self, args, logger):
@@ -126,8 +127,8 @@ class ScaleFactorPolicy:
             )
 
 
-class P1TrainKernel:
-    """P1 kernel: data composition, full-param DM hook-up, bare L1, payload keys.
+class TrainKernel:
+    """Modality-label kernel: data composition, full-param DM hook-up, bare L1, payload keys.
 
     The four-method ``PhaseTrainKernel`` boundary. Recipe values live here, not
     in the shell: Adam + lr + PolynomialLR power 2.0 (ADR-0005).
@@ -144,7 +145,7 @@ class P1TrainKernel:
 
     def build_loader(self):
         args = self._args
-        catalog = P1TrainDataCatalog(args, self._logger)
+        catalog = DataCatalog(args, self._logger)
         records = catalog.file_records()
         if self._local_rank == 0:
             self._logger.info(f"num_files_train (brats + replay): {len(records)}")
@@ -252,8 +253,8 @@ def main(argv=None):
     merged.model_def_path = args.model_def_path
 
     local_rank, _world, device = initialize_distributed(args.num_gpus)
-    logger = setup_logging("p1-finetune")
-    kernel = P1TrainKernel(merged, device, logger, local_rank)
+    logger = setup_logging("modality-label-finetune")
+    kernel = TrainKernel(merged, device, logger, local_rank)
     return PhaseHarness(
         kernel=kernel,
         model_dir=merged.model_dir,

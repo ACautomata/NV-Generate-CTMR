@@ -148,7 +148,7 @@ The DM and ControlNet are trained on whole images rather than patches. The GPU m
 
 ## BraTS2023 P1 Fine-tuning (Project Recipe)
 
-The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-CTMR/issues/51), execution decisions in [ADR-0005](../adr/0005-p1-candidate-training-execution.md)) continues the frozen `rflow-mr-brain v1` DM on BraTS2023 with a 1:1 MR-RATE replay mix. It does not use the upstream trainer directly; the pinned deltas live in `scripts/brats_p1_finetune.py`:
+The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-CTMR/issues/51), execution decisions in [ADR-0005](../adr/0005-p1-candidate-training-execution.md)) continues the frozen `rflow-mr-brain v1` DM on BraTS2023 with a 1:1 MR-RATE replay mix. It does not use the upstream trainer directly; the pinned deltas live in `ctmr.application.generation.modality_label.train` (run via `ctmr generate modality-label train`):
 
 - **Full-parameter DM continuation, VAE frozen**, `scale_factor` **reused from the base checkpoint** (the recomputed `1/std(z)` of the first batch is logged and asserted as a sanity check only);
 - **Hyperparameters are frozen** in `configs/config_brats_p1_train.json`: `lr=2e-6`, `batch=1`, `cache_rate=0`, `n_epochs<=100`, L1 loss, Rectified Flow uniform timestep sampling (scale 1.4, `config_network_rflow.json`), PolynomialLR power 2.0, `augment_modality_label prob=0.1` (t1c token 34 included);
@@ -158,7 +158,7 @@ The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-C
 
 ### Dev light acceptance and early stopping
 
-`scripts/brats_p1_dev_eval.py` runs beside the trainer on a reserved GPU. Every 5 epochs it generates the fixed 16-case dev cohort (4 modalities x fixed seeds, cfg=10, 30 steps), records the per-modality 2.5D RadImageNet FID trend against the dev real bank, and runs the frozen L2 instruments on the generated pseudo-four-modality volumes (WT/TC/ET volume medians + failure counts; trend only). The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100) halts the trainer through `<ckpt_dir>/.early_stop`; the candidate is the `argmin` mean-FID epoch. See ADR-0005 for the exact rule text.
+`ctmr generate modality-label dev-eval` (`ctmr.application.generation.modality_label.monitor`) runs beside the trainer on a reserved GPU. Every 5 epochs it generates the fixed 16-case dev cohort (4 modalities x fixed seeds, cfg=10, 30 steps), records the per-modality 2.5D RadImageNet FID trend against the dev real bank, and runs the frozen L2 instruments on the generated pseudo-four-modality volumes (WT/TC/ET volume medians + failure counts; trend only). The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100) halts the trainer through `<ckpt_dir>/.early_stop`; the candidate is the `argmin` mean-FID epoch. See ADR-0005 for the exact rule text.
 
 ### Launch (sugon DCU, P1)
 
@@ -166,7 +166,7 @@ The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-C
 PHASE=p1 REPO=/root/nv-phase-57 bash scripts/brats_phase_launch_train.sh   # 7-GPU DDP + 1-GPU sidecar, nohup
 ```
 
-Prerequisites (controlled storage only): the #52 phase lists/embeddings, the replay cohort (`brats_p1_replay_prep.py download/encode-list/companions/lists/verify` on gauss + rsync), the v1 base checkpoint, and the dev real feature bank (`brats_p1_dev_eval reference`).
+Prerequisites (controlled storage only): the #52 phase lists/embeddings, the replay cohort (`brats_p1_replay_prep.py download/encode-list/companions/lists/verify` on gauss + rsync), the v1 base checkpoint, and the dev real feature bank (`ctmr generate modality-label dev-eval reference`).
 
 ## BraTS2023 P2 Mask→Image Candidate (ControlNet-only bypass)
 

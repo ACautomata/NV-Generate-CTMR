@@ -18,7 +18,9 @@ family with the migration batches. Two doors are live:
 execution entry, replacing ``python -m ctmr.instrument.predict``.
 
 ``ctmr generate cross-modal`` (ticket 08) routes train/dev-eval/generate to the
-cross-modal family module; the verb grammar is deliberately thin -- each verb
+cross-modal family module; ``ctmr generate modality-label`` (ticket 10) routes
+train/dev-eval to the modality-label family module the same way. The verb
+grammar is deliberately thin -- each verb
 forwards its remaining argv verbatim to the family module entry
 (``train`` / ``dev-eval`` / ``generate baseline|candidate``), whose full
 argparse surface (and the argv↔namespace equivalence gate) lives in the module
@@ -42,6 +44,7 @@ import os
 import sys
 
 TRAIN_MODULE = "ctmr.application.generation.cross_modal.train"
+MODALITY_LABEL_TRAIN_MODULE = "ctmr.application.generation.modality_label.train"
 
 _VARIANTS = ("baseline", "candidate")
 
@@ -107,11 +110,24 @@ class CtmrCli:
     def _add_generate(self, subparsers, aliases, blurb):
         fam_parser = subparsers.add_parser("generate", aliases=list(aliases), help=blurb)
         cases = fam_parser.add_subparsers(dest="case", metavar="<case>", required=True)
-        for case in ("modality-label", "mask"):
-            case_parser = cases.add_parser(case, help=f"{case} chain -- not migrated yet")
-            case_parser.add_argument("rest", nargs="*", metavar="verb", help="future verbs/flags of this case")
-            case_parser.set_defaults(run=self._not_migrated)
-        cases.add_parser("cross-modal", help="image-conditioned cross-modality chain (train/dev-eval/generate)")
+        migrated = {
+            "modality-label": "modality-label-conditioned chain (train/dev-eval)",
+            "cross-modal": "image-conditioned cross-modality chain (train/dev-eval/generate)",
+        }
+        for case, help_text in (*migrated.items(), ("mask", "mask chain -- not migrated yet")):
+            case_parser = cases.add_parser(case, help=help_text)
+            if case == "mask":
+                case_parser.add_argument("rest", nargs="*", metavar="verb", help="future verbs/flags of this case")
+                case_parser.set_defaults(run=self._not_migrated)
+            else:
+                # a bare case (no verb) answers a usage pointer, not a traceback
+                case_parser.set_defaults(run=self._bare_generate_case)
+
+    def _bare_generate_case(self, args):
+        """Answer a bare ``generate <case>`` (no verb) with a usage pointer, not a traceback."""
+        family = self._alias_to_family.get(args.family, args.family)
+        print(f"ctmr {family} {args.case}: needs a verb -- see `ctmr {family} {args.case} --help`.", file=sys.stderr)
+        return 2
 
     def _not_migrated(self, args):
         """Answer any concrete call on a not-yet-migrated family with a pointer, not a traceback."""
@@ -130,7 +146,7 @@ class CtmrCli:
 
     @staticmethod
     def _peel_generate(argv):
-        """Peel the fixed ``generate cross-modal <verb> [variant]`` prefix; (handler, rest) or None.
+        """Peel the fixed ``generate <case> <verb> [variant]`` prefix; (handler, rest) or None.
 
         ``None`` means the argv does not fit a migrated verb -- fall back to the
         parser tree (help / argparse error). This deliberately does not parse
@@ -141,15 +157,21 @@ class CtmrCli:
         if argv[0] not in ("generate", "gen"):
             return None
         case = argv[1]
-        if case in ("modality-label", "mask"):
+        if case == "mask":
             args = argparse.Namespace(family=argv[0], case=case, rest=argv[1:])
             return (CtmrCli._not_migrated, args)
-        if case != "cross-modal":
+        if case not in ("modality-label", "cross-modal"):
             return None
         if len(argv) < 3:
             return None
         verb = argv[2]
         rest = argv[3:]
+        if case == "modality-label":
+            if verb == "train":
+                return (CtmrCli._run_modality_label_train, rest)
+            if verb == "dev-eval":
+                return (CtmrCli._run_modality_label_dev_eval, rest)
+            return None
         if verb == "train":
             return (CtmrCli._run_cross_modal_train, rest)
         if verb == "dev-eval":
@@ -171,6 +193,20 @@ class CtmrCli:
             return handler(self, *payload)
         args = self._parser.parse_args(argv)
         return args.run(args)
+
+    def _run_modality_label_train(self, rest):
+        """Dispatch the finetune entry; outside torchrun, derive the torchrun child."""
+        from ctmr.application.generation import modality_label
+        from ctmr.application.generation.launcher import TorchrunLauncher, num_gpus_of
+
+        if os.environ.get("WORLD_SIZE"):
+            return modality_label.train.main(rest)
+        return TorchrunLauncher(MODALITY_LABEL_TRAIN_MODULE, rest, num_gpus_of(rest)).run()
+
+    def _run_modality_label_dev_eval(self, rest):
+        from ctmr.application.generation.modality_label import monitor
+
+        return monitor.main(rest)
 
     def _run_cross_modal_train(self, rest):
         """Dispatch the finetune entry; outside torchrun, derive the torchrun child."""
