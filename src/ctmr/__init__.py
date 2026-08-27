@@ -14,10 +14,11 @@
 Installable via ``pip install -e . --no-deps`` (ADR-0015 §3, console entry
 ``ctmr``); the pytest ``pythonpath = ["src", "."]`` track stays until the
 migration batches close it out. The deep modules land with their
-convergence-gate tests ("born with tests", ADR-0013 §5):
+convergence-gate tests ("born with tests", ADR-0013 §5), layered per
+ADR-0015 §2 since #133:
 
-- ``ctmr.grid``       — instrument input geometry      (ADR-0008, #105)
-- ``ctmr.instrument`` — frozen instrument command       (ADR-0009, #107)
-- ``ctmr.measure``    — instrument measurement          (ADR-0010, #109)
+- ``ctmr.domain``     — pure logic: grid / measurement / instrument_spec /
+                        recipe / identity                       (#133)
 - ``ctmr.harness``    — phase script shells             (ADR-0011, #111)
+- ``ctmr.instrument`` — instrument execution side       (ADR-0009, #107)
 """

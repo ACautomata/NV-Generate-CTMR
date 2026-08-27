@@ -1,7 +1,7 @@
 """Convergence-gate tests for the instrument-grid special case (ADR-0008, #105).
 
 Pins ``INSTRUMENT_GRID`` and the continuum/label adapter factories, and proves
-the frozen terminal-acceptance geometry -- now routed through ``ctmr.grid`` --
+the frozen terminal-acceptance geometry -- now routed through ``ctmr.domain.grid`` --
 is bit-identical to the pre-#105 implementation on synthetic inputs. That is
 the ADR-0008 convergence gate: SimpleITK unit level, any machine, no cluster,
 no external data (ADR-0013); the sugon byte-identical rerun stays with the
@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import SimpleITK as sitk
 
-from ctmr.grid.instrument import INSTRUMENT_GRID, InstrumentGridAdapter
+from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter
 
 
 class FinalAcceptanceReferenceGeometry:
@@ -20,7 +20,7 @@ class FinalAcceptanceReferenceGeometry:
 
     The frozen convergence standard of ADR-0008: the private methods of
     ``GeneratedVolumeResampler`` in ``scripts/nnunet_l2_final_acceptance_nifti.py``
-    before the ``ctmr.grid`` extraction. Do not edit -- drift here is exactly
+    before the ``ctmr.domain.grid`` extraction. Do not edit -- drift here is exactly
     what this gate exists to catch.
     """
 

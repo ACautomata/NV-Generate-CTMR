@@ -68,8 +68,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "src"))  # repo src layout: python -m scripts.<this>
 sys.path.insert(0, str(_HERE / "src"))  # flat sugon deployment: src/ synced next to the script
 
-from ctmr.grid.instrument import InstrumentGridAdapter  # noqa: E402
-from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
+from ctmr.domain.grid import InstrumentGridAdapter  # noqa: E402
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand  # noqa: E402
 
 # ── 常量 ──────────────────────────────────────────────────────────────────
 
@@ -394,7 +394,7 @@ class InputPreparator:
         """组装一个病例的 nnU-Net 输入目录。
 
         ADR-0008 收编：几何（B-spline 重采样到 1mm + 居中 crop/pad 到 240×240×155）
-        由 ctmr.grid 的 continuum 适配器执行（修复了原 ``_crop_or_pad`` 把 xyz target
+        由 ctmr.domain.grid 的 continuum 适配器执行（修复了原 ``_crop_or_pad`` 把 xyz target
         直接作用于 zyx 数组的轴序 bug）。
         """
         case_input_dir = output_dir / challenge

@@ -31,7 +31,7 @@ Two different things used to share one name (``hier_viol``):
 
 import numpy as np
 
-from ctmr.measure.regions import LABEL_DOMAIN, REGIONS
+from ctmr.domain.measurement.regions import LABEL_DOMAIN, REGIONS
 
 
 class HierarchyChecker:

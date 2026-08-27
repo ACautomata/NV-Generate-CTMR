@@ -14,7 +14,7 @@ from dataclasses import fields
 
 import pytest
 
-from ctmr.instrument.command import INSTRUMENT_SPECS, FrozenInstrumentCommand, InstrumentSpec
+from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand, InstrumentSpec
 from scripts.nnunet_l2_final_acceptance import PredictScriptWriter
 
 # The canonical argv snapshot per challenge, exactly as ADR-0009 decisions 1+3
