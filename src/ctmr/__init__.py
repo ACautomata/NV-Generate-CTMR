@@ -19,7 +19,14 @@ convergence-gate tests ("born with tests", ADR-0013 §5), layered per
 ADR-0015 §2 since #133:
 
 - ``ctmr.domain``     — pure logic: grid / measurement / instrument_spec /
-                        recipe / identity                       (#133)
-- ``ctmr.harness``    — phase script shells             (ADR-0011, #111)
-- ``ctmr.instrument`` — instrument execution side       (ADR-0009, #107)
+                        recipe / identity / generation entities      (#133, #170-174)
+- ``ctmr.application`` — use-case orchestration: generation families, shells,
+                        acceptance layers                             (ticket 08-10)
+- ``ctmr.infrastructure`` — IO/framework adapters: checkpoints, nnunet_runner,
+                        vendored maisi_engine, dataio                 (#134, #140)
+
+The legacy phase-shell and instrument-execution forwarding shims retired
+with issue #175 (ADR-0016 M5); their canonical homes are
+``ctmr.application`` (train_cli / shell) and
+``ctmr.infrastructure.nnunet_runner`` (``ctmr measure predict``).
 """

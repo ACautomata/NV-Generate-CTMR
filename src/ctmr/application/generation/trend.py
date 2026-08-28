@@ -209,7 +209,7 @@ class L2TrendRunner:
 
     The instrument invocation is the ADR-0009 single construction point: argv is
     exactly ``FrozenInstrumentCommand.build`` (canonical entry
-    ``python -m ctmr.instrument.predict``, frozen config inside the spec).
+    ``ctmr measure predict``, frozen config inside the spec).
     """
 
     NN_CHANNELS = {"t1n": "0000", "t1c": "0001", "t2w": "0002", "t2f": "0003"}

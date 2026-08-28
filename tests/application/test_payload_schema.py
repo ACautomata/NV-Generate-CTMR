@@ -13,9 +13,9 @@
 
 Pins the pre-#111 payload key sets verbatim: P1 carries ``unet_state_dict``,
 P2/P3 carry ``controlnet_state_dict``; epoch/loss/num_train_timesteps/
-scale_factor are the shared skeleton. The stage kernels stay in the thin script
-entries, so this test imports them (torch/monai level, installed in the CI
-full-dependency tier per ADR-0015 §6).
+scale_factor are the shared skeleton. The stage kernels stay in the
+application generation-family modules, so this test imports them (torch/monai
+level, installed in the CI full-dependency tier per ADR-0015 §6).
 """
 
 from types import SimpleNamespace
@@ -31,7 +31,7 @@ P3_PAYLOAD_KEYS = P2_PAYLOAD_KEYS
 FAKE_STATE = {"fake": "weights"}
 
 
-class _FakeModule:
+class FakeStateModule:
     def state_dict(self):
         return dict(FAKE_STATE)
 
@@ -42,7 +42,7 @@ def _kernel_args(noise_timesteps=1000):
 
 def test_p1_payload_key_set_is_kept():
     kernel = ModalityLabelTrainKernel(_kernel_args(), device=None, logger=None, local_rank=0)
-    kernel._unet = _FakeModule()
+    kernel._unet = FakeStateModule()
     payload = kernel.checkpoint_payload(3, 0.25, 1.0)
     assert list(payload) == P1_PAYLOAD_KEYS
     assert payload["unet_state_dict"] == FAKE_STATE
@@ -56,7 +56,7 @@ def test_p2_payload_key_set_is_kept():
         controlnet_train={"weighted_loss": 100, "weighted_loss_label": [129, 130, 131]},
     )
     kernel = MaskTrainKernel(args, device=None, logger=None, local_rank=0)
-    kernel._controlnet = _FakeModule()
+    kernel._controlnet = FakeStateModule()
     payload = kernel.checkpoint_payload(5, 0.5, 1.0)
     assert list(payload) == P2_PAYLOAD_KEYS
     assert payload["controlnet_state_dict"] == FAKE_STATE
@@ -68,7 +68,7 @@ def test_p3_payload_key_set_is_kept():
         controlnet_train={"weighted_loss": 100, "weighted_loss_label": [129, 130, 131]},
     )
     kernel = CrossModalTrainKernel(args, device=None, logger=None, local_rank=0)
-    kernel._controlnet = _FakeModule()
+    kernel._controlnet = FakeStateModule()
     payload = kernel.checkpoint_payload(7, 0.75, 1.0)
     assert list(payload) == P3_PAYLOAD_KEYS
     assert payload["controlnet_state_dict"] == FAKE_STATE

@@ -31,11 +31,9 @@ from monai.networks.schedulers import DDPMScheduler
 import ctmr.infrastructure.maisi_engine  # noqa: F401  (import = new-home resolution smoke)
 from ctmr.infrastructure.maisi_engine import diff_model_infer as engine_infer
 from ctmr.infrastructure.maisi_engine import diff_model_setting as engine_setting
-from ctmr.infrastructure.maisi_engine import diff_model_train as engine_train
 from ctmr.infrastructure.maisi_engine.create_training_data import create_transforms as engine_create_transforms
 from ctmr.infrastructure.maisi_engine.create_training_data import round_number as engine_round_number
-from ctmr.infrastructure.maisi_engine.diff_model_train import load_filenames as engine_load_filenames
-from ctmr.infrastructure.maisi_engine.inference_primitives import check_input_ct, check_input_mr, dynamic_infer, get_body_region_index_from_mask
+from ctmr.infrastructure.maisi_engine.inference_primitives import check_input_ct, check_input_mr, dynamic_infer
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 from ctmr.infrastructure.maisi_engine.utils_infer import initialize_noise_latents
 
@@ -44,7 +42,6 @@ pytestmark = pytest.mark.torch
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 VENDORED_ENTRY_MODULES = [
-    "ctmr.infrastructure.maisi_engine.diff_model_train",
     "ctmr.infrastructure.maisi_engine.diff_model_infer",
     "ctmr.infrastructure.maisi_engine.create_training_data",
 ]
@@ -134,42 +131,6 @@ def test_save_image_writes_loadable_nifti(tmp_path):
     assert tuple(np.diag(loaded.affine)[:3]) == (1.5, 1.5, 2.0)
 
 
-# -------------------------------------------------------------- train pieces
-
-
-def test_augment_modality_label_is_seed_deterministic():
-    base = torch.tensor([[[[0.0]], [[1.0]], [[2.0]], [[3.0]], [[7.0]], [[8.0]], [[9.0]], [[12.0]], [[13.0]]]])
-    torch.manual_seed(7)
-    first = engine_train.augment_modality_label(base.clone(), prob=0.3)
-    torch.manual_seed(7)
-    second = engine_train.augment_modality_label(base.clone(), prob=0.3)
-    assert torch.equal(first, second)
-
-
-def test_augment_modality_label_zero_prob_is_identity():
-    base = torch.tensor([[[[0.0]], [[1.0]], [[2.0]], [[9.0]], [[13.0]]]])
-    torch.manual_seed(0)
-    out = engine_train.augment_modality_label(base.clone(), prob=0.0)
-    assert torch.equal(out, base)
-
-
-def test_load_filenames_maps_to_embedding_names(tmp_path):
-    data_list = tmp_path / "data.json"
-    data_list.write_text(json.dumps({"training": [{"image": str(tmp_path / "a.nii.gz")}, {"image": str(tmp_path / "b.nii.gz")}]}))
-    assert engine_load_filenames(str(data_list)) == [str(tmp_path / "a_emb.nii.gz"), str(tmp_path / "b_emb.nii.gz")]
-
-
-def test_create_optimizer_and_scheduler_types():
-    model = torch.nn.Linear(2, 2)
-    opt = engine_train.create_optimizer(model, 1e-4)
-    assert type(opt) is torch.optim.Adam
-    assert opt.param_groups[0]["lr"] == 1e-4
-
-    sched = engine_train.create_lr_scheduler(opt, total_steps=10)
-    assert type(sched) is torch.optim.lr_scheduler.PolynomialLR
-    assert sched.total_iters == 10
-
-
 # ------------------------------------------------- create_training_data pieces
 
 
@@ -216,16 +177,6 @@ def test_initialize_noise_latents_shape_and_dtype():
     latents = initialize_noise_latents((4, 8, 8), torch.device("cpu"))
     assert tuple(latents.shape) == (1, 4, 8, 8)
     assert latents.dtype == torch.float16
-
-
-def test_get_body_region_index_from_mask():
-    mask = torch.zeros((8, 8, 8))
-    mask[:4] = 30  # thorax member -> region_1
-    mask[4:] = 3  # abdomen member -> region_2
-
-    top, bottom = get_body_region_index_from_mask(mask)
-    assert top == [0, 1, 0, 0]
-    assert bottom == [0, 0, 1, 0]
 
 
 class _TwiceModel:

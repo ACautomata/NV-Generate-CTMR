@@ -22,7 +22,7 @@ import argparse
 
 import pytest
 
-from ctmr.harness.cli import TrainCli
+from ctmr.application.train_cli import TrainCli
 
 COMMON_ARGV = ["-e", "run/env.json", "-c", "configs/train.json", "-t", "configs/net.json", "-g", "7"]
 

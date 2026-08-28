@@ -20,8 +20,9 @@ Fixed seed, CPU fp32, toy production-topology networks and synthetic batches:
   forward → weighted velocity L1 → plain update → lr step -- compared over two
   consecutive steps (single continuous RNG stream): per-step loss, ControlNet
   parameter state and optimizer state;
-- the domain ``denoise_conditioned`` trajectory must reproduce the legacy
-  ``run_controlnet_conditioned_image_dm`` loop math (CFG-composed ControlNet +
+- the domain ``denoise_conditioned`` trajectory must reproduce the
+  retired ControlNet-conditioned core's loop math (git history; deleted with
+  issue #175) (CFG-composed ControlNet +
   UNet double forwards with the tumour-free unconditional condition, chained
   MONAI RF step) -- every intermediate latent, for CFG>0 and CFG=0.
 
@@ -240,7 +241,7 @@ def test_two_bypass_train_steps_match_legacy_loss_params_and_optimizer_state():
 
 
 def _legacy_denoise_loop(unet, controlnet, rflow, initial_latent, spacing, modality, cond, uncond_cond, cfg):
-    """The migrated ``run_controlnet_conditioned_image_dm`` loop, verbatim math.
+    """The retired ControlNet-conditioned core's loop (git history; deleted with issue #175), verbatim math.
 
     Every returned latent is recorded per step (the trajectory is the parity
     target, not only the final image); the AE decode tail stays out -- it is

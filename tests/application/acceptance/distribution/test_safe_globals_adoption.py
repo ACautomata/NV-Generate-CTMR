@@ -5,8 +5,8 @@ Proves decision 4's collapse end state: importing the judge-chain modules that
 ``ctmr.application.acceptance.distribution``) never mutates global torch state,
 their ``torch.load`` calls run inside the ``nnunet_safe_globals()`` scope, the
 promoted canonical verb lives in ``ctmr.infrastructure.nnunet_runner`` (the
-legacy ``l2_calibration_predict_entry.py`` and ``python -m ctmr.instrument.predict``
-stay superseded), and the surviving different-payload whitelists stay untouched
+legacy calibration entry and the instrument reverse shim retired with the
+scripts layer / issue #175), and the surviving different-payload whitelists stay untouched
 (the modality-label family, the mask family and the shared trend machinery were
 relocated to allowlist-at-the-load-point form in tickets 10 and 09). Torch-level tier: runs for real in the CI
 full-dependency set (ADR-0015 §6); the AST half needs no torch but lives here
@@ -87,8 +87,9 @@ def test_torch_load_points_run_inside_the_scoped_allowlist():
 
 def test_legacy_entries_are_superseded_by_the_canonical_verb():
     assert not (REPO_ROOT / "scripts" / "l2_calibration_predict_entry.py").exists()
-    shim_source = (REPO_ROOT / "src/ctmr/instrument/predict.py").read_text()  # reverse shim: no scope body of its own
-    assert "ctmr.infrastructure.nnunet_runner" in shim_source  # forwards, adds nothing
+    # the instrument reverse shim package retired with issue #175 (ADR-0016 M5);
+    # the canonical verb owns the scoped activation with no forwarding layer left
+    assert not (REPO_ROOT / "src" / "ctmr" / "instrument").exists()
     runner_tree = ast.parse((REPO_ROOT / "src/ctmr/infrastructure/nnunet_runner.py").read_text())
     assert [node for node in ast.walk(runner_tree) if _is_nnunet_safe_globals_with(node)]  # the scoped activation
 

@@ -135,7 +135,7 @@ def test_prep_inputs_matches_the_instrument_adapter(tmp_path):
 def test_predict_uses_the_canonical_instrument_argv(tmp_path, monkeypatch):
     """ADR-0009 #108 adoption: ``L2TrendRunner.predict`` produces exactly
     ``FrozenInstrumentCommand.build`` -- the dev-side sidecar shares the single
-    construction point (canonical ``python -m ctmr.instrument.predict`` entry,
+    construction point (canonical ``ctmr measure predict`` entry,
     no TTA token anywhere, SSA derived config inside the spec)."""
     captured = {}
 
@@ -155,7 +155,7 @@ def test_predict_uses_the_canonical_instrument_argv(tmp_path, monkeypatch):
         assert "--disable_tta" not in captured["cmd"]
         assert captured["env"]["nnUNet_raw"]  # the nnU-Net env wiring stays with the executor
         # the child process gets the module's src tree on PYTHONPATH (process-local
-        # sys.path entries do not reach a fresh `python -m ctmr.instrument.predict`)
+        # sys.path entries do not reach a fresh child process)
         assert str(SRC_ROOT) in captured["env"]["PYTHONPATH"]
 
 

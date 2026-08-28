@@ -18,7 +18,8 @@ Rectified Flow uniform timestep scale 1.4, PolynomialLR power 2.0, L1 loss,
 augment_modality_label prob 0.1) and the BraTS : MR-RATE 1:1 replay mix
 (spec #51 / issue #10 resolution).
 
-Deltas against the upstream ``diff_model_train.py`` loop, all pinned:
+Deltas against the retired vendored upstream training driver
+(``diff_model_train.py``, git history; deleted with issue #175), all pinned:
 - ``scale_factor`` is REUSED from the base checkpoint (never recomputed); the
   recomputed 1/std(z) of the first batch is logged and asserted against it as
   a sanity check (issue #10 §7);

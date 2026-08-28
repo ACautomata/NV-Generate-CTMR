@@ -2,8 +2,8 @@
 
 Proves ``ctmr measure predict`` runs the native nnUNetv2 entry inside the
 ``nnunet_safe_globals()`` scope with the caller's flags passed through (the
-canonical spelling since the reverse shim retired ``python -m
-ctmr.instrument.predict``), and that both the ``ctmr.measure predict`` route and
+canonical spelling since the reverse shim retired with issue #175), and that
+both the ``ctmr.measure predict`` route and
 the direct module form stay working Python/shell entries. Torch-level tier:
 nnunetv2 / torch / numpy are part of the CI full-dependency set and these tests
 run for real (ADR-0015 §6); no cluster, no external data.

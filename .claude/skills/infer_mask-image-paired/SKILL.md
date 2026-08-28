@@ -188,7 +188,7 @@ For each successful generation, two files are saved to `output_dir`:
 | former `sample.py` (scripts layer, git history) — `LDMSampler` | Orchestrator: dispatched the mask stage and the image stage, applied the QC retry loop. |
 | `ctmr.infrastructure.dataio.sample_mask` | Path A mask DM (`ldm_conditional_sample_one_mask`). |
 | `ctmr.infrastructure.dataio.find_masks` | Path B exact-match DB lookup (`find_masks`). |
-| `ctmr.application.generation.mask.inference` | Image-from-mask pipeline function (the orchestrator's image stage). |
+| `ctmr.application.generation.mask.inference` | Former image-from-mask pipeline function (the orchestrator's image stage; its wrapper kernel was deleted with issue #175 — git history; only the conditioning helpers survive). |
 | `ctmr.infrastructure.dataio.downloads` (`download_model_data`) | Downloads mask DM + image DM + ControlNet weights. |
 
 ## Related skills

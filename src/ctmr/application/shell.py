@@ -12,7 +12,8 @@
 """Application-layer shell engines (ADR-0015 §2, ticket 08).
 
 The two mechanical skeletons the use-case families share, moved out of the
-retiring ``ctmr.harness`` / scripts layer:
+retired harness/scripts layer (git history; the harness shim package was
+deleted with issue #175):
 
 - the **phase training shell**: ``PhaseHarness`` epoch loop with early-stop
   file polling at epoch boundaries and mid-epoch, autocast + GradScaler
@@ -32,7 +33,7 @@ retiring ``ctmr.harness`` / scripts layer:
 
 The shell holds no recipe value and no domain decision; the stage kernel and
 the recipe guard ride in as collaborators. Torch-level: import only where
-torch is present (like the old ``ctmr.harness.train_shell``).
+torch is present (like the retired harness shell it replaced).
 """
 
 from __future__ import annotations

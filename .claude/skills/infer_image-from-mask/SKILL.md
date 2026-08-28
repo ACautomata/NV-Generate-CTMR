@@ -7,7 +7,7 @@ description: Reference guide to the CT image-from-mask pipeline's input mask, co
 
 This reference records the **image-from-mask** pipeline contract: a user-supplied mask conditions the image LDM through a ControlNet branch. **CT-only** — the released ControlNet checkpoints were trained on CT masks; no MR ControlNet exists.
 
-> **Entry status — no live runner.** The one-command image-from-mask entry retired with the scripts layer (issue #143), and its full responsibility (model assembly, NIfTI I/O, validation, sampling, and output publication) has not yet landed behind a canonical `ctmr` command. The package function `ctmr.application.generation.mask.inference.ldm_conditional_sample_one_image_from_mask` is a lower-level kernel, **not** a user entry point. Do not call it from this page as an incomplete replacement. Use git history only to reproduce a historical run; a future dedicated ticket must restore a live runner.
+> **Entry status — no live runner.** The one-command image-from-mask entry retired with the scripts layer (issue #143), and its full responsibility (model assembly, NIfTI I/O, validation, sampling, and output publication) has not yet landed behind a canonical `ctmr` command. The former package kernel `ldm_conditional_sample_one_image_from_mask` was deleted with issue #175 (ADR-0016 M4), along with the retired ControlNet-conditioned denoise core it drove; only the conditioning helpers `binarize_labels` / `crop_img_body_mask` survive in `ctmr.application.generation.mask.inference`. Use git history only to reproduce a historical run; a future dedicated ticket must restore a live runner.
 
 For a no-mask **live** workflow (including MR), use [`infer_image-only`](../infer_image-only/SKILL.md). The paired-mask reference is [`infer_mask-image-paired`](../infer_mask-image-paired/SKILL.md).
 
@@ -127,7 +127,7 @@ Background voxels (where the mask is `0`) are set to `a_min` (CT: `-1000` HU) vi
 
 | Entry | Role |
 |---|---|
-| `ctmr.application.generation.mask.inference` | Home of this workflow's pipeline: `ldm_conditional_sample_one_image_from_mask` loads models, `binarize_labels` conditions, `crop_img_body_mask` regularizes. |
+| `ctmr.application.generation.mask.inference` | Home of this workflow's surviving conditioning helpers: `binarize_labels` conditions, `crop_img_body_mask` regularizes. (The former wrapper kernel `ldm_conditional_sample_one_image_from_mask` was deleted with issue #175 — git history.) |
 | former `sample.py` (scripts layer, git history) — `LDMSampler.sample_one_pair` | Paired-pipeline wrapper around the same core sampler. |
 | `ctmr.infrastructure.dataio.downloads` (`download_model_data`) | Downloads ControlNet + image AE + image DM weights. Run once before inference. |
 | former `utils.py` (`add_body_envelope`, `remap_labels`) — retired (git history) | Mask preprocessing utilities — needed for Options A/B above and for converting 0..124 → 132-class. (`binarize_labels` moved into `ctmr.application.generation.mask.inference`.) |

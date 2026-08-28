@@ -23,7 +23,7 @@ itself. ``ctmr generate <case> train`` derives torchrun itself
 in-process.
 
 ``ctmr measure predict`` (issue #140) is the canonical frozen-instrument
-execution entry, replacing ``python -m ctmr.instrument.predict``.
+execution entry; the superseded reverse shim retired with issue #175.
 
 ``ctmr generate cross-modal`` (ticket 08) routes train/dev-eval/generate to the
 cross-modal family module; ``ctmr generate mask`` (ticket 09) and

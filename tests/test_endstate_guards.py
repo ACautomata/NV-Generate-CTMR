@@ -10,9 +10,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-state guard suite (issue #144 / ADR-0015 §9-§10, batch M7).
+"""End-state guard suite (issue #144 / ADR-0015 §9-§10, batch M7; issue #175 / ADR-0016 M4-M5).
 
-Three terminal-state gates pin the post-migration repository shape:
+Four terminal-state gates pin the post-migration repository shape:
 
 1. live code and live docs carry zero references into the retired scripts
    layer (git history is the reproduction anchor); frozen historical corpora
@@ -22,16 +22,22 @@ Three terminal-state gates pin the post-migration repository shape:
 3. no notebook sits at the repo root, and the package tree carries no
    codename / anonymous-library / hyphenated identifiers (ADR-0015 §7:
    P1/P2/P3 + L1/L2/L3 codes stay out of code names, utils-style names stay
-   dead, hyphen compounds live only at the CLI verb layer).
+   dead, hyphen compounds live only at the CLI verb layer);
+4. the legacy generation addresses deleted with issue #175 — the harness /
+   instrument forwarding shims and the domain-replaced engine drivers — stay
+   out of live surfaces (ADR-0016 M4-M5).
 
 Each gate runs two ways: a positive probe over the real repository (must be
 clean) and a negative probe over a synthetic tree (a seeded violation must be
 detected -- a guard that cannot fail is not a guard). This module is itself
-exempt from gate 1's scan: it must spell the forbidden needles to find them.
+exempt from gates 1 and 4's scan: it must spell the forbidden needles to find
+them.
 """
 
 import re
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GUARD_MODULE_NAME = Path(__file__).name
@@ -125,6 +131,46 @@ def test_scripts_reference_gate_detects_a_seeded_violation(tmp_path):
     stale = tmp_path / "notes.md"
     stale.write_text("see `scripts/inference.py` for the entry\n", encoding="utf-8")
     hits = scan_for_needle([stale], "scripts/")
+    assert len(hits) == 1 and hits[0][1] == 1
+
+
+# Gate 4: the legacy generation addresses deleted with issue #175 (the
+# harness/instrument shim packages and the domain-replaced engine drivers)
+# must not appear in any live surface (ADR-0016 M4-M5).  The instrument
+# needles carry a trailing dot / space so the canonical
+# ``ctmr.instrument_spec`` module and ``ctmr.domain.instrument_spec`` package
+# are not flagged: the dot catches attribute/module-run spellings, the space
+# catches ``from ctmr.instrument import ...``.
+RETIRED_GENERATION_ADDRESSES = (
+    "ctmr.harness",
+    "ctmr.instrument.",
+    "ctmr.instrument ",
+    "maisi_engine.diff_model_train",
+    "maisi_engine.img2img_infer",
+)
+
+
+def test_live_code_and_docs_carry_no_retired_generation_addresses():
+    paths = live_paths()
+    hits = [hit for needle in RETIRED_GENERATION_ADDRESSES for hit in scan_for_needle(paths, needle)]
+    detail = "\n".join(f"  {path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}" for path, lineno, line in hits)
+    assert not hits, f"issue-#175-retired generation addresses survive in live surfaces:\n{detail}"
+
+
+@pytest.mark.parametrize(
+    ("needle", "seeded_line"),
+    [
+        ("ctmr.harness", "from ctmr.harness.train_shell import PhaseHarness\n"),
+        ("ctmr.instrument.", "python -m ctmr.instrument.predict\n"),
+        ("ctmr.instrument ", "from ctmr.instrument import predict\n"),
+        ("maisi_engine.diff_model_train", "python -m ctmr.infrastructure.maisi_engine.diff_model_train\n"),
+        ("maisi_engine.img2img_infer", "python -m ctmr.infrastructure.maisi_engine.img2img_infer\n"),
+    ],
+)
+def test_retired_generation_address_gate_detects_a_seeded_violation(tmp_path, needle, seeded_line):
+    stale = tmp_path / "notes.md"
+    stale.write_text(seeded_line, encoding="utf-8")
+    hits = scan_for_needle([stale], needle)
     assert len(hits) == 1 and hits[0][1] == 1
 
 
