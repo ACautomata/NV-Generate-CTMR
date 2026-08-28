@@ -143,7 +143,7 @@ def test_samples_manifest_entry_shape(tmp_path, monkeypatch):
         @staticmethod
         def load_models(checkpoint_path):
             assert checkpoint_path == "/ckpt/epoch_30.pt"
-            return object(), object(), object(), 1.0
+            return object(), object()
 
         @staticmethod
         def load_condition_mask(mask_source, case_id, device):

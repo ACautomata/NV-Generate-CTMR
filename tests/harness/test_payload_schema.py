@@ -51,7 +51,11 @@ def test_p1_payload_key_set_is_kept():
 
 
 def test_p2_payload_key_set_is_kept():
-    kernel = MaskTrainKernel(_kernel_args(), device=None, logger=None, local_rank=0)
+    args = SimpleNamespace(
+        noise_scheduler={"num_train_timesteps": 1000},
+        controlnet_train={"weighted_loss": 100, "weighted_loss_label": [129, 130, 131]},
+    )
+    kernel = MaskTrainKernel(args, device=None, logger=None, local_rank=0)
     kernel._controlnet = _FakeModule()
     payload = kernel.checkpoint_payload(5, 0.5, 1.0)
     assert list(payload) == P2_PAYLOAD_KEYS

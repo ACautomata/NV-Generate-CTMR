@@ -30,9 +30,10 @@ import math
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from ctmr.domain.generation import objective as objective_module
-from ctmr.domain.generation.objective import ModalityLabelPerturber, VaeObjective
+from ctmr.domain.generation.objective import ModalityLabelPerturber, TumourWeightedTarget, VaeObjective
 from ctmr.infrastructure.maisi_engine.diff_model_train import augment_modality_label
 
 pytestmark = pytest.mark.torch
@@ -180,3 +181,48 @@ def test_objective_module_has_no_io():
     banned = ["open(", "os.", "pathlib", "Path(", "requests", "urllib"]
     hits = [token for token in banned if token in source]
     assert hits == []
+
+
+# --------------------------------------------------------------------- P2 tumour weighting
+
+
+def test_tumour_weights_are_one_with_the_pinned_roi_at_the_weight_value():
+    """weights = 1 everywhere, = weight on the {129,130,131} ROI (fixed-tensor gate)."""
+    target = TumourWeightedTarget(100, [129, 130, 131])
+    labels = torch.zeros(1, 1, 4, 8, 8, dtype=torch.long)  # deliberately off the latent grid
+    labels[0, 0, 0, 0, 0] = 129
+    labels[0, 0, 1, 2, 3] = 130
+    labels[0, 0, 3, 5, 1] = 131
+    labels[0, 0, 2, 1, 1] = 22  # background id: never weighted
+    labels[0, 0, 2, 6, 6] = 7  # an unrelated id: never weighted
+    images = torch.randn(1, 4, 8, 8, 4)
+
+    weights = target.weights(labels, images)
+
+    expected = torch.ones_like(images)
+    # hand-built expectation: nearest-neighbour upsample of the three tumour ids onto the
+    # image grid, then broadcast across the 4 latent channels
+    upsampled = F.interpolate(labels.float(), size=images.shape[2:], mode="nearest").long()
+    roi = torch.isin(upsampled, torch.tensor([129, 130, 131])).repeat(1, images.shape[1], 1, 1, 1)
+    expected[roi] = 100.0
+    assert torch.equal(weights, expected)
+    assert float(weights.max()) == 100.0
+    assert int((weights == 100.0).sum()) == int(roi.sum())
+
+
+def test_tumour_weights_below_threshold_return_none():
+    """weight <= 1.0 disables the ROI weight entirely (the pinned plain-L1 branch)."""
+    target = TumourWeightedTarget(1.0, [129, 130, 131])
+    labels = torch.zeros(1, 1, 4, 8, 8, dtype=torch.long)
+    labels[0, 0, 0, 0, 0] = 129
+    images = torch.randn(1, 4, 8, 8, 4)
+    assert target.weights(labels, images) is None
+
+
+def test_tumour_weights_run_on_the_batch_device():
+    """The returned weights live on the images' device (GPU parity with the old kernel)."""
+    target = TumourWeightedTarget(100, [129, 130, 131])
+    labels = torch.zeros(1, 1, 4, 4, 4, dtype=torch.long)
+    labels[0, 0, 1, 1, 1] = 130
+    images = torch.randn(1, 4, 4, 4, 4)
+    assert target.weights(labels, images).device == images.device

@@ -12,21 +12,22 @@
 
 """Single-step execution and value-level gates of the mask train kernel on CPU (ticket 09).
 
-Acceptance criteria: the family's training kernel must execute one step on a
-synthetic mini fixture without a GPU, the weighted-loss inner kernel must be
-kept value-for-value (fixed torch-tensor comparison), and the ControlNet-only
-initialization contract plus the pinned recipe guard values must stay itemwise
-unchanged (ADR-0007).
+Acceptance criteria: the family's training kernel must execute one closed step
+on a synthetic mini fixture without a GPU, the weighted-target definition must
+be kept value-for-value (fixed torch-tensor comparison, now the domain
+``TumourWeightedTarget`` gate in tests/domain/generation/test_objective.py),
+and the ControlNet-only initialization contract plus the pinned recipe guard
+values must stay itemwise unchanged (ADR-0007).
 
-``TrainKernel.train_batch`` is the training-closure gate: it must produce a
-finite scalar loss whose backward pass reaches both the ControlNet and the
-(frozen-DM-side) UNet operands. Two small ``torch.nn.Module`` fakes stand in
-for the real MONAI ControlNet / DiffusionModelUNet so the gate isolates the
-kernel logic (scale-factor application, mask binarization, label-shape guard,
-RFlow noising, the images-minus-noise velocity target, weighted-L1) from the
-network definitions, which MONAI already covers. The scheduler is the real
-``RFlowScheduler``. Torch-marked, CPU: the CI full-dependency tier runs these
-for real (ADR-0015 §6).
+Per ADR-0016 (issue #172) ``TrainKernel.train_step`` is the thin batch adapter
+(mask binarization, label-shape guard, weight build) handing the batch to the
+domain ``DiffusionModel.train_step`` over a ``ControlNetBypass`` composition:
+the closed-update gate asserts a finite scalar loss, that the bypass moved and
+the frozen DM stayed put. The weighted-target and training-step numerics are
+parity-locked in tests/domain/generation/test_controlnet_bypass.py. Two small
+``torch.nn.Module`` fakes stand in for the real MONAI ControlNet /
+DiffusionModelUNet; the scheduler is the real ``RFlowScheduler``. Torch-marked,
+CPU: the CI full-dependency tier runs these for real (ADR-0015 §6).
 """
 
 from __future__ import annotations
@@ -37,12 +38,13 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-import torch.nn.functional as F
 from monai.networks.schedulers import RFlowScheduler
 
-from ctmr.application.generation.mask.inference import binarize_labels
 from ctmr.application.generation.mask.train import TrainKernel
+from ctmr.domain.generation.bypass import ControlNetBypass
+from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.recipe import MaskRecipeSpec
+from ctmr.infrastructure.gradient_executors import PlainGradientExecutor
 
 pytestmark = pytest.mark.torch
 
@@ -86,10 +88,17 @@ def _kernel(weighted_loss=100, weighted_loss_label=(129, 130, 131)):
         noise_scheduler={"num_train_timesteps": 10},
     )
     kernel = TrainKernel(args, device=CPU, logger=logging.getLogger("test-mask-kernel"), local_rank=0)
-    kernel._scale_factor = torch.tensor(0.5, device=CPU)
-    kernel._noise_scheduler = RFlowScheduler(num_train_timesteps=10)
     kernel._controlnet = _TinyControlNet()
-    kernel._unet = _TinyUNet()
+    unet = _TinyUNet()
+    optimizer = torch.optim.AdamW(kernel._controlnet.parameters(), lr=1e-4)
+    kernel._model = DiffusionModel(
+        unet=unet,
+        scale_factor=torch.tensor(0.5, device=CPU),
+        noise_scheduler=RFlowScheduler(num_train_timesteps=10),
+        bypass=ControlNetBypass(kernel._controlnet),
+        optimizer=optimizer,
+        lr_scheduler=torch.optim.lr_scheduler.PolynomialLR(optimizer, total_iters=10, power=2.0),
+    )
     return kernel
 
 
@@ -110,32 +119,35 @@ def _batch(spatial=(8, 8, 4), labels=None):
 # ------------------------------------------------------------------- training closure
 
 
-def test_train_batch_executes_a_closed_training_step_on_cpu():
+def test_train_step_executes_a_closed_update_on_cpu():
     kernel = _kernel()
-    loss = kernel.train_batch(_batch())
+    controlnet_before = kernel._controlnet.gain.detach().clone()
+    unet_before = kernel._model.unet.gain.detach().clone()
+
+    loss = kernel.train_step(_batch(), PlainGradientExecutor())
 
     assert loss.dim() == 0  # a scalar loss
     assert torch.isfinite(loss)
-    loss.backward()  # training closure: gradients reach both network operands
-    assert kernel._controlnet.gain.grad is not None and torch.isfinite(kernel._controlnet.gain.grad).all()
-    assert kernel._unet.gain.grad is not None and torch.isfinite(kernel._unet.gain.grad).all()
+    # the closed update: the bypass moved, the frozen DM stayed put
+    assert not torch.equal(controlnet_before, kernel._controlnet.gain.detach())
+    assert torch.equal(unet_before, kernel._model.unet.gain.detach())
 
 
-def test_train_batch_guards_the_label_channel_axis():
+def test_train_step_guards_the_label_channel_axis():
     kernel = _kernel()
     bad = _batch()
     bad["label"] = torch.zeros(1, 2, 8, 8, 4)  # labels must be [B,1,X,Y,Z]
     with pytest.raises(ValueError, match="labels"):
-        kernel.train_batch(bad)
+        kernel.train_step(bad, PlainGradientExecutor())
 
 
-def test_train_batch_conditions_on_the_binarized_mask():
+def test_train_step_conditions_on_the_binarized_mask():
     """The ONLY structural difference vs cross_modal: the condition is the binarized mask."""
     kernel = _kernel()
     labels = torch.zeros(1, 1, 8, 8, 4, dtype=torch.long)
     labels[0, 0, 0, 0, 0] = 129
     labels[0, 0, 1, 1, 1] = 131
-    kernel.train_batch(_batch(labels=labels))
+    kernel.train_step(_batch(labels=labels), PlainGradientExecutor())
 
     seen = kernel._controlnet.seen_cond
     assert seen.shape == (1, 8, 8, 8, 4)  # the 8-bit binary channels
@@ -148,33 +160,21 @@ def test_train_batch_conditions_on_the_binarized_mask():
 # --------------------------------------------------- weighted-loss kernel, value-for-value
 
 
-def test_weighted_target_kernel_is_value_identical_to_the_pinned_construction():
-    """weights = 1 everywhere, = weighted_loss on the {129,130,131} ROI (fixed-tensor gate)."""
-    kernel = _kernel(weighted_loss=100)
-    labels = torch.zeros(1, 1, 4, 8, 8, dtype=torch.long)  # deliberately off the latent grid
-    labels[0, 0, 0, 0, 0] = 129
-    labels[0, 0, 1, 2, 3] = 130
-    labels[0, 0, 3, 5, 1] = 131
-    labels[0, 0, 2, 1, 1] = 22  # background id: never weighted
-    labels[0, 0, 2, 6, 6] = 7  # an unrelated id: never weighted
-    images = torch.randn(1, 4, 8, 8, 4)
+def test_kernel_builds_the_pinned_weighting_from_the_recipe():
+    """The kernel's TumourWeightedTarget carries the ADR-0007 recipe values verbatim.
 
-    weights = kernel._weighted_target(labels, images)
-
-    expected = torch.ones_like(images)
-    # hand-built expectation: nearest-neighbour upsample of the three tumour ids onto the image grid,
-    # then broadcast across the 4 latent channels (the kernel's repeat)
-    upsampled = F.interpolate(labels.float(), size=images.shape[2:], mode="nearest").long()
-    roi = torch.isin(upsampled, torch.tensor([129, 130, 131])).repeat(1, images.shape[1], 1, 1, 1)
-    expected[roi] = 100.0
-    assert torch.equal(weights, expected)
-    # and the ROI truly contains the labelled voxels after the upsample
-    assert float(weights.max()) == 100.0
-    assert int((weights == 100.0).sum()) == int(roi.sum())
+    The weighted-target math itself (value-for-value against the pinned
+    construction) is the domain gate in tests/domain/generation/test_objective.py,
+    and the weighted-loss numerics ride the train-step parity in
+    tests/domain/generation/test_controlnet_bypass.py.
+    """
+    kernel = _kernel()
+    assert kernel._weighted_target.weight == 100
+    assert kernel._weighted_target.labels == [129, 130, 131]
 
 
-def test_weighted_loss_changes_the_loss_value_by_exactly_the_pinned_weighting():
-    """The weighted branch reproduces its arithmetic independently on a fixed batch."""
+def test_weighted_loss_amplifies_the_same_residual():
+    """The x100 ROI weight amplifies the identical residual (weighted > plain)."""
     torch.manual_seed(7)
     labels = torch.zeros(1, 1, 8, 8, 4, dtype=torch.long)
     labels[0, 0, 2, 2, 2] = 129
@@ -183,41 +183,11 @@ def test_weighted_loss_changes_the_loss_value_by_exactly_the_pinned_weighting():
     plain_kernel = _kernel(weighted_loss=1.0)  # <= 1.0 disables the ROI weight entirely
     weighted_kernel = _kernel(weighted_loss=100)
     torch.manual_seed(7)  # identical noise draw for both kernels
-    plain = plain_kernel.train_batch(batch)
+    plain = plain_kernel.train_step(batch, PlainGradientExecutor())
     torch.manual_seed(7)
-    weighted = weighted_kernel.train_batch(batch)
+    weighted = weighted_kernel.train_step(batch, PlainGradientExecutor())
 
-    assert weighted > plain  # the x100 ROI term amplifies the same residual
-
-    # independent re-derivation of the weighted branch's value
-    images = batch["image"] * weighted_kernel._scale_factor
-    torch.manual_seed(7)  # reproduce the exact noise draw the kernel saw (randn_like under seed 7)
-    noise = torch.randn(images.shape)
-    timesteps = weighted_kernel._noise_scheduler.sample_timesteps(images)
-    noisy = weighted_kernel._noise_scheduler.add_noise(original_samples=images, noise=noise, timesteps=timesteps)
-    cond = binarize_labels(batch["label"].as_tensor().to(torch.long)).float()
-    down, mid = weighted_kernel._controlnet(x=noisy, timesteps=timesteps, controlnet_cond=cond, class_labels=batch["modality"])
-    model_output = weighted_kernel._unet(
-        x=noisy,
-        timesteps=timesteps,
-        spacing_tensor=batch["spacing"],
-        down_block_additional_residuals=down,
-        mid_block_additional_residual=mid,
-        class_labels=batch["modality"],
-    )
-    model_gt = images - noise
-    weights = torch.ones_like(images)
-    roi = F.interpolate(batch["label"].float(), size=images.shape[2:], mode="nearest").long()
-    weights[torch.isin(roi, torch.tensor([129, 130, 131])).repeat(1, images.shape[1], 1, 1, 1)] = 100.0
-    expected = (F.l1_loss(model_output.float(), model_gt.float(), reduction="none") * weights).mean()
-    assert torch.isfinite(expected)
-    assert torch.allclose(weighted, expected)
-
-
-def test_weighted_target_below_threshold_returns_none():
-    kernel = _kernel(weighted_loss=1.0)
-    images = torch.randn(1, 4, 8, 8, 4)
-    assert kernel._weighted_target(torch.zeros(1, 1, 8, 8, 4, dtype=torch.long), images) is None
+    assert weighted > plain
 
 
 # ------------------------------------------------- ControlNet-only init + recipe guard values
