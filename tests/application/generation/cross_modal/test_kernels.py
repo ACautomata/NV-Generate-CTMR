@@ -21,8 +21,8 @@ UNet operands. Two small ``torch.nn.Module`` fakes stand in for the real MONAI
 ControlNet / DiffusionModelUNet so the gate isolates the kernel logic (scale-factor
 application, label-shape guard, RFlow noising, the images-minus-noise velocity
 target, weighted-L1) from the network definitions, which MONAI already covers. The
-scheduler is the real ``RFlowScheduler`` — the same one ``CandidateSampler`` and
-the baseline ``run_img2img`` drive — so the sampling-closure gate exercises the
+scheduler is the real ``RFlowScheduler`` — the same one ``CandidateSampler``
+and the baseline img2img chain drive — so the sampling-closure gate exercises the
 production rectified-flow step on CPU.
 """
 

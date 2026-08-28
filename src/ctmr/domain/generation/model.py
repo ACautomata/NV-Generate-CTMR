@@ -86,9 +86,38 @@ class DiffusionModel:
 
     # ------------------------------------------------------------------ sampling
 
-    def begin_sampling(self, latent_shape, num_inference_steps: int) -> DiffusionScheduler:
-        """Prepare a fresh denoising trajectory for one sample call (ADR-0016: never reused)."""
-        return DiffusionScheduler.begin(self._noise_scheduler, num_inference_steps, latent_shape)
+    def begin_sampling(self, latent_shape, num_inference_steps: int, start_index: int = 0) -> DiffusionScheduler:
+        """Prepare a fresh denoising trajectory for one sample call (ADR-0016: never reused).
+
+        ``start_index`` skips the first positions of the prepared timestep
+        chain -- the strength truncation of the img2img recipe (issue #173)
+        restarts at the first kept timestep.
+        """
+        return DiffusionScheduler.begin(self._noise_scheduler, num_inference_steps, latent_shape, start_index)
+
+    def begin_img2img(self, src_latent, strength: float, num_inference_steps: int) -> tuple[DiffusionScheduler, torch.Tensor]:
+        """Prepare a strength-truncated img2img trajectory and its noisy interpolation start.
+
+        The domain img2img recipe (issue #173): the strength truncation keeps
+        the timesteps strictly below ``strength * num_train_timesteps``; the
+        noisy start is the training-consistent interpolation
+        ``x_t = (1-t)*src*scale_factor + t*noise`` at the first kept timestep;
+        the returned scheduler runs exactly the kept steps.  ``src_latent``
+        arrives unscaled (the entity applies its own scale_factor).  Noise is
+        drawn inside, after the timestep preparation, so the RNG order matches
+        the migrated chain.
+        """
+        scheduler = self.begin_sampling(src_latent.shape, num_inference_steps)
+        threshold = float(strength) * self._noise_scheduler.num_train_timesteps
+        start_index = int((scheduler.timesteps > threshold).sum())
+        if start_index >= len(scheduler.timesteps) - 1:
+            raise ValueError(f"strength={strength} leaves fewer than two denoising steps (start_index={start_index} of {len(scheduler.timesteps)})")
+        scheduler = self.begin_sampling(src_latent.shape, num_inference_steps, start_index)
+        noise = torch.randn(src_latent.shape, device=src_latent.device, dtype=src_latent.dtype)
+        noisy = scheduler.add_noise(
+            original_samples=src_latent * self._scale_factor, noise=noise, timesteps=scheduler.current_timestep.reshape(1).to(src_latent.device)
+        )
+        return scheduler, noisy
 
     def denoise(self, scheduler: DiffusionScheduler, latent, spacing, modality, cfg: float) -> torch.Tensor:
         """One CFG-composed denoising step, advancing ``scheduler`` one position.

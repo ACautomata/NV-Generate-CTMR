@@ -46,18 +46,23 @@ class DiffusionScheduler:
         self._position = 0
 
     @classmethod
-    def begin(cls, scheduler, num_inference_steps: int, latent_shape) -> DiffusionScheduler:
+    def begin(cls, scheduler, num_inference_steps: int, latent_shape, start_index: int = 0) -> DiffusionScheduler:
         """Prepare a fresh trajectory: MONAI timesteps for this latent grid, chained nexts.
 
-        The sequence is snapshotted (cloned) so the trajectory is immune to any
-        later ``set_timesteps`` on the shared MONAI instance -- one trajectory,
-        one immutable chain.
+        ``start_index`` skips the first positions of the prepared sequence --
+        the strength-truncated img2img trajectory (issue #173) restarts the
+        chain at the first kept timestep, so the trajectory owns exactly the
+        steps it will run.  The sequence is snapshotted (cloned) so the
+        trajectory is immune to any later ``set_timesteps`` on the shared MONAI
+        instance -- one trajectory, one immutable chain.
         """
         scheduler.set_timesteps(
             num_inference_steps=num_inference_steps,
             input_img_size_numel=torch.prod(torch.tensor(latent_shape[2:])),
         )
         timesteps = scheduler.timesteps.clone()
+        if start_index:
+            timesteps = timesteps[start_index:]
         next_timesteps = torch.cat((timesteps[1:], torch.tensor([0], dtype=timesteps.dtype)))
         return cls(scheduler, timesteps, next_timesteps)
 
