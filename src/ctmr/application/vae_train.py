@@ -24,10 +24,14 @@ tutorial's reproduction anchor. What lives here:
   epochs 10 / 20), paired ``GradScaler`` with init_scale=2**8,
   growth_factor=1.5;
 - the alternating update itself: per batch a generator step (recon + KL +
-  perceptual + adversarial, loss-weighted sum) then a discriminator step on
-  detached reconstructions, plus the finetune loading of pretrained weights;
+  perceptual + adversarial) then a discriminator step on detached
+  reconstructions, plus the finetune loading of pretrained weights;
 - the validation pass: epoch-averaged recon/KL/perceptual scores through a
   caller-injected inferer (whole-volume / sliding-window lives on the caller).
+
+The repo-owned KL and generator loss aggregation ride the domain
+``VaeObjective`` (ADR-0016, issue #171): the retired ``kl_loss`` /
+``loss_weighted_sum`` business free functions were consolidated there.
 
 The IO ring stays out: TensorBoard logging, validation, checkpoint
 publication and data transforms belong to the caller / future harness shells;
@@ -41,7 +45,7 @@ from monai.networks.nets import PatchDiscriminator
 from torch.nn import L1Loss, MSELoss
 from torch.optim import lr_scheduler
 
-from ctmr.domain.losses import kl_loss
+from ctmr.domain.generation.objective import VaeObjective
 
 __all__ = [
     "build_adversarial_loss",
@@ -52,7 +56,6 @@ __all__ = [
     "build_optimizers",
     "build_perceptual_loss",
     "load_pretrained_weights",
-    "loss_weighted_sum",
     "train_epoch",
     "validate_epoch",
     "warmup_rule",
@@ -123,11 +126,6 @@ def build_amp_scalers(*, amp: bool, device_type: str = "cuda"):
     )
 
 
-def loss_weighted_sum(losses: dict[str, torch.Tensor], *, kl_weight: float, perceptual_weight: float):
-    """recon + weighted KL + weighted perceptual -- the generator objective core (cell 30)."""
-    return losses["recons_loss"] + kl_weight * losses["kl_loss"] + perceptual_weight * losses["p_loss"]
-
-
 def load_pretrained_weights(module: torch.nn.Module, checkpoint_path) -> None:
     """Finetune loading (cell 28): accepts both bare state_dicts and the
     upstream ``{"unet_state_dict": ...}`` checkpoint wrapping."""
@@ -177,6 +175,7 @@ def train_epoch(
     discriminator.train()
     epoch_losses = {"recons_loss": 0.0, "kl_loss": 0.0, "p_loss": 0.0}
     n_batches = len(dataloader)
+    objective = VaeObjective()
 
     for batch in dataloader:
         images = batch["image"].to(device).contiguous()
@@ -187,12 +186,12 @@ def train_epoch(
             reconstruction, z_mu, z_sigma = autoencoder(images)
             losses = {
                 "recons_loss": intensity_loss(reconstruction, images),
-                "kl_loss": kl_loss(z_mu, z_sigma),
+                "kl_loss": objective.kl(z_mu, z_sigma),
                 "p_loss": perceptual_loss(reconstruction.float(), images.float()),
             }
             logits_fake = discriminator(reconstruction.contiguous().float())[-1]
             generator_loss = adversarial_loss(logits_fake, target_is_real=True, for_discriminator=False)
-            loss_g = loss_weighted_sum(losses, kl_weight=kl_weight, perceptual_weight=perceptual_weight)
+            loss_g = objective.aggregate(losses, kl_weight=kl_weight, perceptual_weight=perceptual_weight)
             loss_g = loss_g + adv_weight * generator_loss
 
             if scaler_g is not None:
@@ -255,6 +254,7 @@ def validate_epoch(
     autoencoder.eval()
     epoch_losses = {"recons_loss": 0.0, "kl_loss": 0.0, "p_loss": 0.0}
     n_batches = len(dataloader)
+    objective = VaeObjective()
 
     with torch.no_grad():
         for batch in dataloader:
@@ -263,7 +263,7 @@ def validate_epoch(
                 reconstruction, z_mu, z_sigma = infer(images)
             reconstruction = reconstruction.to(device)
             epoch_losses["recons_loss"] += intensity_loss(reconstruction, images).item()
-            epoch_losses["kl_loss"] += kl_loss(z_mu, z_sigma).item()
+            epoch_losses["kl_loss"] += objective.kl(z_mu, z_sigma).item()
             epoch_losses["p_loss"] += perceptual_loss(reconstruction.float(), images.float()).item()
 
     for key in epoch_losses:

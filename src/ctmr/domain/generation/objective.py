@@ -10,18 +10,60 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Domain objective members (ADR-0016, issue #170).
+"""Domain objective members (ADR-0016).
 
 ``ModalityLabelPerturber`` is the unique domain definition of the modality
 label augmentation the P1 continuation applies (pinned prob 0.1, CT members →
-1, MR members → 8, prob-decided zeroing).  VAE Kullback-Leibler / loss
-aggregation (``VaeObjective``) and tumour-region weighting belong to the VAE /
-P2-P3 migrations and are not defined here yet.
+1, MR members → 8, prob-decided zeroing) (issue #170).  ``VaeObjective`` is
+the single domain definition of the repo-owned VAE Kullback-Leibler and
+generator loss aggregation, consolidating the retired ``ctmr.domain.losses.kl_loss``
+and ``ctmr.application.vae_train.loss_weighted_sum`` business free functions
+(issue #171).  Tumour-region weighting belongs to the P2-P3 migrations and is
+not defined here yet.
 """
 
 from __future__ import annotations
 
 import torch
+
+
+class VaeObjective:
+    """The repo-owned VAE objective: KL regulariser plus generator loss aggregation.
+
+    The single domain carrier of the two retired business free functions
+    (ADR-0016, issue #171) -- ``kl`` is verbatim ``ctmr.domain.losses.kl_loss``
+    (itself extracted from the retired ``utils.KL_loss``), and ``aggregate`` is
+    verbatim ``ctmr.application.vae_train.loss_weighted_sum`` (the notebook
+    cell-30 generator combination).  No VAE model entity is introduced: MONAI's
+    native autoencoder stays the only VAE model object.  Stateless -- the
+    weights travel with the application's epoch configuration.
+    """
+
+    EPS = 1e-10
+
+    def kl(self, z_mu: torch.Tensor, z_sigma: torch.Tensor) -> torch.Tensor:
+        """Kullback-Leibler divergence between N(z_mu, z_sigma^2) and N(0, 1),
+        summed over all non-batch dims and averaged over the batch.
+
+        Keeps the learned latent distribution close to a standard normal -- the
+        regulariser term of the VAE objective.
+
+        Args:
+            z_mu: mean of the latent variable distribution, [N,C,H,W,D] or [N,C,H,W].
+            z_sigma: standard deviation, same shape as ``z_mu``.
+
+        Returns:
+            torch.Tensor: scalar KL divergence averaged over the batch.
+        """
+        kl = 0.5 * torch.sum(
+            z_mu.pow(2) + z_sigma.pow(2) - torch.log(z_sigma.pow(2) + self.EPS) - 1,
+            dim=list(range(1, len(z_sigma.shape))),
+        )
+        return torch.sum(kl) / kl.shape[0]
+
+    def aggregate(self, losses: dict[str, torch.Tensor], *, kl_weight: float, perceptual_weight: float) -> torch.Tensor:
+        """recon + weighted KL + weighted perceptual -- the generator objective core."""
+        return losses["recons_loss"] + kl_weight * losses["kl_loss"] + perceptual_weight * losses["p_loss"]
 
 
 class ModalityLabelPerturber:

@@ -37,12 +37,11 @@ from ctmr.application.vae_train import (
     build_lr_schedulers,
     build_optimizers,
     load_pretrained_weights,
-    loss_weighted_sum,
     train_epoch,
     validate_epoch,
     warmup_rule,
 )
-from ctmr.domain.losses import kl_loss
+from ctmr.domain.generation.objective import VaeObjective
 
 # 32^3 is the smallest cube the 3-layer patch discriminator keeps spatially
 # alive at train time (16^3 collapses to a single element and trips norm layers).
@@ -168,15 +167,63 @@ def test_build_amp_scalers_pinned_against_notebook_values(monkeypatch):
     assert build_amp_scalers(amp=False) is None
 
 
+def _legacy_kl(z_mu, z_sigma):
+    """Verbatim the retired ``ctmr.domain.losses.kl_loss`` (from ``utils.KL_loss``)."""
+    eps = 1e-10
+    kl = 0.5 * torch.sum(
+        z_mu.pow(2) + z_sigma.pow(2) - torch.log(z_sigma.pow(2) + eps) - 1,
+        dim=list(range(1, len(z_sigma.shape))),
+    )
+    return torch.sum(kl) / kl.shape[0]
+
+
 @pytest.mark.torch
-def test_loss_weighted_sum_pins_the_notebook_combination():
-    losses = {
-        "recons_loss": torch.tensor(4.0),
-        "kl_loss": torch.tensor(3.0),
-        "p_loss": torch.tensor(2.0),
+def test_train_epoch_single_step_losses_match_the_legacy_free_functions(tiny_autoencoder):
+    """GAN single-step numerical parity (issue #171): the real alternating
+    update on a one-batch CPU fixture must return the exact loss triplet the
+    pre-migration free-function math computes on the same pre-update weights.
+
+    The loop is RNG-free on CPU fp32 (deterministic stubs and least-squares
+    adversarial), so the returned per-batch values equal a plain forward
+    replayed with the retired ``kl_loss`` on the same seeded fixture.
+    """
+    torch.manual_seed(20260828)
+    batch = {"image": torch.rand(2, 1, *IMAGE_VOLUME)}
+    loader = SyntheticLoader(n_batches=1)
+    loader.batches = [batch]
+    discriminator = build_discriminator(spatial_dims=3)
+    optimizer_g, optimizer_d = build_optimizers(tiny_autoencoder, discriminator, lr=2e-4, amp=False)
+    intensity_loss = build_intensity_loss("l1")
+    perceptual_stub = lambda recon, target: (recon - target).abs().mean()  # noqa: E731
+
+    # legacy replay: the same pre-update weights, retired free-function math
+    with torch.no_grad():
+        reconstruction, z_mu, z_sigma = tiny_autoencoder(batch["image"])
+    expected = {
+        "recons_loss": intensity_loss(reconstruction, batch["image"]).item(),
+        "kl_loss": _legacy_kl(z_mu, z_sigma).item(),
+        "p_loss": perceptual_stub(reconstruction.float(), batch["image"].float()).item(),
     }
-    total = loss_weighted_sum(losses, kl_weight=0.001, perceptual_weight=0.01)
-    assert total.item() == pytest.approx(4.0 + 3.0e-3 + 2.0e-2)
+
+    got = train_epoch(
+        loader,
+        autoencoder=tiny_autoencoder,
+        discriminator=discriminator,
+        intensity_loss=intensity_loss,
+        adversarial_loss=build_adversarial_loss(),
+        perceptual_loss=perceptual_stub,
+        optimizer_g=optimizer_g,
+        optimizer_d=optimizer_d,
+        adv_weight=0.01,
+        kl_weight=1e-6,
+        perceptual_weight=1e-6,
+        device=torch.device("cpu"),
+        autocast_device_type="cpu",
+        amp=False,
+    )
+
+    for key in expected:
+        assert got[key] == pytest.approx(expected[key], rel=1e-6, abs=1e-12)
 
 
 @pytest.mark.torch
@@ -289,15 +336,16 @@ def test_train_epoch_discriminator_update_excludes_generator_objective(tiny_auto
     adv_weight, kl_weight, perceptual_weight = 0.01, 1e-6, 1e-6
 
     def generator_step_graph():
+        objective = VaeObjective()
         reconstruction, z_mu, z_sigma = tiny_autoencoder(batch["image"])
         losses = {
             "recons_loss": intensity_loss(reconstruction, batch["image"]),
-            "kl_loss": kl_loss(z_mu, z_sigma),
+            "kl_loss": objective.kl(z_mu, z_sigma),
             "p_loss": perceptual_stub(reconstruction.float(), batch["image"].float()),
         }
         logits_fake = discriminator(reconstruction.contiguous().float())[-1]
         generator_loss = adv_loss(logits_fake, target_is_real=True, for_discriminator=False)
-        loss_g = loss_weighted_sum(losses, kl_weight=kl_weight, perceptual_weight=perceptual_weight)
+        loss_g = objective.aggregate(losses, kl_weight=kl_weight, perceptual_weight=perceptual_weight)
         return loss_g + adv_weight * generator_loss, reconstruction
 
     # Reference: the generator-objective and discriminator-objective gradient
@@ -376,7 +424,7 @@ def test_validate_epoch_scores_the_loss_family_without_moving_weights(tiny_autoe
         with torch.no_grad():
             reconstruction, z_mu, z_sigma = tiny_autoencoder(batch["image"])
         expected["recons_loss"] += intensity_loss(reconstruction, batch["image"]).item()
-        expected["kl_loss"] += kl_loss(z_mu, z_sigma).item()
+        expected["kl_loss"] += VaeObjective().kl(z_mu, z_sigma).item()
         expected["p_loss"] += perceptual_stub(reconstruction.float(), batch["image"].float()).item()
     for key in expected:
         expected[key] /= len(loader.batches)
