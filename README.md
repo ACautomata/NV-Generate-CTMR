@@ -145,7 +145,7 @@ You can also run it in command line to generate MR image without mask. Please ch
 network="rflow"
 generate_version="rflow-mr-brain"
 python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
-python -m ctmr.infrastructure.maiisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
+python -m ctmr.infrastructure.maisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
 ```
 
 ### 2.3 CT Paired Image/Mask Generation
@@ -162,7 +162,7 @@ python -m ctmr.infrastructure.maiisi_engine.diff_model_infer -t ./configs/config
 network="rflow"
 generate_version="rflow-ct" # can change to "ddpm-ct"
 python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
-python -m ctmr.infrastructure.maiisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
+python -m ctmr.infrastructure.maisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
 ```
 
 ### 2.5 MR Image Generation
@@ -175,7 +175,7 @@ Change `"modality"` in [configs/config_maisi_diff_model_rflow-mr.json](configs/c
 network="rflow"
 generate_version="rflow-mr"
 python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
-python -m ctmr.infrastructure.maiisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
+python -m ctmr.infrastructure.maisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
 ```
 
 ### 2.6 CT Image Generation from Your Own Mask

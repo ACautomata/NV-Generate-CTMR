@@ -10,10 +10,10 @@
 # limitations under the License.
 
 # ---------------------------------------------------------------------------
-# Vendored snapshot (issue #134, ADR-0015 §2 maiisi_engine): byte-for-byte
+# Vendored snapshot (issue #134, ADR-0015 §2 maisi_engine): byte-for-byte
 # copy of ``diff_model_create_training_data.py`` (retired scripts layer, git history) with import lines rewritten to this package home.
 # Behavior must stay stable — machine-guarded by
-# tests/infrastructure/maiisi_engine/test_vendored_parity.py (AST equality).
+# tests/infrastructure/maisi_engine/test_vendored_parity.py (AST equality).
 # ---------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ import torch.distributed as dist
 from monai.inferers.inferer import SlidingWindowInferer
 from monai.transforms import Compose
 
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
-from ctmr.infrastructure.maiisi_engine.inference_primitives import dynamic_infer
-from ctmr.infrastructure.maiisi_engine.instance_definition import (
+from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
+from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
+from ctmr.infrastructure.maisi_engine.instance_definition import (
     SUPPORT_MODALITIES,
     define_fixed_intensity_transform,
     define_instance,

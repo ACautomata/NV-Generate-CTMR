@@ -81,7 +81,7 @@ from ctmr.application.shell import (
     TrendLedger,
 )
 from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import load_config
+from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
 
 # Mask condition combined mask -> instrument label space (REGION_LABELS = {1,2,3}).
 COMBINED_TO_INSTRUMENT = {22: 0, 129: 1, 130: 2, 131: 3}

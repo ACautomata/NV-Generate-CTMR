@@ -13,7 +13,7 @@ description: How to run image-only inference (no mask, no ControlNet) with NV-Ge
 >
 > **Common failure mode**: user picks `dim=(256,256,256), spacing=(0.5,0.5,0.5)` to "make a high-res small volume." Validator accepts it (FOV=128mm cube). The DM produces noise because it never saw 128 mm body FOVs at training. **Fix**: match a row in the recommended table below.
 
-This skill covers running the **image-only** diffusion model — no ControlNet, no mask input. The entry is the vendored engine module, run as `python -m ctmr.infrastructure.maiisi_engine.diff_model_infer`. Three Quick Start subsections of the README use this path:
+This skill covers running the **image-only** diffusion model — no ControlNet, no mask input. The entry is the vendored engine module, run as `python -m ctmr.infrastructure.maisi_engine.diff_model_infer`. Three Quick Start subsections of the README use this path:
 
 - §2.2 MR Brain Image Generation (`rflow-mr-brain`)
 - §2.4 CT Image Generation (`rflow-ct` or `ddpm-ct`)
@@ -45,7 +45,7 @@ generate_version="rflow-mr-brain"   # or rflow-ct / rflow-mr / ddpm-ct
 
 python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
 
-python -m ctmr.infrastructure.maiisi_engine.diff_model_infer \
+python -m ctmr.infrastructure.maisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \
     -c ./configs/config_maisi_diff_model_${generate_version}.json
@@ -73,7 +73,7 @@ python -c "from ctmr.infrastructure.dataio.downloads import download_model_data;
 #      "random_seed": 0
 
 # 3. Run inference (single GPU).
-python -m ctmr.infrastructure.maiisi_engine.diff_model_infer \
+python -m ctmr.infrastructure.maisi_engine.diff_model_infer \
     -t ./configs/config_network_rflow.json \
     -e ./configs/environment_maisi_diff_model_rflow-mr-brain.json \
     -c ./configs/config_maisi_diff_model_rflow-mr-brain.json
@@ -198,9 +198,9 @@ One file per sample is saved into `output_dir` (set in the environment config), 
 
 | Entry | Role |
 |---|---|
-| `ctmr.infrastructure.maiisi_engine.diff_model_infer` | Entry for this skill. Runs the image DM in isolation (no mask, no ControlNet). |
+| `ctmr.infrastructure.maisi_engine.diff_model_infer` | Entry for this skill. Runs the image DM in isolation (no mask, no ControlNet). |
 | `ctmr.infrastructure.dataio.downloads` (`download_model_data`) | Downloads image-DM + AE weights for the chosen variant. |
-| `ctmr.infrastructure.maiisi_engine.diff_model_setting` | Helper: distributed-init / config-loading / logger setup. |
+| `ctmr.infrastructure.maisi_engine.diff_model_setting` | Helper: distributed-init / config-loading / logger setup. |
 
 ## Related skills
 

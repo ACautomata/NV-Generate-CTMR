@@ -40,7 +40,7 @@ from ctmr.application.generation.modality_label.train import (
     ScaleFactorPolicy,
     TrainKernel,
 )
-from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
+from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 
 pytestmark = pytest.mark.torch
 

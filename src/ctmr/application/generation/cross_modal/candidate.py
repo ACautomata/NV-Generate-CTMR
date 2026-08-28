@@ -81,10 +81,10 @@ from ctmr.application.generation.cross_modal.baseline import (
     SideCohortBuilder,
 )
 from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
-from ctmr.infrastructure.maiisi_engine.diff_model_infer import prepare_tensors
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import load_config, setup_logging
-from ctmr.infrastructure.maiisi_engine.img2img_infer import load_anchor_latent
-from ctmr.infrastructure.maiisi_engine.utils_infer import load_image_models, run_controlnet_conditioned_image_dm
+from ctmr.infrastructure.maisi_engine.diff_model_infer import prepare_tensors
+from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config, setup_logging
+from ctmr.infrastructure.maisi_engine.img2img_infer import load_anchor_latent
+from ctmr.infrastructure.maisi_engine.utils_infer import load_image_models, run_controlnet_conditioned_image_dm
 
 LATENT = (4, 64, 64, 32)
 INFER_SCHEMA = "brats-p3-controlnet-infer/1"

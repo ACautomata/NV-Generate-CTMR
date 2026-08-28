@@ -74,8 +74,8 @@ from ctmr.application.shell import (
     TrendLedger,
 )
 from ctmr.domain.intensity_protocol import MRIntensityNormalizer
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import load_config
-from ctmr.infrastructure.maiisi_engine.utils_infer import load_image_models, run_controlnet_conditioned_image_dm
+from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
+from ctmr.infrastructure.maisi_engine.utils_infer import load_image_models, run_controlnet_conditioned_image_dm
 
 LATENT = (4, 64, 64, 32)
 GRID = (256, 256, 128)

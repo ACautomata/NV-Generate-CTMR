@@ -10,10 +10,10 @@
 # limitations under the License.
 
 # ---------------------------------------------------------------------------
-# Vendored snapshot (issue #134, ADR-0015 §2 maiisi_engine): byte-for-byte
+# Vendored snapshot (issue #134, ADR-0015 §2 maisi_engine): byte-for-byte
 # copy of ``utils_infer.py`` (retired scripts layer, git history) with import lines rewritten to this package home.
 # Behavior must stay stable — machine-guarded by
-# tests/infrastructure/maiisi_engine/test_vendored_parity.py (AST equality).
+# tests/infrastructure/maisi_engine/test_vendored_parity.py (AST equality).
 # ---------------------------------------------------------------------------
 """
 Shared inference helpers reused across:
@@ -59,7 +59,7 @@ from monai.inferers.inferer import SlidingWindowInferer
 from monai.networks.schedulers import DDPMScheduler, RFlowScheduler
 from tqdm import tqdm
 
-from ctmr.infrastructure.maiisi_engine.inference_primitives import dynamic_infer, get_body_region_index_from_mask
+from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer, get_body_region_index_from_mask
 
 
 class ReconModel(torch.nn.Module):
@@ -344,7 +344,7 @@ def load_image_models(args, device: torch.device):
         ``(autoencoder, diffusion_unet, controlnet, scale_factor, noise_scheduler)``.
         All networks are moved to ``device`` and set to ``.eval()`` mode.
     """
-    from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
+    from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 
     autoencoder = define_instance(args, "autoencoder_def").to(device)
     ckpt = torch.load(args.trained_autoencoder_path, weights_only=False)
@@ -391,7 +391,7 @@ def load_mask_models(args, device: torch.device):
         ``(mask_autoencoder, mask_diffusion_unet, mask_scale_factor, mask_noise_scheduler)``.
         Networks are moved to ``device`` and set to ``.eval()``.
     """
-    from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
+    from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 
     mask_autoencoder = define_instance(args, "mask_generation_autoencoder_def").to(device)
     ckpt_mae = torch.load(args.trained_mask_generation_autoencoder_path, weights_only=True)

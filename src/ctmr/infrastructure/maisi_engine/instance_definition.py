@@ -10,7 +10,7 @@
 # limitations under the License.
 
 # ---------------------------------------------------------------------------
-# Freeze-side support module (issue #134, ADR-0015 §2 maiisi_engine).
+# Freeze-side support module (issue #134, ADR-0015 §2 maisi_engine).
 #
 # Function bodies are copied byte-for-byte from their legacy homes so that
 # vendored engine files keep upstream behavior with no numeric drift:
@@ -20,7 +20,7 @@
 # - ``define_instance``                 from the retired scripts layer (git history; ``utils``).py
 #
 # Only these extractions and this import block are new; everything below the
-# imports is guarded by tests/infrastructure/maiisi_engine/test_vendored_parity.py.
+# imports is guarded by tests/infrastructure/maisi_engine/test_vendored_parity.py.
 # ---------------------------------------------------------------------------
 
 import warnings

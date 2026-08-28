@@ -57,9 +57,9 @@ from torch.nn.parallel import DistributedDataParallel
 from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWriter
 from ctmr.application.train_cli import TrainCli
 from ctmr.domain.recipe import P1RecipeSpec
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
-from ctmr.infrastructure.maiisi_engine.diff_model_train import augment_modality_label
-from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
+from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
+from ctmr.infrastructure.maisi_engine.diff_model_train import augment_modality_label
+from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 
 SCALE_FACTOR_RELATIVE_TOLERANCE = 0.5  # issue #10 §7: sanity assert, not a re-pin
 

@@ -30,7 +30,7 @@ The training loop reads only `*_emb.nii.gz` (as `image`) and `*_combined_label.n
 
 ## Step 1 — Image embedding (`*_emb.nii.gz`)
 
-VAE-encode each original image with the vendored engine entry `ctmr.infrastructure.maiisi_engine.create_training_data` (run as `python -m …`). It resamples every image to the nearest multiple of 128 per axis, runs the autoencoder encoder (sliding-window, AMP), and writes `<image>_emb.nii.gz`.
+VAE-encode each original image with the vendored engine entry `ctmr.infrastructure.maisi_engine.create_training_data` (run as `python -m …`). It resamples every image to the nearest multiple of 128 per axis, runs the autoencoder encoder (sliding-window, AMP), and writes `<image>_emb.nii.gz`.
 
 Point an `environment_*` config at your data and use **`autoencoder_v1.pt`** (the CT ControlNet's autoencoder):
 
@@ -44,7 +44,7 @@ Point an `environment_*` config at your data and use **`autoencoder_v1.pt`** (th
 ```
 
 ```bash
-python -m ctmr.infrastructure.maiisi_engine.create_training_data \
+python -m ctmr.infrastructure.maisi_engine.create_training_data \
     -t ./configs/config_network_rflow.json \
     -c ./configs/config_maisi_diff_model_rflow-ct.json \
     -e ./configs/<your_env>.json -g 1

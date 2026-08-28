@@ -72,9 +72,9 @@ from ctmr.application.shell import (
     EarlyStopRule,
     TrendLedger,
 )
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import load_config
-from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
-from ctmr.infrastructure.maiisi_engine.utils_infer import ReconModel, dynamic_infer
+from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
+from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
+from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, dynamic_infer
 
 
 class CohortSpacingSource:

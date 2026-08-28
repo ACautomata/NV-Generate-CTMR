@@ -63,7 +63,7 @@ torchrun \
     --nproc_per_node=${NUM_GPUS_PER_NODE} \
     --nnodes=1 \
     --master_addr=localhost --master_port=1234 \
-    -m ctmr.infrastructure.maiisi_engine.diff_model_train -t ./configs/config_network_${network}.json -c ./configs/config_maisi_diff_model_${generate_version}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -g ${NUM_GPUS_PER_NODE}
+    -m ctmr.infrastructure.maisi_engine.diff_model_train -t ./configs/config_network_${network}.json -c ./configs/config_maisi_diff_model_${generate_version}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -g ${NUM_GPUS_PER_NODE}
 ```
 
 To run the diffusion model training script with MAISI Rectified flow for MRI, please run the code above with:
