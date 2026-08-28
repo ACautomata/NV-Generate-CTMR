@@ -44,7 +44,10 @@ The plan-layer pieces (inference-config validation, run guard, sample plan
 builder) are pure logic — stdlib only, no torch/nibabel; the manifest layer came
 from the retired candidate plan entry. The generation driver came from the retired
 candidate generate entry (ticket 08, ADR-0015 §2); their ``selftest`` subcommands
-retired with them.
+retired with them.  Per ADR-0016 (issue #174) the denoising trajectory runs as the
+domain ``DiffusionModel`` + ``ControlNetBypass`` composition with the candidate's
+pinned CFG=0 recipe; the VAE decode and int16 post-processing stay application
+adapters (``render``).
 
 Usage::
 
@@ -72,6 +75,8 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import torch
+from monai.inferers.inferer import SlidingWindowInferer
+from monai.networks.schedulers import RFlowScheduler
 from monai.utils import set_determinism
 
 from ctmr.application.generation.cross_modal.baseline import (
@@ -81,10 +86,12 @@ from ctmr.application.generation.cross_modal.baseline import (
     SideCohortBuilder,
 )
 from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
-from ctmr.infrastructure.maisi_engine.diff_model_infer import prepare_tensors
+from ctmr.domain.generation.bypass import ControlNetBypass
+from ctmr.domain.generation.model import DiffusionModel
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config, setup_logging
 from ctmr.infrastructure.maisi_engine.img2img_infer import load_anchor_latent
-from ctmr.infrastructure.maisi_engine.utils_infer import load_image_models, run_controlnet_conditioned_image_dm
+from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
+from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, load_image_models
 
 LATENT = (4, 64, 64, 32)
 INFER_SCHEMA = "brats-p3-controlnet-infer/1"
@@ -326,25 +333,6 @@ class CandidateSamplePlanBuilder:
         return [(src, tgt) for src in MODALITIES for tgt in MODALITIES if src != tgt]
 
 
-def load_candidate_models(merged, checkpoint, controlnet_ckpt, device, logger):
-    """Load AE + frozen P1-DM + trained ControlNet via the image-side loader.
-
-    Sets ``trained_diffusion_path`` (the frozen P1-DM) and ``trained_controlnet_path``
-    (the run's candidate checkpoint) on the merged config; ``load_image_models`` also
-    re-initializes the ControlNet from the DM encoder/mid and then overlays the
-    trained weights (``strict=False``) — the same "copy_model_state from dm" source
-    the training run used, so the candidate inherits no mask-family ControlNet.
-    """
-    merged.trained_diffusion_path = str(checkpoint)
-    merged.trained_controlnet_path = str(controlnet_ckpt)
-    autoencoder, unet, controlnet, scale_factor, noise_scheduler = load_image_models(merged, device)
-    top_ri, bottom_ri, _spacing, _modality = prepare_tensors(merged, device)
-    for model in (autoencoder, unet, controlnet):
-        model.to(device).eval()
-    logger.info(f"candidate models loaded: DM={merged.trained_diffusion_path} ControlNet={merged.trained_controlnet_path}")
-    return autoencoder, unet, controlnet, scale_factor, noise_scheduler, top_ri, bottom_ri
-
-
 class CandidateSampleWriter:
     """Generates the 12 ordered pairs per case and writes the distribution/quantitative candidate manifests."""
 
@@ -357,15 +345,40 @@ class CandidateSampleWriter:
         self._out_root = Path(out_root)
         self._logger = logger
 
+    def load_models(self, checkpoint, controlnet_ckpt):
+        """Load AE + frozen P1-DM + trained ControlNet via the image-side loader.
+
+        Sets ``trained_diffusion_path`` (the frozen P1-DM) and ``trained_controlnet_path``
+        (the run's candidate checkpoint) on the merged config; ``load_image_models`` also
+        re-initializes the ControlNet from the DM encoder/mid and then overlays the
+        trained weights (``strict=False``) — the same "copy_model_state from dm" source
+        the training run used, so the candidate inherits no mask-family ControlNet.
+        """
+        self._merged.trained_diffusion_path = str(checkpoint)
+        self._merged.trained_controlnet_path = str(controlnet_ckpt)
+        autoencoder, unet, controlnet, scale_factor, _noise_scheduler = load_image_models(self._merged, self._device)
+        for model in (autoencoder, unet, controlnet):
+            model.to(self._device).eval()
+        self._logger.info(f"candidate models loaded: DM={self._merged.trained_diffusion_path} ControlNet={self._merged.trained_controlnet_path}")
+        return autoencoder, unet, controlnet, scale_factor
+
     @torch.inference_mode()
     def write(self, cohort, layout, stage0_records):
-        autoencoder, unet, controlnet, scale_factor, noise_scheduler, top_ri, bottom_ri = load_candidate_models(
-            self._merged,
+        autoencoder, unet, controlnet, scale_factor = self.load_models(
             self._run_record["upstream"]["checkpoint"]["path"],
             self._run_record["selection"]["checkpoint"]["path"],
-            self._device,
-            self._logger,
         )
+        # The domain entity carries the sampling rules (the frozen P1-DM + the
+        # image-conditioned bypass, fresh DiffusionScheduler per sample call,
+        # ADR-0016 / issue #174); the VAE decode stays the writer's render
+        # adapter below the latent the entity produces.
+        model = DiffusionModel(
+            unet=unet,
+            scale_factor=torch.tensor(float(scale_factor), device=self._device),
+            noise_scheduler=RFlowScheduler(**{k: v for k, v in self._merged.noise_scheduler.items() if k != "_target_"}),
+            bypass=ControlNetBypass(controlnet),
+        )
+        recon_model = ReconModel(autoencoder=autoencoder, scale_factor=scale_factor).to(self._device)
         builder = CandidateSamplePlanBuilder(
             self._run_record["run_id"],
             self._run_record["upstream"]["checkpoint"]["sha256"],
@@ -395,29 +408,18 @@ class CandidateSampleWriter:
                         try:
                             set_determinism(seed)
                             modality_tensor = torch.tensor([self._config.modality_tokens[tgt]], device=self._device)
-                            synthetic = run_controlnet_conditioned_image_dm(
-                                autoencoder,
-                                unet,
-                                controlnet,
-                                noise_scheduler,
-                                scale_factor,
-                                self._device,
-                                controlnet_cond_tensor=cond,
-                                spacing_tensor=spacing_tensor,
-                                latent_shape=LATENT,
-                                output_size=GRID,
-                                noise_factor=1.0,
-                                top_region_index_tensor=top_ri,
-                                bottom_region_index_tensor=bottom_ri,
-                                modality_tensor=modality_tensor,
-                                num_inference_steps=self._config.num_inference_steps,
-                                autoencoder_sliding_window_infer_size=(96, 96, 96),
-                                autoencoder_sliding_window_infer_overlap=0.25,
-                                cfg_guidance_scale=0.0,
-                                controlnet_uncond_tensor=None,
-                            )
-                            data = synthetic.squeeze().cpu().numpy()
-                            data = np.clip(data, 0, None).astype(np.int16)
+                            # The initial noise keeps the legacy initialize_noise_latents
+                            # seed stream (CPU fp32 randn -> half -> device); the candidate
+                            # always denoises from pure noise with CFG OFF (issue #61
+                            # criterion 1), the pinned config value cfg_guidance_scale=0.
+                            image = torch.randn([1] + list(LATENT)).half().to(self._device)
+                            scheduler = model.begin_sampling(image.shape, self._config.num_inference_steps)
+                            with torch.amp.autocast("cuda", enabled=True):
+                                while not scheduler.complete:
+                                    image = model.denoise_conditioned(
+                                        scheduler, image, spacing_tensor, modality_tensor, cond, None, self._config.cfg_guidance_scale
+                                    )
+                                data = self.render(recon_model, image)
                             out.parent.mkdir(parents=True, exist_ok=True)
                             nib.save(nib.Nifti1Image(data, affine=np.diag([*spacing, 1.0])), out)
                             self._logger.info(f"[gen] {challenge}/{case}/{anchor}->{tgt} seed={seed} cfg=0")
@@ -425,7 +427,7 @@ class CandidateSampleWriter:
                             failures.append(f"{challenge}/{case}/{anchor}->{tgt}: {error}")
                             self._logger.info(f"[fail] {challenge}/{case}/{anchor}->{tgt}: {error}")
         finally:
-            del autoencoder, unet, controlnet
+            del autoencoder, unet, controlnet, model, recon_model
             torch.cuda.empty_cache()
         if failures:
             raise CandidateGenerateError(f"{len(failures)} candidate jobs failed; manifests not written (first: {failures[0]})")
@@ -438,6 +440,28 @@ class CandidateSampleWriter:
         entries = builder.entries(cohort, layout.real_of, generated_root)
         pairs = builder.pairs(shard_records, generated_root)
         return entries, pairs
+
+    def render(self, recon_model, latent) -> np.ndarray:
+        """The denoised latent → int16 volume: production sliding-window decode + MR intensity rescale.
+
+        Matches the migrated ``run_controlnet_conditioned_image_dm`` tail verbatim
+        (sliding-window decode on the writer's device with the aggregation on CPU,
+        MR → [0,1000], direct int16 cast); the autocast context flows in from the
+        caller.  Every P3 modality is MR (tokens ≥ 8), so the [0,1000] branch is
+        the only one.
+        """
+        inferer = SlidingWindowInferer(
+            roi_size=[96, 96, 96],
+            sw_batch_size=1,
+            progress=True,
+            mode="gaussian",
+            overlap=0.25,
+            sw_device=self._device,
+            device=torch.device("cpu"),
+        )
+        synthetic = dynamic_infer(inferer, recon_model, latent).squeeze().cpu().detach().numpy()
+        synthetic = synthetic * 1000.0
+        return np.clip(synthetic, 0, None).astype(np.int16)
 
 
 def parse_args(argv=None):

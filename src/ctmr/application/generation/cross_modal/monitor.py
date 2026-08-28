@@ -38,7 +38,10 @@ The dev cohort / real bank / spacing / src-latent source are all filtered to the
 
 Migrated from the retired cross-modal dev-eval script entry (ticket 08, ADR-0015
 §2); its ``selftest`` subcommand retired with it — its assertions live as pytest
-functions.
+functions.  Per ADR-0016 (issue #174) the sidecar sampling loop runs as the
+domain ``DiffusionModel`` + ``ControlNetBypass`` composition with the
+candidate's pinned CFG=0 recipe; the VAE decode and int16 post-processing stay
+application adapters (``render``).
 
 Usage (sugon, one reserved GPU):
     ctmr generate cross-modal dev-eval reference --dev-list ... --raw-root ... --eval-root DIR
@@ -62,6 +65,8 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import torch
+from monai.inferers.inferer import SlidingWindowInferer
+from monai.networks.schedulers import RFlowScheduler
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 from ctmr.application.generation.cross_modal.baseline import ReferenceGridWriter
@@ -73,9 +78,12 @@ from ctmr.application.shell import (
     EarlyStopRule,
     TrendLedger,
 )
+from ctmr.domain.generation.bypass import ControlNetBypass
+from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.intensity_protocol import MRIntensityNormalizer
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
-from ctmr.infrastructure.maisi_engine.utils_infer import load_image_models, run_controlnet_conditioned_image_dm
+from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
+from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, load_image_models
 
 LATENT = (4, 64, 64, 32)
 GRID = (256, 256, 128)
@@ -285,42 +293,62 @@ class CandidateSampler:
         autoencoder, unet, controlnet, scale_factor, _noise_scheduler = load_image_models(self._args, self._device)
         for model in (autoencoder, unet, controlnet):
             model.eval()
+        # The domain composition carries the sampling rules: the frozen P1-DM +
+        # the image-conditioned bypass, fresh DiffusionScheduler per sample call
+        # (ADR-0016, issue #174).  The VAE reconstruction stays an application
+        # adapter (ReconModel) below the latent the entity produces.
+        model = DiffusionModel(
+            unet=unet,
+            scale_factor=torch.tensor(float(scale_factor), device=self._device),
+            noise_scheduler=RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"}),
+            bypass=ControlNetBypass(controlnet),
+        )
+        recon = ReconModel(autoencoder=autoencoder, scale_factor=scale_factor).to(self._device)
         torch.cuda.empty_cache()
-        return autoencoder, unet, controlnet, scale_factor
+        return model, recon
 
     @torch.inference_mode()
-    def sample_one(self, autoencoder, unet, controlnet, scale_factor, spacing, modality_token, seed, src_latent):
-        from monai.networks.schedulers import RFlowScheduler
-
+    def sample_one(self, model, recon, spacing, modality_token, seed, src_latent):
         torch.manual_seed(seed)
-        noise_scheduler = RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"})
-        # ControlNet condition: the (already scaled to the model's normalized space) src latent.
-        cond = (src_latent * scale_factor).half().to(self._device)
+        # ControlNet condition: the src latent scaled into the model's normalized space.
+        cond = (src_latent * model.scale_factor).half().to(self._device)
         spacing_tensor = torch.tensor([[s * 1e2 for s in spacing]], device=self._device)
         modality_tensor = torch.tensor([modality_token], device=self._device)
-        synthetic = run_controlnet_conditioned_image_dm(
-            autoencoder,
-            unet,
-            controlnet,
-            noise_scheduler,
-            scale_factor,
-            self._device,
-            controlnet_cond_tensor=cond,
-            spacing_tensor=spacing_tensor,
-            latent_shape=LATENT,
-            output_size=GRID,
-            noise_factor=1.0,
-            modality_tensor=modality_tensor,
-            num_inference_steps=self._args.diffusion_unet_inference["num_inference_steps"],
-            cfg_guidance_scale=0.0,
-            controlnet_uncond_tensor=None,
+        # The initial noise keeps the legacy initialize_noise_latents seed stream
+        # (CPU fp32 randn -> half -> device); the dev sidecar samples with the
+        # candidate's pinned CFG=0 recipe (single conditioned forward).
+        image = torch.randn([1] + list(LATENT)).half().to(self._device)
+        scheduler = model.begin_sampling(image.shape, self._args.diffusion_unet_inference["num_inference_steps"])
+        with torch.amp.autocast("cuda", enabled=True):
+            while not scheduler.complete:
+                image = model.denoise_conditioned(scheduler, image, spacing_tensor, modality_tensor, cond, None, 0.0)
+            synthetic = self.render(recon, image)
+        return np.clip(synthetic.squeeze(), 0, None).astype(np.int16)
+
+    def render(self, recon, latent):
+        """The denoised latent → decoded volume: production sliding-window decode + MR intensity rescale.
+
+        Matches the migrated ``run_controlnet_conditioned_image_dm`` tail verbatim
+        (sliding-window decode with the aggregation on CPU, MR → [0,1000]; the
+        dev sidecar keeps the wrapper's default overlap 0.6667); the autocast
+        context flows in from the caller.
+        """
+        inferer = SlidingWindowInferer(
+            roi_size=[96, 96, 96],
+            sw_batch_size=1,
+            progress=True,
+            mode="gaussian",
+            overlap=0.6667,
+            sw_device=self._device,
+            device=torch.device("cpu"),
         )
-        return np.clip(synthetic.squeeze().float().cpu().numpy(), 0, None).astype(np.int16)
+        synthetic = dynamic_infer(inferer, recon, latent).squeeze().cpu().detach().numpy()
+        return synthetic * 1000.0
 
     def generate_cohort(self, checkpoint_path, cases, cohort_source, phase_root, out_dir):
         import nibabel as nib
 
-        autoencoder, unet, controlnet, scale_factor = self.load_models(checkpoint_path)
+        model, recon = self.load_models(checkpoint_path)
         samples = []
         for case in cases:
             spacing = cohort_source.spacing_of(case["case"])
@@ -333,10 +361,10 @@ class CandidateSampler:
                     out = Path(out_dir) / case["sub"] / f"{case['case']}_{src}_to_{tgt}_seed{seed}.nii.gz"
                     if not out.is_file():
                         out.parent.mkdir(parents=True, exist_ok=True)
-                        data = self.sample_one(autoencoder, unet, controlnet, scale_factor, spacing, MODALITY_TOKENS[tgt], seed, src_latent)
+                        data = self.sample_one(model, recon, spacing, MODALITY_TOKENS[tgt], seed, src_latent)
                         nib.save(nib.Nifti1Image(data, np.diag([spacing[0], spacing[1], spacing[2], 1.0])), out)
                     samples.append({"sub": case["sub"], "case": case["case"], "src_modality": src, "target_modality": tgt, "path": str(out)})
-        del autoencoder, unet, controlnet
+        del model, recon
         torch.cuda.empty_cache()
         return samples
 
@@ -426,7 +454,7 @@ def main(argv=None):
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(selection, indent=2) + "\n")
-        print(f"selection -> {out} (epoch {selection['epoch']}, mean_ssim {selection['mean_ssim']:.4f}, " f"mean_psnr {selection['mean_psnr']:.2f})")
+        print(f"selection -> {out} (epoch {selection['epoch']}, mean_ssim {selection['mean_ssim']:.4f}, mean_psnr {selection['mean_psnr']:.2f})")
         return 0
 
     # watch mode
@@ -493,7 +521,7 @@ def main(argv=None):
             watcher.mark_done(epoch)
             stop, reason = rule.should_stop(ledger.read())
             print(
-                f"[eval] epoch {epoch}: mean_ssim={scored['m']:.4f} mean_psnr={scored['mean_psnr']:.2f} " f"stop={stop} ({reason})",
+                f"[eval] epoch {epoch}: mean_ssim={scored['m']:.4f} mean_psnr={scored['mean_psnr']:.2f} stop={stop} ({reason})",
                 flush=True,
             )
             if stop:

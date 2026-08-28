@@ -65,37 +65,37 @@ class DiffusionModel:
 
     # ------------------------------------------------------------------ training
 
-    def train_step(self, images, spacing, modality, executor: GradientExecutor, mask_condition=None, target_weights=None) -> torch.Tensor:
+    def train_step(self, images, spacing, modality, executor: GradientExecutor, controlnet_cond=None, target_weights=None) -> torch.Tensor:
         """One closed training step: loss → update → lr step.
 
         ``images`` / ``spacing`` / ``modality`` arrive device-placed (the
         application adapts the loaded batch).  The P1 recipe adds the modality
         perturbation; the P2 recipe (issue #172) passes the binarized mask as
-        ``mask_condition`` (the bypass-conditioned forward) and the
-        ``TumourWeightedTarget`` weights as ``target_weights`` (the weighted
-        velocity L1).  ``executor`` carries the zero_grad / autocast / backward
-        / step execution strategy.
+        ``controlnet_cond`` and the ``TumourWeightedTarget`` weights as
+        ``target_weights`` (the weighted velocity L1); the P3 recipe (issue
+        #174) passes the scaled 4ch src-image latent instead.  ``executor``
+        carries the zero_grad / autocast / backward / step execution strategy.
         """
         if self._optimizer is None or self._lr_scheduler is None:
             raise ValueError("training session members (optimizer, lr_scheduler) required for train_step")
         if self._bypass is None and self._perturber is None:
             raise ValueError("training session members (perturber or bypass, optimizer, lr_scheduler) required for train_step")
-        if self._bypass is not None and mask_condition is None:
-            raise ValueError("bypass-conditioned train_step requires mask_condition")
-        if self._bypass is None and mask_condition is not None:
-            raise ValueError("mask_condition requires a configured ControlNetBypass")
-        loss = executor.run(lambda: self._training_loss(images, spacing, modality, mask_condition, target_weights), self._unet, self._optimizer)
+        if self._bypass is not None and controlnet_cond is None:
+            raise ValueError("bypass-conditioned train_step requires controlnet_cond")
+        if self._bypass is None and controlnet_cond is not None:
+            raise ValueError("controlnet_cond requires a configured ControlNetBypass")
+        loss = executor.run(lambda: self._training_loss(images, spacing, modality, controlnet_cond, target_weights), self._unet, self._optimizer)
         self._lr_scheduler.step()
         return loss
 
-    def _training_loss(self, images, spacing, modality, mask_condition=None, target_weights=None):
+    def _training_loss(self, images, spacing, modality, controlnet_cond=None, target_weights=None):
         scaled = images * self._scale_factor
         modality_tensor = self._perturber(modality) if self._perturber is not None else modality
         noise = torch.randn_like(scaled)
         timesteps = self._noise_scheduler.sample_timesteps(scaled)
         noisy_latent = self._noise_scheduler.add_noise(original_samples=scaled, noise=noise, timesteps=timesteps)
         if self._bypass is not None:
-            down, mid = self._bypass.residuals(noisy_latent, timesteps, mask_condition, modality_tensor)
+            down, mid = self._bypass.residuals(noisy_latent, timesteps, controlnet_cond, modality_tensor)
             model_output = self._unet(
                 x=noisy_latent,
                 timesteps=timesteps,

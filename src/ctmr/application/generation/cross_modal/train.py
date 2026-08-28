@@ -34,7 +34,12 @@ Deltas against the mask family, all pinned:
 
 Migrated from the retired cross-modal finetune script entry (ticket 08, ADR-0015
 §2): the domain kernel (``TrainKernel``, four-method injection) rides the shared
-``PhaseHarness`` shell; the CLI face is unchanged.
+``PhaseHarness`` shell; the CLI face is unchanged.  Per ADR-0016 (issue #174) the
+single-batch training math runs as the domain ``DiffusionModel`` +
+``ControlNetBypass`` composition (the 4ch src latent rides the ``controlnet_cond``
+slot as the bypass condition; labels only enter ``TumourWeightedTarget``); the
+application keeps the condition/weight build and the runtime precision strategy
+injection.
 
 Usage (CLI, torchrun spawn is derived by the ctmr launcher):
     ctmr generate cross-modal train -e run/environment.json -c configs/config_brats_p3_train.json \
@@ -53,7 +58,6 @@ from pathlib import Path
 import monai
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
 from monai.data import CacheDataset, partition_dataset
 from monai.networks.utils import copy_model_state
 from monai.transforms import Compose, EnsureTyped, Lambdad, LoadImaged, Orientationd
@@ -62,8 +66,12 @@ from torch.utils.data import DataLoader
 
 from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWriter
 from ctmr.application.train_cli import TrainCli
+from ctmr.domain.generation.bypass import ControlNetBypass
+from ctmr.domain.generation.model import DiffusionModel
+from ctmr.domain.generation.objective import TumourWeightedTarget
 from ctmr.domain.recipe import CrossModalRecipeSpec
 from ctmr.infrastructure.dataio.list_assembly import add_data_dir2path
+from ctmr.infrastructure.gradient_executors import Bf16GradientExecutor, Fp16GradientExecutor, PlainGradientExecutor
 from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 
@@ -156,8 +164,7 @@ class DataCatalog:
             for path, what in ((src_image, "src-image latent"), (label, "tumour label")):
                 if not os.path.exists(path):
                     raise FileNotFoundError(
-                        f"{what} missing: {path} (entry {entry.get('sub')}:{entry.get('case')}); "
-                        "run the phase encode/labels pipeline before training"
+                        f"{what} missing: {path} (entry {entry.get('sub')}:{entry.get('case')}); run the phase encode/labels pipeline before training"
                     )
             records.append(
                 {
@@ -188,9 +195,11 @@ class TrainKernel:
         self._logger = logger
         self._local_rank = local_rank
         self._controlnet = None
-        self._unet = None
-        self._scale_factor = None
-        self._noise_scheduler = None
+        self._model = None
+        # The pinned tumour-region weighting: the domain definition the P2
+        # migration introduced (TumourWeightedTarget), driven by the same
+        # recipe values (weighted_loss=100 on {129,130,131}).
+        self._weighted_target = TumourWeightedTarget(args.controlnet_train["weighted_loss"], args.controlnet_train["weighted_loss_label"])
 
     def build_loader(self):
         args = self._args
@@ -243,52 +252,50 @@ class TrainKernel:
         lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(optimizer, total_iters=total_steps, power=2.0)
 
         self._controlnet = controlnet
-        self._unet = unet
-        self._scale_factor = scale_tensor
-        self._noise_scheduler = define_instance(args, "noise_scheduler")
+        # The domain composition carries the training recipe: the frozen P1-DM
+        # (behaviour holder), the trainable image-conditioned bypass and the
+        # Adam + PolynomialLR session members (ADR-0016, issue #174).  The
+        # shell's TrainContext keeps the same handles for checkpoint scale
+        # payloads and the shared optimizer/scheduler instances.
+        self._model = DiffusionModel(
+            unet=unet,
+            scale_factor=scale_tensor,
+            noise_scheduler=define_instance(args, "noise_scheduler"),
+            bypass=ControlNetBypass(controlnet),
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+        )
         return TrainContext(trainable=controlnet, optimizer=optimizer, scheduler=lr_scheduler, scale=scale_tensor, device=self._device)
 
-    def _weighted_target(self, labels, images):
-        """weights = 1, with weighted_loss on the tumour subregions {129,130,131}."""
-        args = self._args
-        if args.controlnet_train.get("weighted_loss", 1.0) <= 1.0:
-            return None
-        weights = torch.ones_like(images)
-        roi = torch.zeros([images.shape[0], 1] + list(images.shape[2:]), device=self._device)
-        interpolate_label = F.interpolate(labels.float(), size=images.shape[2:], mode="nearest").long()
-        for label in args.controlnet_train["weighted_loss_label"]:
-            roi[interpolate_label == label] = 1
-        weights[roi.repeat(1, images.shape[1], 1, 1, 1) == 1] = args.controlnet_train["weighted_loss"]
-        return weights
+    def train_step(self, batch, gradient_executor):
+        """The thin batch adapter: scaled-src-latent condition + weight build, then the domain closed update.
 
-    def train_batch(self, batch):
-        images = batch["image"].to(self._device) * self._scale_factor
-        src_latent = batch["src_image"].to(self._device) * self._scale_factor
+        The single-batch training math (RF timesteps, noise, the image-conditioned
+        bypass forward and the weighted velocity L1) is the domain
+        ``DiffusionModel.train_step`` over the frozen P1-DM + ``ControlNetBypass``
+        composition (ADR-0016, issue #174).  The ``controlnet_cond`` slot is the
+        bypass condition: the scaled 4ch src latent -- never a binarized mask.
+        """
+        images = batch["image"].to(self._device)
+        src_latent = batch["src_image"].to(self._device)
         labels = batch["label"].to(self._device)
         if labels.shape[1] != 1:
             raise ValueError(f"expected labels [B,1,X,Y,Z], got {labels.shape}")
         spacing_tensor = batch["spacing"].to(self._device)
         modality_tensor = batch["modality"].to(self._device)
-        noise = torch.randn_like(images)
-        timesteps = self._noise_scheduler.sample_timesteps(images)
-        noisy_latent = self._noise_scheduler.add_noise(original_samples=images, noise=noise, timesteps=timesteps)
-        # The ONLY structural change vs the mask family: condition on the 4ch src
-        # latent, not the binarized mask. Labels never enter the condition.
-        controlnet_cond = src_latent
-        down, mid = self._controlnet(x=noisy_latent, timesteps=timesteps, controlnet_cond=controlnet_cond, class_labels=modality_tensor)
-        model_output = self._unet(
-            x=noisy_latent,
-            timesteps=timesteps,
-            spacing_tensor=spacing_tensor,
-            down_block_additional_residuals=down,
-            mid_block_additional_residual=mid,
-            class_labels=modality_tensor,
+        # The ONLY structural difference vs the mask family: condition on the
+        # scaled 4ch src latent, not the binarized 8ch mask.  Labels never
+        # enter the condition -- they only ride TumourWeightedTarget.
+        controlnet_cond = src_latent * self._model.scale_factor
+        weights = self._weighted_target.weights(labels, images)
+        return self._model.train_step(
+            images,
+            spacing_tensor,
+            modality_tensor,
+            gradient_executor,
+            controlnet_cond=controlnet_cond,
+            target_weights=weights,
         )
-        model_gt = images - noise
-        weights = self._weighted_target(labels, images)
-        if weights is not None:
-            return (F.l1_loss(model_output.float(), model_gt.float(), reduction="none") * weights).mean()
-        return F.l1_loss(model_output.float(), model_gt.float())
 
     def checkpoint_payload(self, epoch, avg_loss, scale):
         controlnet_state = (
@@ -320,6 +327,14 @@ def main(argv=None):
     local_rank, _world, device = initialize_distributed(args.num_gpus)
     logger = setup_logging("cross-modal-finetune")
     kernel = TrainKernel(merged, device, logger, local_rank)
+    # The application injects the runtime precision strategy (ADR-0016): fp16
+    # (scaler), bf16 (DCU default) or non-AMP plain execution.
+    if args.amp and args.amp_dtype == "fp16":
+        gradient_executor = Fp16GradientExecutor()
+    elif args.amp:
+        gradient_executor = Bf16GradientExecutor()
+    else:
+        gradient_executor = PlainGradientExecutor()
     infer_cfg = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else None
     return PhaseHarness(
         kernel=kernel,
@@ -350,6 +365,7 @@ def main(argv=None):
             },
             script_path=Path(__file__),
         ),
+        gradient_executor=gradient_executor,
     ).run()
 
 

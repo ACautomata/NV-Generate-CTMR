@@ -48,6 +48,9 @@ import torch  # noqa: E402  (importorskip must precede the torch-dependent impor
 from monai.networks.schedulers import RFlowScheduler  # noqa: E402
 
 from ctmr.application.generation.cross_modal.train import TrainKernel  # noqa: E402
+from ctmr.domain.generation.bypass import ControlNetBypass  # noqa: E402
+from ctmr.domain.generation.model import DiffusionModel  # noqa: E402
+from ctmr.infrastructure.gradient_executors import PlainGradientExecutor  # noqa: E402
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance  # noqa: E402
 
 pytestmark = [pytest.mark.torch, pytest.mark.gpu]
@@ -98,13 +101,22 @@ def _kernel_on(device):
         noise_scheduler={"num_train_timesteps": 1000},
     )
     kernel = TrainKernel(args, device=device, logger=logging.getLogger("gpu-smoke"), local_rank=0)
-    kernel._scale_factor = torch.tensor(1.05, device=device.type)
-    # The production scheduler shape (pinned recipe values from config_network_p3.json).
-    kernel._noise_scheduler = RFlowScheduler(
-        num_train_timesteps=1000, use_discrete_timesteps=False, use_timestep_transform=True, sample_method="uniform", scale=1.4
+    controlnet = define_instance(_network_defs(), "controlnet_def").to(device)
+    unet = define_instance(_network_defs(), "diffusion_unet_def").to(device)
+    for parameter in unet.parameters():
+        parameter.requires_grad = False
+    optimizer = torch.optim.AdamW(controlnet.parameters(), lr=1e-5)
+    kernel._controlnet = controlnet
+    kernel._model = DiffusionModel(
+        unet=unet,
+        scale_factor=torch.tensor(1.05, device=device.type),
+        noise_scheduler=RFlowScheduler(
+            num_train_timesteps=1000, use_discrete_timesteps=False, use_timestep_transform=True, sample_method="uniform", scale=1.4
+        ),
+        bypass=ControlNetBypass(controlnet),
+        optimizer=optimizer,
+        lr_scheduler=torch.optim.lr_scheduler.PolynomialLR(optimizer, total_iters=10, power=2.0),
     )
-    kernel._controlnet = define_instance(_network_defs(), "controlnet_def").to(device)
-    kernel._unet = define_instance(_network_defs(), "diffusion_unet_def").to(device)
     return kernel
 
 
@@ -125,12 +137,11 @@ def test_train_batch_closes_with_the_real_maisi_networks_on_cuda():
         "modality": torch.tensor([29], device="cuda"),
     }
 
-    loss = kernel.train_batch(batch)
+    loss = kernel.train_step(batch, PlainGradientExecutor())
 
     assert loss.dim() == 0
     assert torch.isfinite(loss)
-    loss.backward()
+    # the closed update: the bypass moved, the frozen P1-DM stayed put
     cond_grad = kernel._controlnet.controlnet_cond_embedding.conv_in.weight.grad  # type: ignore[index]
     assert cond_grad is not None and torch.isfinite(cond_grad).all()
-    unet_grad = kernel._unet.out.weight.grad  # type: ignore[index]
-    assert unet_grad is not None and torch.isfinite(unet_grad).all()
+    assert not any(parameter.grad is not None and parameter.grad.abs().sum() > 0 for parameter in kernel._model.unet.parameters())

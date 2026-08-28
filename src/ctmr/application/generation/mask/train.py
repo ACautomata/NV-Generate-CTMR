@@ -278,7 +278,7 @@ class TrainKernel:
             spacing_tensor,
             modality_tensor,
             gradient_executor,
-            mask_condition=controlnet_cond,
+            controlnet_cond=controlnet_cond,
             target_weights=weights,
         )
 
