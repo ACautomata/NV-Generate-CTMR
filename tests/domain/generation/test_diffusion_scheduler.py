@@ -119,3 +119,30 @@ def test_each_sample_call_gets_a_fresh_trajectory():
     assert second.position == 0  # no progress leaks across sample sessions
     assert not second.complete
     assert torch.equal(second.timesteps, first.timesteps)  # same config -> same sequence
+
+
+def test_begin_with_start_index_prepares_the_truncated_img2img_trajectory():
+    """A strength-truncated trajectory restarts the chain at the first kept timestep (issue #173)."""
+    reference = _rflow()
+    reference.set_timesteps(num_inference_steps=NUM_STEPS, input_img_size_numel=DIVISOR_NUMEL)
+    all_timesteps = reference.timesteps
+
+    start_index = 2
+    scheduler = DiffusionScheduler.begin(_rflow(), NUM_STEPS, LATENT_SHAPE, start_index=start_index)
+
+    assert torch.equal(scheduler.timesteps, all_timesteps[start_index:])
+    expected_next = torch.cat((all_timesteps[start_index + 1 :], torch.tensor([0], dtype=all_timesteps.dtype)))
+    assert torch.equal(scheduler.next_timesteps, expected_next)
+    assert scheduler.position == 0
+    assert scheduler.current_timestep == all_timesteps[start_index]
+    assert not scheduler.complete
+
+
+def test_start_index_trajectory_completes_after_the_kept_steps_only():
+    start_index = NUM_STEPS - 2
+    scheduler = DiffusionScheduler.begin(_rflow(), NUM_STEPS, LATENT_SHAPE, start_index=start_index)
+    sample = torch.randn(LATENT_SHAPE)
+    for _ in range(2):
+        sample = scheduler.step(model_output=torch.randn_like(sample), sample=sample)
+    assert scheduler.complete
+    assert scheduler.position == 2

@@ -16,8 +16,8 @@ protocol over a manifest side with the frozen P1-DM (the run record's upstream
 selection — nothing is trained): each real modality anchors one round, the
 other three modalities are generated from ``x_t = (1-t)*src_latent + t*noise``
 with the target modality label driving denoising (spec #51 decision 8). 12
-ordered src->tgt pairs per case, exactly the #38 img2img chain
-(``load_anchor_latent`` + ``run_img2img``) re-pointed at the P1-DM checkpoint.
+ordered src->tgt pairs per case, exactly the #38 img2img recipe
+re-pointed at the P1-DM checkpoint.
 
 Outputs (controlled storage, shard-suffixed when ``--num-shards > 1``):
 
@@ -39,6 +39,11 @@ builder) are pure logic — stdlib only, no torch/nibabel; the manifest layer ca
 from the retired stage0-baseline plan entry and is testable off the DCU box.
 The generation driver came from the retired stage0-baseline generate entry
 (ticket 08, ADR-0015 §2); their ``selftest`` subcommands retired with them.
+Per ADR-0016 the img2img chain runs on the domain ``DiffusionModel`` (issue
+#173): the strength-truncated trajectory, the RF interpolation start
+``x_t = (1-t)*src*scale_factor + t*noise`` and the CFG denoising loop are the
+entity's ``begin_img2img`` + ``denoise`` behaviour; the VAE encode/decode and
+the int16 post-processing stay application adapters.
 
 Usage::
 
@@ -66,12 +71,17 @@ import monai.transforms as monai_t
 import nibabel as nib
 import numpy as np
 import torch
+from monai.inferers.inferer import SlidingWindowInferer
+from monai.networks.schedulers import RFlowScheduler
 from monai.utils import set_determinism
 
 from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
-from ctmr.infrastructure.maisi_engine.diff_model_infer import load_models, prepare_tensors
+from ctmr.domain.generation.model import DiffusionModel
+from ctmr.infrastructure.maisi_engine.diff_model_infer import load_models
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config, setup_logging
-from ctmr.infrastructure.maisi_engine.img2img_infer import load_anchor_latent, run_img2img
+from ctmr.infrastructure.maisi_engine.img2img_infer import load_anchor_latent
+from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
+from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
 
 INFER_SCHEMA = "brats-p3-stage0-infer/1"
 PAIRS_SCHEMA = "brats-p3-stage0-pairs/1"
@@ -385,9 +395,21 @@ class BaselineSampleWriter:
 
     @torch.inference_mode()
     def write(self, cohort, layout):
+        # the migrated chain's fast-fail: baseline img2img is RF-only (the interpolation start is the RFlow path)
+        if not str(self._merged.noise_scheduler.get("_target_", "")).endswith("RFlowScheduler"):
+            raise BaselinePlanError("baseline img2img only runs on the RFlow scheduler (rectified flow interpolation start)")
         autoencoder, unet, scale_factor = load_models(self._merged, self._device, self._logger)
-        top_ri, bottom_ri, _spacing, _modality = prepare_tensors(self._merged, self._device)
-        self._merged.cfg_guidance_scale = self._config.cfg_guidance_scale
+        # The domain entity carries the img2img rules (strength truncation, RF
+        # interpolation start, CFG denoising, ADR-0016); the VAE decode stays
+        # the writer's render adapter below the latent the entity produces.
+        autoencoder.eval()
+        unet.eval()
+        model = DiffusionModel(
+            unet=unet,
+            scale_factor=torch.tensor(float(scale_factor), device=self._device),
+            noise_scheduler=RFlowScheduler(**{k: v for k, v in self._merged.noise_scheduler.items() if k != "_target_"}),
+        )
+        recon_model = ReconModel(autoencoder=autoencoder, scale_factor=scale_factor).to(self._device)
         builder = BaselineSamplePlanBuilder(
             self._run_record["run_id"],
             self._run_record["upstream"]["checkpoint"]["sha256"],
@@ -417,20 +439,11 @@ class BaselineSampleWriter:
                             set_determinism(seed)
                             token = self._config.modality_tokens[tgt]
                             modality_tensor = (token * torch.ones((1,), dtype=torch.long)).to(self._device)
-                            data = run_img2img(
-                                self._merged,
-                                self._device,
-                                autoencoder,
-                                unet,
-                                scale_factor,
-                                latent,
-                                top_ri,
-                                bottom_ri,
-                                spacing_tensor,
-                                modality_tensor,
-                                self._config.strength,
-                                self._logger,
-                            )
+                            with torch.amp.autocast("cuda", enabled=True):
+                                scheduler, image = model.begin_img2img(latent, self._config.strength, self._config.num_inference_steps)
+                                while not scheduler.complete:
+                                    image = model.denoise(scheduler, image, spacing_tensor, modality_tensor, self._config.cfg_guidance_scale)
+                                data = self.render(recon_model, image, token)
                             out.parent.mkdir(parents=True, exist_ok=True)
                             nib.save(nib.Nifti1Image(data, affine=np.diag([*spacing, 1.0])), out)
                             self._logger.info(f"[gen] {challenge}/{case}/{anchor}->{tgt} seed={seed}")
@@ -441,7 +454,7 @@ class BaselineSampleWriter:
                 for tgt in MODALITIES:
                     references.write(challenge, case, tgt, layout.real_of(challenge, case, tgt), spacing)
         finally:
-            del autoencoder, unet
+            del autoencoder, unet, model, recon_model
             torch.cuda.empty_cache()
         if failures:
             raise BaselineGenerateError(f"{len(failures)} baseline jobs failed; manifests not written (first: {failures[0]})")
@@ -449,6 +462,33 @@ class BaselineSampleWriter:
         entries = builder.entries(cohort, layout.real_of, generated_root)
         pairs = builder.pairs(cohort, references.path_of, generated_root)
         return entries, pairs
+
+    def render(self, recon_model, latent, modality_token) -> np.ndarray:
+        """The denoised latent → int16 volume: production sliding-window decode + MR/CT intensity rescale.
+
+        Matches the migrated run_img2img tail verbatim (sliding-window decode
+        on the writer's device with the aggregation on CPU, MR → [0,1000],
+        CT → [-1000,1000], direct int16 cast); the autocast context flows in
+        from the caller.
+        """
+        inferer = SlidingWindowInferer(
+            roi_size=[96, 96, 96],
+            sw_batch_size=1,
+            progress=True,
+            mode="gaussian",
+            overlap=0.25,
+            sw_device=self._device,
+            device=torch.device("cpu"),
+        )
+        synthetic = dynamic_infer(inferer, recon_model, latent).squeeze().cpu().detach().numpy()
+        token = int(modality_token)
+        if token >= 8:  # MR: model output [0,1] -> [0,1000]
+            synthetic = synthetic * 1000.0
+            synthetic = np.clip(synthetic, 0, None)
+        else:  # CT
+            synthetic = synthetic * 2000.0 - 1000.0
+            synthetic = np.clip(synthetic, -1000, 1000)
+        return np.int16(synthetic)
 
 
 def parse_args(argv=None):
@@ -492,8 +532,6 @@ def main(argv=None):
     # Point the #38 img2img chain at the frozen P1-DM checkpoint (same unet_state_dict + scale_factor layout).
     merged.model_dir = str(checkpoint.parent)
     merged.model_filename = checkpoint.name
-    merged.diffusion_unet_inference = dict(merged.diffusion_unet_inference)
-    merged.diffusion_unet_inference["num_inference_steps"] = config.num_inference_steps
     if tuple(config.grid) != GRID:
         print(f"baseline infer config grid {list(config.grid)} != fixed SRI24 grid {GRID}", file=sys.stderr)
         return 1
