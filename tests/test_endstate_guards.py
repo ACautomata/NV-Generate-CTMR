@@ -95,7 +95,7 @@ def package_name_violations(root):
 
     ``maisi_engine/`` is exempt: it is the vendored upstream engine kept as
     frozen copies (ADR-0015 §2), where even file names are pinned by the
-    vendored-parity gate -- the §7 naming rules govern names we chose, not
+    frozen-copy requirement -- the §7 naming rules govern names we chose, not
     upstream's.
     """
     violations = []

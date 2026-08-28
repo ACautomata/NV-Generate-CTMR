@@ -13,7 +13,7 @@
 # Vendored snapshot (issued #134 style, ticked 08 / ADR-0015 §2 maisi_engine):
 # byte-for-byte copy of ``img2img_infer.py`` (retired scripts layer, git history) with import lines rewritten
 # to this package home. Behavior must stay stable -- machine-guarded by
-# tests/infrastructure/maisi_engine/test_vendored_parity.py (AST equality).
+# tests/infrastructure/maisi_engine/test_engine_smoke.py (execution smoke).
 # ---------------------------------------------------------------------------
 """Rectified-flow img2img 推理（Issue #38 P3 式零训练基线）。
 

@@ -20,7 +20,7 @@
 # - ``check_input_ct`` / ``check_input_mr`` from the retired scripts layer (git history; ``sample_mask``).py
 #
 # Only these extractions and this import block are new; everything below the
-# imports is guarded by tests/infrastructure/maisi_engine/test_vendored_parity.py.
+# imports is guarded by tests/infrastructure/maisi_engine/test_engine_smoke.py.
 # ---------------------------------------------------------------------------
 
 import json
