@@ -52,7 +52,10 @@ jobs:
       - name: Install test dependencies (CPU torch + monai + non-GPU stack)
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install pytest numpy nibabel scikit-image Pillow SimpleITK monai tqdm scipy matplotlib huggingface_hub nnunetv2
+          pip install pytest numpy nibabel scikit-image Pillow SimpleITK monai tqdm scipy matplotlib huggingface_hub nnunetv2 connected-components-3d
+
+      - name: Install the ctmr package (editable; the single import track now that the pytest pythonpath key is retired, issue #143)
+        run: pip install -e . --no-deps
 
       - name: Run tests
         run: pytest

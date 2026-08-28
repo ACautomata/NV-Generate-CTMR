@@ -187,7 +187,7 @@ class V1DMSampler:
     P1 式：按模态标签独立采样 ×4 组成伪四模态体。
     P3 式：每轮一个真实模态作锚，v1 DM 从锚生成其余三模态。
 
-    依赖 ``scripts.diff_model_infer`` 的模型加载与推理逻辑。
+    依赖 ``ctmr.infrastructure.maiisi_engine.diff_model_infer`` 的模型加载与推理逻辑。
     实际执行时需在 sugon DCU 环境中运行。
     """
 
@@ -290,7 +290,7 @@ class V1DMSampler:
     ) -> None:
         """调用 v1 DM 无条件生成指定模态。
 
-        实际执行时，本方法构造 config JSON 并调用 ``scripts.diff_model_infer``。
+        实际执行时，本方法构造 config JSON 并调用 ``ctmr.infrastructure.maiisi_engine.diff_model_infer``。
         在非 DCU 环境中，本方法写入占位脚本供手动执行。
         """
         # 构造推理配置 JSON
@@ -315,7 +315,7 @@ class V1DMSampler:
         model_def = str(self.config.model_dir / "config_maisi_diff_model_rflow-mr-brain.json")
 
         cmd_parts = [
-            "python -m scripts.diff_model_infer",
+            "python -m ctmr.infrastructure.maiisi_engine.diff_model_infer",
             f"-e {env_config}",
             f"-c {model_config}",
             f"-t {model_def}",

@@ -14,19 +14,15 @@
 Pins the pre-#111 payload key sets verbatim: P1 carries ``unet_state_dict``,
 P2/P3 carry ``controlnet_state_dict``; epoch/loss/num_train_timesteps/
 scale_factor are the shared skeleton. The stage kernels stay in the thin script
-entries, so this test imports them (torch/monai level, skips on light stacks).
+entries, so this test imports them (torch/monai level, installed in the CI
+full-dependency tier per ADR-0015 §6).
 """
 
 from types import SimpleNamespace
 
-import pytest
-
-pytest.importorskip("torch")
-pytest.importorskip("monai")
-
-from ctmr.application.generation.cross_modal.train import TrainKernel as CrossModalTrainKernel  # noqa: E402
-from ctmr.application.generation.mask.train import TrainKernel as MaskTrainKernel  # noqa: E402
-from ctmr.application.generation.modality_label.train import TrainKernel as ModalityLabelTrainKernel  # noqa: E402
+from ctmr.application.generation.cross_modal.train import TrainKernel as CrossModalTrainKernel
+from ctmr.application.generation.mask.train import TrainKernel as MaskTrainKernel
+from ctmr.application.generation.modality_label.train import TrainKernel as ModalityLabelTrainKernel
 
 # The pre-#111 checkpoint payload key sets, verbatim (do not edit).
 P1_PAYLOAD_KEYS = ["epoch", "loss", "num_train_timesteps", "scale_factor", "unet_state_dict"]

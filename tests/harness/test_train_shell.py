@@ -15,8 +15,8 @@ A fake ``PhaseTrainKernel`` drives ``PhaseHarness`` through the mechanical
 sequence the shell owns (epoch loop, early-stop file polling at epoch
 boundaries and mid-epoch, optimizer steps, atomic checkpoint publication +
 latest.json, rank-0 gating) and the provenance writer's field sets are pinned
-against the pre-#111 per-stage snapshots. Torch-level: skips itself on light
-stacks via ``pytest.importorskip`` (ADR-0013 §4); the suite runs on CPU.
+against the pre-#111 per-stage snapshots. Torch-level: runs on CPU in the CI
+full-dependency tier, which installs torch (ADR-0015 §6).
 """
 
 import json
@@ -24,12 +24,9 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+import torch
 
-pytest.importorskip("torch")
-
-import torch  # noqa: E402  (importorskip must precede the torch-dependent import)
-
-from ctmr.harness.train_shell import STOP_FILE, PhaseHarness, TrainContext, TrainProvenanceWriter  # noqa: E402
+from ctmr.harness.train_shell import STOP_FILE, PhaseHarness, TrainContext, TrainProvenanceWriter
 
 # The pre-#111 provenance writer field sets, verbatim (do not edit -- the
 # script/git_commit self-referential values are exempt, the key sets are not).

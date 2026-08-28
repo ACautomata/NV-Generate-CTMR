@@ -9,15 +9,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Test-surface infrastructure self-checks (issue #103 / ADR-0013).
+"""Test-surface infrastructure self-check (issue #103 / ADR-0013 §6, ADR-0015 §3).
 
-Proves the pytest wiring: ``pythonpath = ["src", "."]`` in pyproject puts the
-source root on ``sys.path``, so ``import ctmr`` works on any machine without
-installing a package and without conftest ``sys.path`` hacks.
+Proves the install wiring: ``pip install -e .`` (editable, ADR-0015 §3) maps the
+``ctmr`` package onto ``src/``, so ``import ctmr`` resolves to the live source
+tree -- no pytest ``pythonpath`` key and no conftest ``sys.path`` hacks. Because
+the install is editable, the module file is the real source, not a site-packages
+snapshot.
 """
 
 import ctmr
 
 
-def test_ctmr_importable_from_src_without_install():
+def test_ctmr_resolves_to_the_live_src_tree():
     assert ctmr.__file__.endswith("src/ctmr/__init__.py")

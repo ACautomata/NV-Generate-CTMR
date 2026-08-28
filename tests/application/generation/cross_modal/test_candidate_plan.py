@@ -32,9 +32,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("torch")
-
-from ctmr.application.generation.cross_modal.candidate import (  # noqa: E402
+from ctmr.application.generation.cross_modal.candidate import (
     CANDIDATE_VARIANT,
     INFER_SCHEMA,
     PAIRS_SCHEMA,
@@ -44,7 +42,7 @@ from ctmr.application.generation.cross_modal.candidate import (  # noqa: E402
     CandidateRunGuard,
     CandidateSamplePlanBuilder,
 )
-from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of  # noqa: E402
+from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
 
 pytestmark = pytest.mark.torch
 

@@ -1,7 +1,8 @@
 # Packaging + tooling config (pre-commit, ruff, pytest). NV-Generate-CTMR is an
 # installable package as of issue #130 (ADR-0015 §3): runtime deps stay empty,
-# requirements.txt owns the version locks. The legacy pytest pythonpath track
-# stays until the migration batches close it out (double-track period).
+# requirements.txt owns the version locks. Editable install (`pip install -e .`)
+# is the single import track for CI and local dev (issue #143) — the legacy pytest
+# pythonpath double-track is retired.
 
 [build-system]
 requires = ["setuptools>=64"]
@@ -21,10 +22,9 @@ ctmr = "ctmr.cli:main"
 where = ["src"]
 
 [tool.pytest.ini_options]
-# pytest-only config (ADR-0013 §6): src on sys.path without conftest hacks or an
-# installable package; "." keeps the repo root importable (scripts.* wrappers).
+# pytest-only config: the ctmr package resolves via the editable install (ADR-0015
+# §3), so no pythonpath key and no conftest sys.path hacks.
 testpaths = ["tests"]
-pythonpath = ["src", "."]
 markers = [
     "torch: torch-level test; CPU-runnable real execution in the CI full-dependency tier (ADR-0015 §6)",
     "gpu: needs a real GPU/cluster host; auto-skipped locally & in CI, opt-in on servers via --run-gpu or CTMR_RUN_GPU_TESTS=1 (ADR-0015 §6)",

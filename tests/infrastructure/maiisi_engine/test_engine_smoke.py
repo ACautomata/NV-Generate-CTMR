@@ -1,25 +1,27 @@
-"""Equivalence smoke between the vendored maiisi_engine freeze and the legacy
-``scripts/`` originals (issue #134).
+"""Execution smoke for the vendored maiisi_engine (issue #134; standalone as of #143).
 
-Same synthetic config/argv in, same observable out — CPU-only real execution
+Same synthetic config/argv in, expected observable out — CPU-only real execution
 (torch-marked; the CI torch job runs this on plain CPU per ADR-0015 §6, which
 requires torch to be installed, not skipped around).
-GPU-bound paths (``initialize_distributed``'s CUDA branch, ``run_torchrun``,
-DDP gathering) are intentionally NOT executed here: their #123/spawn precedent
-behavior stays registered and preserved via ``test_vendored_parity``, which
-keeps those code paths byte-stable without running them.
+
+Before #143 these gates ran as an equivalence check against the legacy
+``scripts/`` originals. That package is retired (ADR-0015 M5: git history is the
+reproduction anchor), so the freeze-vs-upstream guarantee no longer has a live
+reference — these tests now pin the vendored engine's own observable behavior
+directly. GPU-bound paths (``initialize_distributed``'s CUDA branch,
+``run_torchrun``, DDP gathering) are intentionally NOT executed here.
 """
 
 import argparse
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import nibabel as nib
 import numpy as np
 import pytest
 import torch
@@ -36,24 +38,16 @@ from ctmr.infrastructure.maiisi_engine.diff_model_train import load_filenames as
 from ctmr.infrastructure.maiisi_engine.inference_primitives import check_input_ct, check_input_mr, dynamic_infer, get_body_region_index_from_mask
 from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
 from ctmr.infrastructure.maiisi_engine.utils_infer import initialize_noise_latents
-from scripts.diff_model_create_training_data import create_transforms as legacy_create_transforms
-from scripts.diff_model_create_training_data import round_number as legacy_round_number
-from scripts.diff_model_infer import prepare_tensors as legacy_prepare_tensors
-from scripts.diff_model_infer import save_image as legacy_save_image
-from scripts.diff_model_infer import set_random_seed as legacy_set_random_seed
-from scripts.diff_model_setting import load_config as legacy_load_config
-from scripts.diff_model_train import augment_modality_label as legacy_augment_modality_label
-from scripts.diff_model_train import create_lr_scheduler as legacy_create_lr_scheduler
-from scripts.diff_model_train import create_optimizer as legacy_create_optimizer
-from scripts.diff_model_train import load_filenames as legacy_load_filenames
-from scripts.sample_mask import check_input_ct as legacy_check_ct
-from scripts.sample_mask import check_input_mr as legacy_check_mr
-from scripts.utils import dynamic_infer as legacy_dynamic_infer
-from scripts.utils import get_body_region_index_from_mask as legacy_region_index
 
 pytestmark = pytest.mark.torch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+VENDORED_ENTRY_MODULES = [
+    "ctmr.infrastructure.maiisi_engine.diff_model_train",
+    "ctmr.infrastructure.maiisi_engine.diff_model_infer",
+    "ctmr.infrastructure.maiisi_engine.create_training_data",
+]
 
 
 @pytest.fixture()
@@ -86,155 +80,133 @@ def synthetic_configs(tmp_path):
 # ---------------------------------------------------------------- config layer
 
 
-def test_load_config_equivalence(synthetic_configs):
-    legacy = legacy_load_config(*synthetic_configs)
-    vendored = engine_setting.load_config(*synthetic_configs)
-    assert vars(vendored) == vars(legacy)
-    assert vars(vendored)["overlap_key"] == "def"  # env -> model -> def precedence intact
+def test_load_config_merges_env_model_def_in_order(synthetic_configs):
+    args = engine_setting.load_config(*synthetic_configs)
+    assert vars(args)["overlap_key"] == "def"  # env -> model -> def precedence
+    assert vars(args)["env_only"] is True  # env-only key survives the merge
+    assert vars(args)["diffusion_unet_inference"]["modality"] == 9
 
 
-def test_prepare_tensors_equivalence(synthetic_configs):
-    args = legacy_load_config(*synthetic_configs)
-    device = torch.device("cpu")
-    legacy_out = legacy_prepare_tensors(args, device)
-    vendored_out = engine_infer.prepare_tensors(args, device)
-    assert len(vendored_out) == len(legacy_out) == 4
-    for v_new, v_old in zip(vendored_out, legacy_out):
-        assert v_new.dtype == v_old.dtype
-        assert torch.equal(v_new.cpu(), v_old.cpu())
+def test_prepare_tensors_returns_region_spacing_modality(synthetic_configs):
+    args = engine_setting.load_config(*synthetic_configs)
+    out = engine_infer.prepare_tensors(args, torch.device("cpu"))
+    assert len(out) == 4
+    top, bottom, spacing, modality = out
+    assert top.dtype == bottom.dtype == spacing.dtype == torch.float16
+    assert modality.dtype == torch.long
+    assert modality.item() == 9  # the fixture's modality label
 
 
 # ----------------------------------------------------------------- argv layer
 
 
-@pytest.mark.parametrize(
-    ("legacy_module", "vendored_module"),
-    [
-        ("scripts.diff_model_train", "ctmr.infrastructure.maiisi_engine.diff_model_train"),
-        ("scripts.diff_model_infer", "ctmr.infrastructure.maiisi_engine.diff_model_infer"),
-        ("scripts.diff_model_create_training_data", "ctmr.infrastructure.maiisi_engine.create_training_data"),
-    ],
-)
-def test_argparse_help_equivalent(legacy_module, vendored_module):
-    """Same argv surface: --help must be identical up to the prog name."""
-
-    def help_text(module: str) -> str:
-        env = os.environ | {"PYTHONPATH": str(REPO_ROOT / "src")}
-        proc = subprocess.run(
-            [sys.executable, "-m", module, "--help"],
-            cwd=REPO_ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return _normalize_help(proc.stdout, module)
-
-    def _normalize_help(stdout: str, module: str) -> str:
-        # argparse derives ``prog`` (and the usage reflow) from the module
-        # basename, which legitimately differs where ADR-0015 §2 de-prefixed a
-        # filename (create_training_data). The option surface lives below the
-        # usage block; compare that.
-        text = stdout.replace(module, "").replace(module.split(".")[-1], "MOD")
-        return text.split("\n\n", 1)[1] if "\n\n" in text else text
-
-    assert help_text(vendored_module) == help_text(legacy_module)
+@pytest.mark.parametrize("vendored_module", VENDORED_ENTRY_MODULES)
+def test_entry_module_help_exits_zero(vendored_module):
+    """Each vendored engine entry is executable as ``__main__`` with an argparse surface."""
+    env = os.environ | {"PYTHONPATH": str(REPO_ROOT / "src")}
+    proc = subprocess.run(
+        [sys.executable, "-m", vendored_module, "--help"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert "usage" in proc.stdout.lower()
 
 
 # ------------------------------------------------------------ engine pieces
 
 
-def test_set_random_seed_equivalent():
-    assert engine_infer.set_random_seed(42) == legacy_set_random_seed(42) == 42
+def test_set_random_seed_returns_the_seed():
+    assert engine_infer.set_random_seed(42) == 42
 
 
-def test_save_image_writes_equivalent_nifti(tmp_path):
+def test_save_image_writes_loadable_nifti(tmp_path):
     data = np.zeros((8, 8, 8), dtype=np.float32)
-    legacy_path = tmp_path / "legacy.nii.gz"
-    vendored_path = tmp_path / "vendored.nii.gz"
+    out_path = tmp_path / "vol.nii.gz"
     logger = logging.getLogger("smoke")
-    engine_infer.save_image(data, (8, 8, 8), (1.5, 1.5, 2.0), str(vendored_path), logger)
-    legacy_save_image(data, (8, 8, 8), (1.5, 1.5, 2.0), str(legacy_path), logger)
-    assert vendored_path.exists() and legacy_path.exists()
-    assert vendored_path.read_bytes() == legacy_path.read_bytes()
+    engine_infer.save_image(data, (8, 8, 8), (1.5, 1.5, 2.0), str(out_path), logger)
+    assert out_path.exists()
+    loaded = nib.load(str(out_path))
+    assert loaded.shape == (8, 8, 8)
+    assert tuple(np.diag(loaded.affine)[:3]) == (1.5, 1.5, 2.0)
 
 
 # -------------------------------------------------------------- train pieces
 
 
-def test_augment_modality_label_equivalent():
+def test_augment_modality_label_is_seed_deterministic():
     base = torch.tensor([[[[0.0]], [[1.0]], [[2.0]], [[3.0]], [[7.0]], [[8.0]], [[9.0]], [[12.0]], [[13.0]]]])
     torch.manual_seed(7)
-    vendored_out = engine_train.augment_modality_label(base.clone(), prob=0.3)
+    first = engine_train.augment_modality_label(base.clone(), prob=0.3)
     torch.manual_seed(7)
-    legacy_out = legacy_augment_modality_label(base.clone(), prob=0.3)
-    assert torch.equal(vendored_out, legacy_out)
+    second = engine_train.augment_modality_label(base.clone(), prob=0.3)
+    assert torch.equal(first, second)
 
 
-def test_load_filenames_equivalent(tmp_path):
+def test_augment_modality_label_zero_prob_is_identity():
+    base = torch.tensor([[[[0.0]], [[1.0]], [[2.0]], [[9.0]], [[13.0]]]])
+    torch.manual_seed(0)
+    out = engine_train.augment_modality_label(base.clone(), prob=0.0)
+    assert torch.equal(out, base)
+
+
+def test_load_filenames_maps_to_embedding_names(tmp_path):
     data_list = tmp_path / "data.json"
     data_list.write_text(json.dumps({"training": [{"image": str(tmp_path / "a.nii.gz")}, {"image": str(tmp_path / "b.nii.gz")}]}))
-    assert engine_load_filenames(str(data_list)) == legacy_load_filenames(str(data_list))
     assert engine_load_filenames(str(data_list)) == [str(tmp_path / "a_emb.nii.gz"), str(tmp_path / "b_emb.nii.gz")]
 
 
-def test_optimizer_and_scheduler_equivalent():
-    model_new = torch.nn.Linear(2, 2)
-    model_old = torch.nn.Linear(2, 2)
-    model_new.load_state_dict(model_old.state_dict())
+def test_create_optimizer_and_scheduler_types():
+    model = torch.nn.Linear(2, 2)
+    opt = engine_train.create_optimizer(model, 1e-4)
+    assert type(opt) is torch.optim.Adam
+    assert opt.param_groups[0]["lr"] == 1e-4
 
-    opt_new = engine_train.create_optimizer(model_new, 1e-4)
-    opt_old = legacy_create_optimizer(model_old, 1e-4)
-    assert type(opt_new) is type(opt_old) is torch.optim.Adam
-    assert opt_new.param_groups[0]["lr"] == opt_old.param_groups[0]["lr"] == 1e-4
-
-    sched_new = engine_train.create_lr_scheduler(opt_new, total_steps=10)
-    sched_old = legacy_create_lr_scheduler(opt_old, total_steps=10)
-    assert type(sched_new) is type(sched_old) is torch.optim.lr_scheduler.PolynomialLR
-    assert sched_new.total_iters == sched_old.total_iters == 10
+    sched = engine_train.create_lr_scheduler(opt, total_steps=10)
+    assert type(sched) is torch.optim.lr_scheduler.PolynomialLR
+    assert sched.total_iters == 10
 
 
 # ------------------------------------------------- create_training_data pieces
 
 
-def test_round_number_equivalent():
-    for number, base in [(100, 128), (200, 128), (500, 128), (0, 128), (77, 64)]:
-        assert engine_round_number(number, base) == legacy_round_number(number, base)
+def test_round_number_rounds_to_base_multiple_with_base_floor():
+    assert engine_round_number(100, 128) == 128
+    assert engine_round_number(200, 128) == 256
+    assert engine_round_number(500, 128) == 512
+    assert engine_round_number(0, 128) == 128  # clamped up to one base
+    assert engine_round_number(77, 64) == 64
 
 
-def _strip_memory_addresses(text: str) -> str:
-    return re.sub(r" at 0x[0-9a-fA-F]+", "", text)
+def test_create_transforms_pipelines_by_modality_and_dim():
+    mri = engine_create_transforms((256, 256, 128), "mri")
+    assert type(mri.transforms[0]).__name__ == "LoadImaged"
+    assert type(mri.transforms[-1]).__name__ == "Resized"  # dim given -> resize appended
 
-
-def test_create_transforms_equivalent():
-    new_mri = engine_create_transforms((256, 256, 128), "mri")
-    old_mri = legacy_create_transforms((256, 256, 128), "mri")
-    assert len(new_mri.transforms) == len(old_mri.transforms)  # intensity transform inclusion parity
-    assert _strip_memory_addresses(repr(new_mri)) == _strip_memory_addresses(repr(old_mri))
+    unknown_no_dim = engine_create_transforms(None, "unknown")
+    # no intensity transform for an unsupported modality, no resize without a dim
+    assert [type(t).__name__ for t in unknown_no_dim.transforms] == ["LoadImaged", "EnsureChannelFirstd", "Orientationd"]
 
 
 # -------------------------------------------------------------- input guards
 
 
-def test_check_input_ct_valid_and_invalid_message_equivalent():
-    body, anatomy, label_json = ["head"], ["liver"], "unused.json"
-    size, spacing = (256, 256, 128), (1.5, 1.5, 2.0)
-    assert check_input_ct(body, anatomy, label_json, size, spacing, [("pancreas", 0.5)]) is None
+def test_check_input_ct_valid_passes_and_invalid_size_raises():
+    # controllable_anatomy_size non-empty -> label_dict_json is never read, so a
+    # placeholder path is fine; (256,256,128)@(1.5,1.5,2.0) is a valid head grid.
+    assert check_input_ct(["head"], ["liver"], "unused.json", (256, 256, 128), (1.5, 1.5, 2.0), [("pancreas", 0.5)]) is None
 
-    with pytest.raises(ValueError) as exc_legacy:
-        legacy_check_ct(body, anatomy, label_json, (300, 300, 128), spacing)
-    with pytest.raises(ValueError) as exc_vendored:
-        check_input_ct(body, anatomy, label_json, (300, 300, 128), spacing)
-    assert str(exc_vendored.value) == str(exc_legacy.value)
+    with pytest.raises(ValueError):
+        check_input_ct(["head"], ["liver"], "unused.json", (300, 300, 128), (1.5, 1.5, 2.0))
 
 
-def test_check_input_mr_invalid_message_equivalent():
-    size, spacing = (256, 256, 128), (0.3, 1.0, 1.0)
-    with pytest.raises(ValueError) as exc_legacy:
-        legacy_check_mr(["head"], ["liver"], "unused.json", size, spacing)
-    with pytest.raises(ValueError) as exc_vendored:
-        check_input_mr(["head"], ["liver"], "unused.json", size, spacing)
-    assert str(exc_vendored.value) == str(exc_legacy.value)
+def test_check_input_mr_invalid_spacing_raises():
+    # spacing[0]=0.3 < 0.4 floor -> ValueError raised before label_dict_json is read.
+    with pytest.raises(ValueError):
+        check_input_mr(["head"], ["liver"], "unused.json", (256, 256, 128), (0.3, 1.0, 1.0))
 
 
 # -------------------------------------------------------------- primitives
@@ -246,15 +218,14 @@ def test_initialize_noise_latents_shape_and_dtype():
     assert latents.dtype == torch.float16
 
 
-def test_get_body_region_index_from_mask_equivalence():
+def test_get_body_region_index_from_mask():
     mask = torch.zeros((8, 8, 8))
     mask[:4] = 30  # thorax member -> region_1
     mask[4:] = 3  # abdomen member -> region_2
 
-    top_v, bottom_v = get_body_region_index_from_mask(mask)
-    top_l, bottom_l = legacy_region_index(mask)
-    assert top_v == top_l == [0, 1, 0, 0]
-    assert bottom_v == bottom_l == [0, 0, 1, 0]
+    top, bottom = get_body_region_index_from_mask(mask)
+    assert top == [0, 1, 0, 0]
+    assert bottom == [0, 0, 1, 0]
 
 
 class _TwiceModel:
@@ -262,17 +233,18 @@ class _TwiceModel:
         return images * 2.0
 
 
-def test_dynamic_infer_direct_and_sliding_paths_equivalent():
+def test_dynamic_infer_direct_and_sliding_paths():
+    # small input fits the roi -> model called directly
     inferer_small = SimpleNamespace(roi_size=[2, 2])
     images_small = torch.ones((1, 1, 2, 2)) * 0.25
-    assert torch.equal(legacy_dynamic_infer(inferer_small, _TwiceModel(), images_small), dynamic_infer(inferer_small, _TwiceModel(), images_small))
+    assert torch.equal(dynamic_infer(inferer_small, _TwiceModel(), images_small), images_small * 2.0)
 
+    # larger volume -> sliding-window path
     inferer_sw = SlidingWindowInferer(roi_size=(2, 2, 2), sw_batch_size=1, progress=False)
     images_vol = torch.ones((1, 1, 4, 4, 4)) * 0.5
-    new_out = dynamic_infer(inferer_sw, _TwiceModel(), images_vol)
-    legacy_out = legacy_dynamic_infer(inferer_sw, _TwiceModel(), images_vol)
-    assert new_out.shape == legacy_out.shape
-    assert torch.allclose(new_out, legacy_out)
+    out = dynamic_infer(inferer_sw, _TwiceModel(), images_vol)
+    assert out.shape == images_vol.shape
+    assert torch.allclose(out, images_vol * 2.0)
 
 
 def test_define_instance_builds_monai_object():
