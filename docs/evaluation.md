@@ -57,17 +57,17 @@ For more details, see the in-code docstring in [`../src/ctmr/application/accepta
 
 ## BraTS L1 quantitative acceptance
 
-`scripts/brats_l1_quantitative.py` evaluates a **frozen** P1/P2/P3 candidate and writes a controlled `brats-l1-report/1` artifact. It does not download a feature extractor or copy DUA-restricted data into the repository.
+`ctmr accept quantitative evaluate` (module `ctmr.application.acceptance.quantitative`) evaluates a **frozen** P1/P2/P3 candidate and writes a controlled `brats-l1-report/1` artifact. It does not download a feature extractor or copy DUA-restricted data into the repository.
 
 ```bash
-python -m scripts.brats_l1_quantitative evaluate \
+ctmr accept quantitative evaluate \
   --run /controlled/records/runs/p3-example/run.json \
   --features /controlled/l1/p3-example/features.json \
   --pairs /controlled/l1/p3-example/pairs.json \
   --output /controlled/l1/p3-example/l1_report.json \
   --bootstrap-resamples 1000 \
   --seed 20260821
-python -m scripts.brats_phase_run_contract attach \
+ctmr accept contract attach \
   --run /controlled/records/runs/p3-example/run.json \
   --kind l1_report --path /controlled/l1/p3-example/l1_report.json
 ```
@@ -101,22 +101,22 @@ The report applies the FID rule per challenge and target modality: the synthetic
 
 ## BraTS L3 blind evaluation
 
-`scripts/brats_l3_blind_eval.py` turns a **frozen** P1/P2/P3 candidate into a neuroradiology-review blinding package and aggregates the blinded judgments to a controlled `brats-l3-report/1` conclusion. It never copies DUA-restricted data into the repository.
+`ctmr accept expert-review` (module `ctmr.application.acceptance.expert_review`) turns a **frozen** P1/P2/P3 candidate into a neuroradiology-review blinding package and aggregates the blinded judgments to a controlled `brats-l3-report/1` conclusion. It never copies DUA-restricted data into the repository.
 
 ```bash
-python -m scripts.brats_l3_blind_eval build-package \
+ctmr accept expert-review build-package \
   --run /controlled/records/runs/p1-example/run.json \
   --catalog /controlled/l3/p1/catalog.json \
   --output /controlled/l3/p1 \
   --seed 20260821 --per-cell 5
-python -m scripts.brats_l3_blind_eval aggregate \
+ctmr accept expert-review aggregate \
   --run /controlled/records/runs/p1-example/run.json \
   --responses /controlled/l3/p1/R1.json --responses /controlled/l3/p1/R2.json \
   --blind-map /controlled/l3/p1/blind_map.json \
   --catalog /controlled/l3/p1/catalog.json \
   --output /controlled/l3/p1/l3_report.json \
   --resamples 1000 --seed 20260821
-python -m scripts.brats_phase_run_contract attach \
+ctmr accept contract attach \
   --run /controlled/records/runs/p1-example/run.json \
   --kind l3_report --path /controlled/l3/p1/l3_report.json
 ```

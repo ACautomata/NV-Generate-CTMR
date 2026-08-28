@@ -59,6 +59,37 @@ TRAIN_MODULES = {
 
 _VARIANTS = ("baseline", "candidate")
 
+# The accept-family door table (issue #141): per layer, whether the verb is
+# peeled off together with its flags (the module parser holds flags only) or
+# left in the rest (the module keeps its own verb argparse), the help blurb,
+# and the per-verb handler module + help. Both the argparse spelling tree and
+# the _peel_accept router read this one table -- adding a verb is one entry.
+ACCEPT_LAYERS = {
+    "quantitative": (
+        True,
+        "L1 quantitative evidence",
+        {"evaluate": ("ctmr.application.acceptance.quantitative.evaluate", "write a candidate-bound L1 report from controlled evidence")},
+    ),
+    "distribution": (
+        False,
+        "L2 frozen-instrument judge chain",
+        {verb: ("ctmr.application.acceptance.distribution.final_acceptance", None) for verb in ("assemble", "predict", "evaluate", "verify-frozen")},
+    ),
+    "expert-review": (
+        True,
+        "L3 blinded-package and judgment aggregation",
+        {
+            "build-package": ("ctmr.application.acceptance.expert_review.package", "sample and blind the per-cell reviewer package"),
+            "aggregate": ("ctmr.application.acceptance.expert_review.aggregate", "aggregate blinded judgments into the candidate-bound L3 report"),
+        },
+    ),
+    "contract": (
+        False,
+        "run contract",
+        {verb: ("ctmr.application.acceptance.contract.cli", None) for verb in ("init", "select", "freeze", "attach", "conclude", "verify")},
+    ),
+}
+
 
 class CtmrCli:
     """The unified command-line application (ADR-0015 §3)."""
@@ -90,6 +121,9 @@ class CtmrCli:
                 continue
             if family == "measure":  # its predict verb landed with #140; unknown verbs are argparse errors
                 fam_parser = subparsers.add_parser(family, aliases=list(aliases), help=blurb)
+            elif family == "accept":  # its four layer doors landed with #141; unknown layers are argparse errors
+                fam_parser = subparsers.add_parser(family, aliases=list(aliases), help=blurb)
+                self._build_accept_verbs(fam_parser)
             else:
                 fam_parser = subparsers.add_parser(family, aliases=list(aliases), help=f"{blurb} -- not migrated yet")
             fam_parser.add_argument("rest", nargs="*", metavar="verb", help="verbs/flags of this family")
@@ -105,7 +139,7 @@ class CtmrCli:
     def _build_measure_verbs(fam_parser):
         """Instrument-side verbs (ADR-0009/#140). Only the spelling lives in
         argparse (help/usage/errors); flags after ``measure predict`` must reach
-        nnUNetv2's own parser verbatim, so routing happens in :meth:`run` --
+        the nnUNetv2's own parser verbatim, so routing happens in :meth:`run` --
         argparse cannot hold a trailing star-slug of unknown dash-tokens."""
         measure_subparsers = fam_parser.add_subparsers(dest="verb", metavar="<verb>")
         measure_subparsers.add_parser(
@@ -113,10 +147,23 @@ class CtmrCli:
             help="run the native nnUNetv2 predictor inside the weights_only allowlist scope (flags pass through to nnUNetv2)",
             description=(
                 "Canonical frozen-instrument execution entry (ADR-0009 decision 3). "
-                "Everything after 'measure predict' goes straight to nnUNetv2's predictor parser, e.g. "
+                "Everything after 'measure predict' goes straight to the nnUNetv2 predictor parser, e.g. "
                 "-i IN -o OUT -d DATASET -c CONFIG -p PLANS -tr TRAINER -f FOLD."
             ),
         )
+
+    @staticmethod
+    def _build_accept_verbs(fam_parser):
+        """Acceptance-layer doors (issue #141). Only the spellings live in argparse
+        (help/usage/errors); each layer's flags belong to the layer module's own
+        parser, so routing happens in :meth:`run` via :meth:`_peel_accept` --
+        both read the ACCEPT_LAYERS table."""
+        accept_subparsers = fam_parser.add_subparsers(dest="layer", metavar="<layer>")
+        for layer, (_peel_verb, blurb, verbs) in ACCEPT_LAYERS.items():
+            layer_parser = accept_subparsers.add_parser(layer, help=blurb)
+            verb_subparsers = layer_parser.add_subparsers(dest="verb", metavar="<verb>")
+            for verb, (_module, help_text) in verbs.items():
+                verb_subparsers.add_parser(verb, help=help_text)
 
     def _add_generate(self, subparsers, aliases, blurb):
         fam_parser = subparsers.add_parser("generate", aliases=list(aliases), help=blurb)
@@ -195,8 +242,41 @@ class CtmrCli:
         if peeled is not None:
             handler, *payload = peeled
             return handler(self, *payload)
+        if argv[:1] == ["accept"]:  # the acceptance-layer doors (issue #141)
+            peeled = self._peel_accept(argv)
+            if peeled is not None:
+                module_name, rest = peeled
+                return self._run_accept_module(module_name, rest)
         args = self._parser.parse_args(argv)
         return args.run(args)
+
+    @staticmethod
+    def _peel_accept(argv):
+        """Peel the fixed ``accept <layer> <verb>`` prefix; (handler module, rest) or None.
+
+        ``None`` falls back to the parser tree (help / argparse error): the verb
+        spelling is verified here so unknown verbs surface as argparse usage
+        errors, not import failures. quantitative/expert-review verbs are peeled
+        together with their flags (each module's parser holds flags only); the
+        distribution and contract modules keep their own verb argparse, so only
+        the family+layer prefix is peeled there.
+        """
+        if argv[:1] != ["accept"] or len(argv) < 2:
+            return None
+        entry = ACCEPT_LAYERS.get(argv[1])
+        if entry is None:
+            return None
+        peel_verb, _blurb, verbs = entry
+        rest = argv[2:]
+        if not rest or rest[0] not in verbs:
+            return None
+        module_name = verbs[rest[0]][0]
+        return module_name, rest[1:] if peel_verb else rest
+
+    @staticmethod
+    def _run_accept_module(module_name, rest):
+        """Dispatch an accept verb; imports its module lazily so the CLI face stays stdlib-only."""
+        return importlib.import_module(module_name).main(rest)
 
     def _run_modality_label_dev_eval(self, rest):
         from ctmr.application.generation.modality_label import monitor

@@ -31,7 +31,7 @@ from ctmr import cli
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FAMILIES = ["generate", "measure", "accept", "data", "experiment"]
-NOT_MIGRATED_FAMILIES = ["accept", "data", "experiment"]  # generate/measure have live verbs; measure unknown verbs are argparse errors
+NOT_MIGRATED_FAMILIES = ["data", "experiment"]  # generate/measure/accept have live verbs; unknown accept layers/verbs are argparse errors
 
 _HEAVY_DEPS = [
     "torch",
@@ -78,6 +78,39 @@ def test_every_family_without_verbs_answers_not_migrated_for_any_concrete_call(c
         assert "not migrated yet" in err
         assert f"ctmr {family}" in err
         assert "some-future-verb" in err
+
+
+def test_accept_peels_each_layer_to_its_module():
+    quantitative = cli.CtmrCli._peel_accept(["accept", "quantitative", "evaluate", "--run", "r.json"])
+    assert quantitative == ("ctmr.application.acceptance.quantitative.evaluate", ["--run", "r.json"])
+    distribution = cli.CtmrCli._peel_accept(["accept", "distribution", "assemble", "--phase", "P1"])
+    assert distribution == ("ctmr.application.acceptance.distribution.final_acceptance", ["assemble", "--phase", "P1"])
+    package = cli.CtmrCli._peel_accept(["accept", "expert-review", "build-package", "--seed", "7"])
+    assert package == ("ctmr.application.acceptance.expert_review.package", ["--seed", "7"])
+    aggregate = cli.CtmrCli._peel_accept(["accept", "expert-review", "aggregate", "--seed", "7"])
+    assert aggregate == ("ctmr.application.acceptance.expert_review.aggregate", ["--seed", "7"])
+    contract = cli.CtmrCli._peel_accept(["accept", "contract", "conclude", "--run", "run.json"])
+    assert contract == ("ctmr.application.acceptance.contract.cli", ["conclude", "--run", "run.json"])
+
+
+def test_accept_unknown_layer_or_verb_falls_back_to_the_parser_tree():
+    assert cli.CtmrCli._peel_accept(["accept", "biomarker", "run"]) is None  # unknown layer
+    assert cli.CtmrCli._peel_accept(["accept", "contract", "rewind", "--run", "r.json"]) is None  # unknown verb
+    assert cli.CtmrCli._peel_accept(["accept", "contract"]) is None  # verb required
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["accept", "biomarker", "run"])
+    assert excinfo.value.code == 2
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["accept", "contract", "rewind"])
+    assert excinfo.value.code == 2
+
+
+def test_accept_bare_invocation_is_a_clean_usage_error():
+    # every accept layer is live now: a bare family call is an argparse usage
+    # error (required <layer>), not a not-migrated pointer
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["accept"])
+    assert excinfo.value.code == 2
 
 
 def test_unknown_measure_verb_is_a_clean_usage_error():

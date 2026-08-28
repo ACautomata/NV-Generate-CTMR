@@ -104,6 +104,7 @@ _Avoid_: 把仪器失效混同为生成质量失败、以 pass/fail 二态强判
 
 **完整终验裁决(final acceptance verdict)**:
 对 frozen 候选三层正式报告(l1/l2/l3 各恰好一份且校验通过)的非补偿性 AND 判定——三层读数(L1 `summary.verdict`、L2 `overall_verdict`、L3 `verdict.overall`)全 pass 才 pass,任一 fail 或 L2 undecided 即 blocked,并逐条列出可追溯阻塞原因,不被其他层高分抵消;缺失或非法附件拒绝裁决(证据补齐后仍可 conclude),裁决记录一经写出不可变。正式 L2 证据必须五挑战齐全且达冻结持出配额,provisional 运行不构成终验证据。
+落地名:`ctmr.domain.acceptance`(非补偿 AND 裁决核)+ `ctmr.application.acceptance.contract.conclude`(终验编排)。
 _Avoid_: 把单层结论或 provisional smoke 称作完整终验通过、以加权平均分代替 AND 抵消某层失败
 
 **L2 肿瘤测量仪器**:
@@ -141,7 +142,7 @@ _Avoid_: 空超集前置守卫(跳过 ET 存在而 TC 空的真违反)、vacuous
 _Avoid_: 与层级违反混称、用于生成数据(无 GT)
 
 **验收层注册表(AcceptanceLayer)**:
-run contract 中验收层(l1/l2/l3_report)全部接线的单点声明——附件 kind、层名、报告 schema 串、validator 构造、层读数路径与阻塞原因推导——`ACCEPTANCE_LAYERS` 一处注册,`ATTACH_KINDS`(层 kind+env,env 为非层附件)与 `LAYER_KINDS` 由此派生;新增验收层=注册表一项+新层自有类组(Rules 与 reasons builder),不再散落平行接线。validator 为组合注入:通用外壳(序幕+绑定+分派)+共享件(绑定校验/挑战读取/微工具)+层 Rules(protocol/coverage/verdict 复算/gate 检查留层——判定不同源的结构保证),非实现继承。经 ADR-0012 钉板;已落地(#136):`ACCEPTANCE_LAYERS` 与三个层验证器居于 `ctmr.application.acceptance.contract`,旧 run contract 脚本反向 import,组合注入外壳随判定链迁移执行。
+run contract 中验收层(l1/l2/l3_report)全部接线的单点声明——附件 kind、层名、报告 schema 串、validator 构造、层读数路径与阻塞原因推导——`ACCEPTANCE_LAYERS` 一处注册,`ATTACH_KINDS`(层 kind+env,env 为非层附件)与 `LAYER_KINDS` 由此派生;新增验收层=注册表一项+新层自有类组(Rules 与 reasons builder),不再散落平行接线。validator 为组合注入:通用外壳(序幕+绑定+分派)+共享件(绑定校验/挑战读取/微工具)+层 Rules(protocol/coverage/verdict 复算/gate 检查留层——判定不同源的结构保证),非实现继承。经 ADR-0012 钉板;已落地(#136 判官侧,#141 判定链):`ACCEPTANCE_LAYERS` 与三个层验证器、记录词汇/守卫/生命周期变更器/终验编排/验证器及 `ctmr accept contract` 动词面全部居于 `ctmr.application.acceptance.contract`。
 _Avoid_: 以实现继承提取三胞胎 validator(应组合注入)、把 gate 检查参数化进注册表数据、ATTACH_KINDS/LAYER_KINDS 与注册表并存双份
 
 **冻结候选绑定(FrozenRunBinding)**:

@@ -12,14 +12,11 @@
 """Pinned MR intensity protocol -- pure logic, no IO (ADR-0015 §2, ticket 08).
 
 ``MRIntensityNormalizer`` is the frozen per-volume 0-99.5 percentile -> [0, 1]
-protocol (``percentile_0_99.5_to_0_1``, ADR-0002/ADR-0010 family) that the L1
-paired metrics and the dev-side PSNR/SSIM trend share. Moved here from
-``scripts/brats_l1_quantitative.py`` so the application layer can consume the
-protocol without depending on the retiring scripts; the legacy module keeps a
-thin forwarding shim. Verified dtype/shape/finiteness gating raises
-``IntensityProtocolError`` (message text unchanged from the legacy
-``L1QuantitativeError`` wording; the exception class name is the only
-difference -- nothing in the legacy chain catches it).
+protocol (``percentile_0_99.5_to_0_1``, ADR-0002/ADR-0010 family) that the
+quantitative paired metrics and the dev-side PSNR/SSIM trend share. Verified
+dtype/shape/finiteness gating raises ``IntensityProtocolError`` (message text
+unchanged from the legacy ``L1QuantitativeError`` wording; the exception class
+name is the only difference -- nothing in the chain catches it).
 """
 
 from __future__ import annotations

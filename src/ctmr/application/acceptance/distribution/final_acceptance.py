@@ -60,7 +60,7 @@ Usage:
     python -m ctmr.application.acceptance.distribution.final_acceptance verify-frozen --freeze-audit freeze-audit.json
 
 ``--run`` (issue #58) #140 migration binds the report to the frozen candidate of the #53 run
-contract; the bound report then passes ``brats_phase_run_contract attach
+contract; the bound report then passes ``ctmr accept contract attach
 --kind l2_report`` and feeds ``conclude`` (non-compensatory L1∧L2∧L3).
 """
 
