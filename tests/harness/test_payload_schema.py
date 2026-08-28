@@ -63,7 +63,11 @@ def test_p2_payload_key_set_is_kept():
 
 
 def test_p3_payload_key_set_is_kept():
-    kernel = CrossModalTrainKernel(_kernel_args(), device=None, logger=None, local_rank=0)
+    args = SimpleNamespace(
+        noise_scheduler={"num_train_timesteps": 1000},
+        controlnet_train={"weighted_loss": 100, "weighted_loss_label": [129, 130, 131]},
+    )
+    kernel = CrossModalTrainKernel(args, device=None, logger=None, local_rank=0)
     kernel._controlnet = _FakeModule()
     payload = kernel.checkpoint_payload(7, 0.75, 1.0)
     assert list(payload) == P3_PAYLOAD_KEYS
