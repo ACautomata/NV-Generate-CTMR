@@ -16,11 +16,14 @@ retiring ``ctmr.harness`` / scripts layer:
 
 - the **phase training shell**: ``PhaseHarness`` epoch loop with early-stop
   file polling at epoch boundaries and mid-epoch, autocast + GradScaler
-  mechanics, loss all_reduce, checkpoint publication via
-  ``CheckpointRepository`` (the tmp atomic publish + ``latest.json``
-  protocol lives there), rank-0 gating for the recipe guard / mkdir /
-  provenance — driven by an injected
+  mechanics and loss all_reduce for the pre-ADR-0016 kernel path, checkpoint
+  publication via ``CheckpointRepository`` (the tmp atomic publish +
+  ``latest.json`` protocol lives there), rank-0 gating for the recipe guard /
+  mkdir / provenance — driven by an injected
   ``PhaseTrainKernel`` (composition, never implementation inheritance);
+  kernels migrated per ADR-0016 replace ``train_batch`` with ``train_step`` and
+  receive the injected ``GradientExecutor`` carrying the fp16 / bf16 /
+  non-AMP strategy (the shell then only aggregates and polls);
   the common finetune argparse surface lives in the stdlib-only sibling
   ``ctmr.application.train_cli`` (``TrainCli``);
 - the **dev-eval engine**: ``CheckpointWatcher`` / ``EarlyStopRule`` /
@@ -44,9 +47,9 @@ from typing import Any, Protocol
 
 import torch
 import torch.distributed as dist
-from torch.amp import GradScaler, autocast
 
 from ctmr.infrastructure.checkpoints import CheckpointRepository
+from ctmr.infrastructure.gradient_executors import Bf16GradientExecutor, Fp16GradientExecutor, PlainGradientExecutor
 
 STOP_FILE = ".early_stop"
 
@@ -77,6 +80,20 @@ class PhaseTrainKernel(Protocol):
     No implementation inheritance: the shell calls these, the kernel owns the
     stage domain (data composition, model hook-up, optimizer/scheduler recipe
     values, the per-batch forward + loss, the checkpoint payload keys).
+
+    A kernel implements exactly ONE of the two per-batch methods; the shell
+    probes for ``train_step`` and downgrades to ``train_batch`` only for the
+    still-migrating stages:
+
+    - ``train_step`` (migrated stages, ADR-0016): the kernel hands the shell one
+      closed single-batch update (its model entity drives loss → backward →
+      optimizer step through the injected ``GradientExecutor``) and the shell
+      only aggregates and polls.  The application must inject the
+      ``GradientExecutor`` (the shell validates this at construction, before
+      any checkpoint loading or first batch).
+    - ``train_batch`` (pre-migration stages): forward + loss only; the shell
+      drives the update through the executor built from ``amp``/``amp_dtype``
+      and steps ``ctx.scheduler`` itself.
     """
 
     def build_loader(self):
@@ -88,7 +105,11 @@ class PhaseTrainKernel(Protocol):
         ...
 
     def train_batch(self, batch) -> torch.Tensor:
-        """Single-batch forward + loss (already containing scale noise/scheduler usage)."""
+        """Single-batch forward + loss (pre-migration stages; the shell drives the update)."""
+        ...
+
+    def train_step(self, batch, gradient_executor) -> torch.Tensor:
+        """Single-batch closed update (migrated stages): the kernel's model entity drives it."""
         ...
 
     def checkpoint_payload(self, epoch: int, avg_loss: float, scale) -> dict:
@@ -97,7 +118,15 @@ class PhaseTrainKernel(Protocol):
 
 
 class PhaseHarness:
-    """The shared training shell: mechanical sequence only, no recipe or domain values."""
+    """The shared training shell: mechanical sequence only, no recipe or domain values.
+
+    The per-batch precision strategy is always carried by one injected
+    ``GradientExecutor``: migrated kernels (``train_step``) receive the
+    application-injected instance; still-migrating kernels (``train_batch``)
+    default to the strategy matching the ``amp``/``amp_dtype`` declaration
+    (fp16 scaler / bf16 / plain). The shell never re-implements autocast or
+    GradScaler state itself.
+    """
 
     ITER_LOG_EVERY = 50
 
@@ -112,17 +141,27 @@ class PhaseHarness:
         logger,
         recipe_check: Callable[[], Any] | None = None,
         provenance: TrainProvenanceWriter | None = None,
+        gradient_executor=None,
     ):
         self._kernel = kernel
         self._model_dir = model_dir
         self._n_epochs = n_epochs
-        self._amp = amp
-        self._amp_dtype = amp_dtype
         self._local_rank = local_rank
         self._logger = logger
         self._recipe_check = recipe_check
         self._provenance = provenance
         self._repository = CheckpointRepository(Path(model_dir))
+        if getattr(kernel, "train_step", None) is not None:
+            if gradient_executor is None:
+                raise ValueError("kernel provides train_step but no gradient_executor was injected (ADR-0016)")
+        elif gradient_executor is None:
+            if amp and amp_dtype == "fp16":
+                gradient_executor = Fp16GradientExecutor()
+            elif amp:
+                gradient_executor = Bf16GradientExecutor()
+            else:
+                gradient_executor = PlainGradientExecutor()
+        self._gradient_executor = gradient_executor
 
     def run(self):
         """Drive one full training run: recipe guard -> provenance -> loop -> cleanup."""
@@ -134,13 +173,12 @@ class PhaseHarness:
                 self._provenance.write(Path(self._model_dir) / "train_provenance.json")
         loader = self._kernel.build_loader()
         ctx = self._kernel.load_models(loader)
-        scaler = GradScaler("cuda")
         torch.set_float32_matmul_precision("highest")
         for epoch in range(self._n_epochs):
             if self._stop_requested():
                 self._logger.info(f"early-stop file present; halting before epoch {epoch + 1}")
                 break
-            self._train_one_epoch(epoch, loader, ctx, scaler)
+            self._train_one_epoch(epoch, loader, ctx)
         if dist.is_initialized():
             dist.destroy_process_group()
         return 0
@@ -148,28 +186,27 @@ class PhaseHarness:
     def _stop_requested(self) -> bool:
         return (Path(self._model_dir) / STOP_FILE).is_file()
 
-    def _train_one_epoch(self, epoch, loader, ctx, scaler):
+    def _train_one_epoch(self, epoch, loader, ctx):
         if self._local_rank == 0:
             self._logger.info(f"Epoch {epoch + 1}, lr {ctx.optimizer.param_groups[0]['lr']}.")
         iteration = 0
         loss_totals = torch.zeros(2, dtype=torch.float, device=ctx.device)
         ctx.trainable.train()
+        train_step = getattr(self._kernel, "train_step", None)
         for batch in loader:
             if self._stop_requested():
                 self._logger.info(f"early-stop file present; halting mid-epoch {epoch + 1}")
                 return
             iteration += 1
-            ctx.optimizer.zero_grad(set_to_none=True)
-            with autocast("cuda", dtype=torch.bfloat16 if self._amp_dtype == "bf16" else torch.float16, enabled=self._amp):
-                loss = self._kernel.train_batch(batch)
-            if self._amp and self._amp_dtype == "fp16":
-                scaler.scale(loss).backward()
-                scaler.step(ctx.optimizer)
-                scaler.update()
+            if train_step is None:
+                # Pre-ADR-0016 mechanical path: the executor reproduces the shell's
+                # former zero_grad → autocast-wrapped loss → backward → step order.
+                loss = self._gradient_executor.run(lambda: self._kernel.train_batch(batch), ctx.trainable, ctx.optimizer)
+                ctx.scheduler.step()
             else:
-                loss.backward()
-                ctx.optimizer.step()
-            ctx.scheduler.step()
+                # Migrated stages: the kernel's model entity drives one closed
+                # update; the shell only aggregates and polls.
+                loss = train_step(batch, self._gradient_executor)
             loss_totals[0] += loss.item()
             loss_totals[1] += 1.0
             if self._local_rank == 0 and iteration % self.ITER_LOG_EVERY == 0:

@@ -27,6 +27,7 @@ import pytest
 import torch
 
 from ctmr.harness.train_shell import STOP_FILE, PhaseHarness, TrainContext, TrainProvenanceWriter
+from ctmr.infrastructure.gradient_executors import PlainGradientExecutor
 
 # The pre-#111 provenance writer field sets, verbatim (do not edit -- the
 # script/git_commit self-referential values are exempt, the key sets are not).
@@ -117,7 +118,7 @@ class SpyKernel:
         return {"epoch": epoch, "loss": avg_loss, "num_train_timesteps": 1000, "scale_factor": scale, "fake_state_dict": {}}
 
 
-def _build_harness(kernel, tmp_path, n_epochs=2, local_rank=0, recipe_check=None, provenance=None):
+def _build_harness(kernel, tmp_path, n_epochs=2, local_rank=0, recipe_check=None, provenance=None, gradient_executor=None):
     return PhaseHarness(
         kernel=kernel,
         model_dir=tmp_path,
@@ -128,6 +129,7 @@ def _build_harness(kernel, tmp_path, n_epochs=2, local_rank=0, recipe_check=None
         logger=logging.getLogger("test-harness"),
         recipe_check=recipe_check,
         provenance=provenance,
+        gradient_executor=gradient_executor,
     )
 
 
@@ -149,6 +151,51 @@ def test_epoch_loop_drives_the_mechanical_sequence_and_publishes_atomically(tmp_
     assert (tmp_path / "latest.json").read_text().endswith("\n")
     # optimizer 确实步进(参数从 1.0 减小)
     assert kernel.param.item() < 1.0
+
+
+class MigratedSpyKernel(SpyKernel):
+    """A kernel whose model entity drives the batch update (ADR-0016 train_step boundary).
+
+    ``train_step`` owns the lr step inside the update (like the domain
+    ``DiffusionModel.train_step``) -- the shell must not step ``ctx.scheduler``
+    on top of it, or the PolynomialLR would advance twice per batch.
+    """
+
+    def train_step(self, batch, gradient_executor):
+        self.calls.append(("train_step", batch["x"], type(gradient_executor).__name__))
+        if self.on_train_batch is not None:
+            self.on_train_batch(batch["x"])
+        loss = gradient_executor.run(lambda: self.param**2, self.param, self.optimizer)
+        self.scheduler.step()  # lr ownership stays in the kernel-side update
+        return loss
+
+
+def test_migrated_kernel_drives_batches_through_the_injected_executor(tmp_path):
+    kernel = MigratedSpyKernel(n_batches=2)
+    _build_harness(kernel, tmp_path, n_epochs=2, gradient_executor=PlainGradientExecutor()).run()
+
+    assert len([c for c in kernel.calls if c[0] == "train_step"]) == 4  # every batch closed by the kernel
+    assert len([c for c in kernel.calls if c[0] == "train_batch"]) == 0  # shell no longer drives the update
+    # the injected executor reached every kernel-side batch update
+    assert all(step_call[2] == "PlainGradientExecutor" for step_call in kernel.calls if step_call[0] == "train_step")
+    assert kernel.param.item() < 1.0  # the optimizer still stepped
+    assert kernel.scheduler.last_epoch == 4  # lr stepped exactly once per batch (no shell double-step)
+    assert (tmp_path / "epoch_2.pt").is_file()  # checkpoint publication unchanged
+
+
+def test_migrated_kernel_without_an_injected_executor_refuses_early(tmp_path):
+    # The injection guard fires at construction (before any checkpoint loading
+    # or first batch), never only when the cluster reaches epoch 1.
+    with pytest.raises(ValueError, match="no gradient_executor was injected"):
+        PhaseHarness(
+            kernel=MigratedSpyKernel(n_batches=1),
+            model_dir=tmp_path,
+            n_epochs=1,
+            amp=False,
+            amp_dtype="bf16",
+            local_rank=0,
+            logger=logging.getLogger("test-harness"),
+        )
 
 
 def test_early_stop_file_halts_before_the_next_epoch(tmp_path):

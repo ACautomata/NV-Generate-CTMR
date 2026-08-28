@@ -40,7 +40,10 @@ skeleton in ``ctmr.application.shell``.
 
 Migrated from the retired modality-label dev-eval script entry (ticket 10,
 ADR-0015 §2); its ``selftest`` subcommand retired with it — its assertions
-live as pytest functions.
+live as pytest functions. Per ADR-0016 the denoising loop runs on the domain
+``DiffusionModel`` through a fresh ``DiffusionScheduler`` per sample call
+(CFG / timestep / RF advance semantics unchanged); the VAE reconstruction and
+the trend machinery stay application adapters.
 
 Usage (sugon, one reserved GPU):
     ctmr generate modality-label dev-eval reference --dev-list ... --raw-root ... --eval-root DIR
@@ -62,6 +65,7 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import torch
+from monai.networks.schedulers import RFlowScheduler
 
 from ctmr.application.generation.trend import DevCohortBuilder, L2TrendRunner, MrTrendFeatures, RealReferenceBank, TrendFid
 from ctmr.application.shell import (
@@ -72,6 +76,7 @@ from ctmr.application.shell import (
     EarlyStopRule,
     TrendLedger,
 )
+from ctmr.domain.generation.model import DiffusionModel
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, dynamic_infer
@@ -125,44 +130,31 @@ class CandidateSampler:
         autoencoder = autoencoder.half()
         unet = unet.half()
         scale = float(ckpt["scale_factor"])
-        return unet, ReconModel(autoencoder=autoencoder, scale_factor=scale).to(self._device).half()
+        # The domain entity carries the sampling rules: the RF scheduler shape
+        # and the denoising loop (CFG composition, fresh DiffusionScheduler per
+        # sample call, ADR-0016). The VAE reconstruction stays an application
+        # adapter (ReconModel) below the latent the entity produces.
+        model = DiffusionModel(
+            unet=unet,
+            scale_factor=torch.tensor(scale, device=self._device),
+            noise_scheduler=RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"}),
+        )
+        return model, ReconModel(autoencoder=autoencoder, scale_factor=scale).to(self._device).half()
 
     @torch.inference_mode()
-    def sample_one(self, unet, recon_model, modality_token, spacing, seed, output_size=(256, 256, 128)):
+    def sample_one(self, model, recon_model, modality_token, spacing, seed, output_size=(256, 256, 128)):
         from monai.inferers import SlidingWindowInferer
-        from monai.networks.schedulers import RFlowScheduler
 
         torch.manual_seed(seed)
-        noise_scheduler = RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"})
         divisor = 4
         image = torch.randn((1, 4, output_size[0] // divisor, output_size[1] // divisor, output_size[2] // divisor), device=self._device)
-        noise_scheduler.set_timesteps(
-            num_inference_steps=self._args.diffusion_unet_inference["num_inference_steps"],
-            input_img_size_numel=torch.prod(torch.tensor(image.shape[2:])),
-        )
         spacing_tensor = torch.tensor([[s * 1e2 for s in spacing]], device=self._device)
         modality_tensor = torch.tensor([modality_token], device=self._device)
-        all_timesteps = noise_scheduler.timesteps
-        all_next = torch.cat((all_timesteps[1:], torch.tensor([0], dtype=all_timesteps.dtype)))
         cfg = self._args.cfg_guidance_scale
+        scheduler = model.begin_sampling(image.shape, self._args.diffusion_unet_inference["num_inference_steps"])
         with torch.amp.autocast("cuda", enabled=True, dtype=torch.float16):
-            for t, next_t in zip(all_timesteps, all_next):
-                unet_inputs = {
-                    "x": image,
-                    "timesteps": torch.Tensor((t,)).to(self._device),
-                    "spacing_tensor": spacing_tensor,
-                    "class_labels": modality_tensor,
-                }
-                if cfg > 0:
-                    unet_inputs = {
-                        key: (torch.cat([value, value]) if key != "class_labels" else torch.cat([value, torch.zeros_like(value)]))
-                        for key, value in unet_inputs.items()
-                    }
-                    model_t, model_uncond = unet(**unet_inputs).chunk(2)
-                    model_output = model_uncond + cfg * (model_t - model_uncond)
-                else:
-                    model_output = unet(**unet_inputs)
-                image, _ = noise_scheduler.step(model_output, t, image, next_t)
+            while not scheduler.complete:
+                image = model.denoise(scheduler, image, spacing_tensor, modality_tensor, cfg)
         inferer = SlidingWindowInferer(roi_size=[96, 96, 96], sw_batch_size=1, overlap=0.25, sw_device=self._device, device=torch.device("cpu"))
         with torch.amp.autocast("cuda", enabled=True, dtype=torch.float16):
             synthetic = dynamic_infer(inferer, recon_model, image).squeeze().float().cpu().numpy()
@@ -170,7 +162,7 @@ class CandidateSampler:
         return np.clip(data, 0, None).astype(np.int16)
 
     def generate_cohort(self, checkpoint_path, cohort, spacings, out_dir):
-        unet, recon = self.load_models(checkpoint_path)
+        model, recon = self.load_models(checkpoint_path)
         samples = []
         for item in cohort:
             for modality in TARGET_MODALITIES:
@@ -178,11 +170,11 @@ class CandidateSampler:
                 out = Path(out_dir) / item["sub"] / f"{item['case']}_{modality}_seed{seed}.nii.gz"
                 if not out.is_file():
                     out.parent.mkdir(parents=True, exist_ok=True)
-                    data = self.sample_one(unet, recon, MODALITY_TOKENS[modality], spacings.spacing_of(item["case"]), seed)
+                    data = self.sample_one(model, recon, MODALITY_TOKENS[modality], spacings.spacing_of(item["case"]), seed)
                     image = nib.Nifti1Image(data, affine=np.diag([1.0, 1.0, 1.0, 1.0]))
                     nib.save(image, out)
                 samples.append({"sub": item["sub"], "case": item["case"], "modality": modality, "path": str(out)})
-        del unet, recon
+        del model, recon
         torch.cuda.empty_cache()
         return samples
 
