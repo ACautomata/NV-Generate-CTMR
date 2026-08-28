@@ -196,7 +196,7 @@ bash scripts/brats_phase_launch_train.sh   # 7-GPU DDP + 1-GPU sidecar, nohup
 
 ### Run-contract wiring (P2)
 
-The phase-run contract (`scripts/brats_phase_run_contract.py`) already carries P2 init/select/attach/verify/conclude and the `undecided` handling. Two prerequisites gate a P2 run on the cluster:
+The phase-run contract (`ctmr accept contract`, module `ctmr.application.acceptance.contract`) already carries P2 init/select/attach/verify/conclude and the `undecided` handling. Two prerequisites gate a P2 run on the cluster:
 
 1. **DM source registered (hard gate)** — P2 `init` requires `--upstream-run` pointing at a *frozen and registered* P1 candidate (`DmSourceLedger.check_upstream` matches run_id + checkpoint sha256). Until the P1 run has its L1/L2/L3 reports attached and passes `conclude` (#58), `dm_source.json` does not exist and P2 `init` is rejected with `"no P1 candidate has passed final acceptance yet; ... conclude a passing P1 run first"`. This is not P2 code; it is the #58 conclusion execution that must complete first.
 2. **Init invocation** — `init --phase P2 --record-root DIR --manifest phase_manifest.json --config train=configs/config_brats_p2_train.json --config network=configs/config_network_rflow.json --data-list train=lists/p2_mask_cond.json --upstream-run records/runs/<p1-run-id>/run.json --platform-json run/environment_brats_p2_train.json` (no `--base-ckpt`; a replay list is rejected). Note `environment_brats_p2_train.json` (paths) embeds as `platform`; `p2_mask_cond.json` is the single train+dev list, split internally by `fold=1/fold=0` (the contract's holdout guard passes since #52 includes no holdout entries).

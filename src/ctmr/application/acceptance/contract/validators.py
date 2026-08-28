@@ -14,11 +14,12 @@
 Each validator checks the versioned report schema of its layer and the frozen-candidate
 binding, then applies the layer's own Rules (protocol / coverage / result lines /
 verdict recomputation / gate checks). The gate constants on this side and the
-production-side mirrors (``brats_l1_quantitative`` / ``brats_l3_blind_eval``) stay
-independently sourced: a production bug must not be let through by a same-source
-checker (ADR-0006 referee independence). Report-schema strings and attached-report
-kinds keep their frozen artifact values (``l1_report`` etc.); the capability-phase
-codepoints live in CONTEXT.md word entries, issues and ADRs, not in code naming.
+production-side constants (``application.acceptance.quantitative.report`` /
+``application.acceptance.expert_review.catalog``) stay independently sourced: a
+production bug must not be let through by a same-source checker (ADR-0006 referee
+independence). Report-schema strings and attached-report kinds keep their frozen
+artifact values (``l1_report`` etc.); the capability-phase codepoints live in
+CONTEXT.md word entries, issues and ADRs, not in code naming.
 """
 
 import json
@@ -35,7 +36,7 @@ QUANTITATIVE_T1N_TO_T1C = ("t1n", "t1c")
 QUANTITATIVE_FEATURE_EXTRACTOR = "radimagenet_resnet50"
 QUANTITATIVE_MR_PREPROCESSING = "percentile_0_99.5_to_0_1_ras_1mm_zero_pad"
 
-# Expert-review layer constants (gate mirror of scripts/brats_l3_blind_eval -- different source on purpose).
+# Expert-review layer constants (gate mirror of application.acceptance.expert_review.catalog -- different source on purpose).
 EXPERT_REVIEW_MODALITIES = ("t1n", "t1c", "t2w", "t2f")
 EXPERT_REVIEW_DIMENSIONS = (
     "overall_realism",

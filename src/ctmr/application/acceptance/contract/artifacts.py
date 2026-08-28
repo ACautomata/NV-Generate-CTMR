@@ -3,26 +3,31 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #     http://www.apache.org/licenses/LICENSE-2.0
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Contract evidence micro-tools (issue #140; extracted from the run-contract module).
+"""Contract evidence micro-tools (issue #140; the single definition point since #141).
 
 ``ArtifactFingerprinter`` and ``ManifestSides`` are the evidence-chain helpers
-the L2 judge chain shares with the run-contract orchestration face: SHA-256
-fingerprints linking record entries to bytes on disk, and the pinned phase
-manifest viewed as a ``(challenge, case) -> side`` map. They land here so the
-distribution package imports the contract face only (ADR-0015 §2) -- never the
-legacy ``scripts.brats_phase_run_contract`` tree. The definitions stay verbatim;
-the legacy module keeps its own copy until its retirement (#141).
+the run-contract orchestration face shares with the distribution judge chain:
+SHA-256 fingerprints linking record entries to bytes on disk, and the pinned
+phase manifest viewed as a ``(challenge, case) -> side`` map. A missing
+fingerprint target is a contract violation (the legacy script's semantics,
+normalized here at its retirement). The raised type is the dm_source ledger
+violation per issue #135 -- the same class object the record module aliases
+as ``ContractViolationError`` -- raised directly so the record module can
+import ``ArtifactFingerprinter`` (CodeVersion) without an import cycle.
 """
 
 import hashlib
 import json
 from pathlib import Path
+
+from ctmr.infrastructure.dmsource import DmSourceViolationError
 
 
 class ArtifactFingerprinter:
@@ -38,7 +43,7 @@ class ArtifactFingerprinter:
     def must_fingerprint(self, path, label):
         resolved = Path(path)
         if not resolved.is_file():
-            raise FileNotFoundError(f"{label} not found: {resolved}")
+            raise DmSourceViolationError(f"{label} not found: {resolved}")
         return {"path": str(resolved.resolve()), "sha256": self.file_sha256(resolved)}
 
     def content_sha256(self, text):

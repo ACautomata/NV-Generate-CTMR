@@ -10,11 +10,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Quantitative acceptance evidence generators (ADR-0015 §2 application/acceptance/quantitative).
+"""Quantitative acceptance layer: the FID / paired-error evidence chain.
 
-Two residents so far: ``fid_2d5`` (the 2.5D Frechet-Inception-Distance
-calculator, #140) and ``fid`` (the Fréchet-distance metric computation the L1
-evidence chain and the generation families' dev-trend machinery share,
-ticket 10). The paired-error chain lands with the quantitative acceptance
-ticket (#141).
+The whole chain migrated from ``scripts/brats_l1_quantitative.py`` (#141 /
+ADR-0015 §2): ``fid`` (Fréchet metric, case-level bootstrap, three-plane FID
+assessment), ``paired`` (P3 candidate-vs-baseline MAE/SSIM with the t1n->t1c
+exception), ``report`` (the versioned candidate-bound report assembly),
+``evidence`` (controlled JSON/NIfTI/feature-manifest readers and the report
+writer) and ``evaluate`` (the ``ctmr accept quantitative evaluate`` entry).
+``fid_2d5`` (#140) is the 2.5D FID calculator shared with the dev-trend
+machinery. Every domain quantity is frozen pre-registration -- this package
+changed addresses only.
 """

@@ -45,7 +45,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
-from .brats_phase_run_contract import (
+from ctmr.application.acceptance.contract import (
     ArtifactFingerprinter,
     CandidateFreezer,
     ContractViolationError,
