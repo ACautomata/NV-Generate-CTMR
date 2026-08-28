@@ -55,13 +55,13 @@ Model weights are automatically downloaded from HuggingFace when running inferen
 
 ```bash
 # Download CT models (rflow-ct)
-python -m scripts.download_model_data --version rflow-ct --root_dir "./" --model_only
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('rflow-ct', './', model_only=True)"
 
 # Download MR models (rflow-mr)
-python -m scripts.download_model_data --version rflow-mr --root_dir "./" --model_only
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('rflow-mr', './', model_only=True)"
 
 # Download legacy CT models (ddpm-ct)
-python -m scripts.download_model_data --version ddpm-ct --root_dir "./" --model_only
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('ddpm-ct', './', model_only=True)"
 ```
 
 Model weights are hosted on HuggingFace:

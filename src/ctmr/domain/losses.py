@@ -11,7 +11,7 @@
 
 """Pure VAE loss math (ADR-0015 §2).
 
-``kl_loss`` is extracted verbatim from ``scripts/utils.KL_loss`` (issue #142;
+``kl_loss`` is extracted verbatim from ``utils.KL_loss`` (retired scripts layer, git history) (issue #142;
 from->to mapping declared in the PR -- the ``scripts`` copy stays until M5
 retires it).
 """

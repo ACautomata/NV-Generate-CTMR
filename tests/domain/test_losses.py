@@ -44,7 +44,7 @@ def test_kl_loss_closed_form_pinned():
 
 @pytest.mark.torch
 def test_kl_loss_sums_all_non_batch_dims():
-    """Two-spatial-element latents sum over every non-batch dim (scripts/utils.KL_loss contract)."""
+    """Two-spatial-element latents sum over every non-batch dim (the retired ``utils.KL_loss`` contract)."""
     mu = torch.zeros(1, 1, 1, 2)
     sigma = torch.full((1, 1, 1, 2), 2.0)
     per_element = 0.5 * (0.0 + 4.0 - math.log(4.0 + 1e-10) - 1.0)

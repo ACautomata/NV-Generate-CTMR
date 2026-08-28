@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Fixed/random intensity and VAE transform-pipeline factories (migrated verbatim from scripts/transforms, ticket #132)."""
+"""Fixed/random intensity and VAE transform-pipeline factories (migrated verbatim from the retired scripts layer (git history; ``transforms``), ticket #132)."""
 
 import warnings
 

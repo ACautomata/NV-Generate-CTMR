@@ -1,4 +1,4 @@
-"""CPU numerical behavior tests for ctmr.infrastructure.dataio.morphology (migrated verbatim from scripts/utils)."""
+"""CPU numerical behavior tests for ctmr.infrastructure.dataio.morphology (migrated verbatim from the retired scripts layer (git history; ``utils``))."""
 
 import pytest
 import torch

@@ -15,9 +15,9 @@
 # Function bodies are copied byte-for-byte from their legacy homes so that
 # vendored engine files keep upstream behavior with no numeric drift:
 #
-# - ``dynamic_infer``                    from scripts/utils.py
-# - ``get_body_region_index_from_mask``  from scripts/utils.py
-# - ``check_input_ct`` / ``check_input_mr`` from scripts/sample_mask.py
+# - ``dynamic_infer``                    from the retired scripts layer (git history; ``utils``).py
+# - ``get_body_region_index_from_mask``  from the retired scripts layer (git history; ``utils``).py
+# - ``check_input_ct`` / ``check_input_mr`` from the retired scripts layer (git history; ``sample_mask``).py
 #
 # Only these extractions and this import block are new; everything below the
 # imports is guarded by tests/infrastructure/maiisi_engine/test_vendored_parity.py.

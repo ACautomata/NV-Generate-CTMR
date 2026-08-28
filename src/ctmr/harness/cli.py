@@ -11,9 +11,8 @@
 
 """Thin forwarding shim -- the common finetune CLI surface moved to
 ``ctmr.application.train_cli`` (ADR-0015 §2 application layer, ticket 08).
-The scripts-side consumers (P1/P2 finetune entries still in scripts/) keep
-importing from here until their migration batches relocate them; behaviour is
-unchanged.
+All former scripts-side consumers migrated with their batches; the shim
+remains as a compatibility alias and behaviour is unchanged.
 """
 
 from ctmr.application.train_cli import TrainCli

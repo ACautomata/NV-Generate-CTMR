@@ -11,10 +11,10 @@
 
 """Generated-mask refinement: connected-component suppression, organ filling, label remapping.
 
-Migrated from ``scripts/utils`` (ticket #132): the generated-mask post-processing family used by
+Migrated from ``utils`` (retired scripts layer, git history) (ticket #132): the generated-mask post-processing family used by
 the MAISI mask pipeline, kept byte-for-byte identical except the ``numpy`` long-alias removal
 (``np.long`` -> ``np.int64``, PR #155 Codex fix) — ``np.long`` was removed in NumPy 1.24; the
-original leaves stay in ``scripts/utils`` serving their unmigrated consumers until the expand
+original leaves stay in ``utils`` (retired scripts layer, git history) serving their unmigrated consumers until the expand
 phase retires them.
 """
 

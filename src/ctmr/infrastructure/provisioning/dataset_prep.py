@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Prepare BraTS2023 nnU-Net datasets for the self-trained L2 measurement instrument (issue #34; migrated from scripts/brats2023_nnunet_prep, ticket #140).
+"""Prepare BraTS2023 nnU-Net datasets for the self-trained L2 measurement instrument (issue #34; migrated from the retired scripts layer (git history; ``brats2023_nnunet_prep``), ticket #140).
 
 Implements the pinned decisions of issues #13/#32:
 - case-level 70/10/20 split, ``split_id=brats2023-rflow-v1``, SHA-256 stable sort;

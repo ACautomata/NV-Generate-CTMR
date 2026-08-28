@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Label-region intensity quality check for generated volumes (migrated from scripts/quality_check, ticket #132)."""
+"""Label-region intensity quality check for generated volumes (migrated from the retired scripts layer (git history; ``quality_check``), ticket #132)."""
 
 import numpy as np
 

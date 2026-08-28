@@ -12,7 +12,7 @@
 
 """Paired P3 candidate-vs-baseline error assessment (MAE / 3D SSIM).
 
-Migrated verbatim from ``scripts/brats_l1_quantitative.py`` (#141): per-case
+Migrated verbatim from ``brats_l1_quantitative.py`` (retired scripts layer, git history) (#141): per-case
 metrics on aligned MR volumes in the fixed [0, 1] protocol, the paired
 case-level percentile bootstrap, and the pre-registered improvement gate with
 the explicit ``t1n->t1c`` known-unobservable exception (CONTEXT.md T1→T1c

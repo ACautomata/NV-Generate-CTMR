@@ -11,7 +11,7 @@
 
 """Convergence-gate tests for the common phase-train CLI surface (ADR-0011, #111).
 
-The embedded reference parsers are the pre-#111 ``scripts/brats_p{1,2,3}_finetune.py``
+The embedded reference parsers are the pre-#111 ``brats_p{1,2,3}_finetune.py`` (retired scripts layer, git history)
 argparse blocks, verbatim (do not edit -- drift here is exactly what this gate
 exists to catch). The gate: same argv must produce an equal argparse namespace
 before and after the harness consolidation, and the torchrun WORLD_SIZE check

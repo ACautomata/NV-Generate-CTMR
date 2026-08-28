@@ -12,7 +12,7 @@
 
 """Versioned candidate-bound L1 quantitative report assembly.
 
-Migrated verbatim from ``scripts/brats_l1_quantitative.py`` (#141). The
+Migrated verbatim from ``brats_l1_quantitative.py`` (retired scripts layer, git history) (#141). The
 producer binds the report to the frozen candidate's five keys via the shared
 ``FrozenRunBinding`` (freeze gate built in), assesses per-challenge FID and
 P3 paired evidence, and derives the summary verdict with the undecided third

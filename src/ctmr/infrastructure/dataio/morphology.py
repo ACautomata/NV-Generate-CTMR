@@ -11,9 +11,8 @@
 
 """Binary-mask morphology wrappers around MONAI's dilate/erode.
 
-Migrated verbatim from ``scripts/utils.erode_one_img`` / ``scripts.utils.dilate_one_img``
-(ticket #132); the originals stay in place serving their consumers until the expand
-phase deletes them.
+Migrated verbatim from the retired ``utils.erode_one_img`` / ``utils.dilate_one_img``
+(git history; ticket #132); the originals were removed with the scripts layer.
 """
 
 from collections.abc import Sequence

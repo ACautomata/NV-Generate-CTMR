@@ -11,7 +11,7 @@
 
 # ---------------------------------------------------------------------------
 # Vendored snapshot (issue #134, ADR-0015 §2 maiisi_engine): byte-for-byte
-# copy of ``scripts/diff_model_infer.py`` with import lines rewritten to this package home.
+# copy of ``diff_model_infer.py`` (retired scripts layer, git history) with import lines rewritten to this package home.
 # Behavior must stay stable — machine-guarded by
 # tests/infrastructure/maiisi_engine/test_vendored_parity.py (AST equality).
 # ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@
 
 """Controlled L1 evidence readers and the report writer.
 
-Migrated verbatim from ``scripts/brats_l1_quantitative.py`` (#141): auditable
+Migrated verbatim from ``brats_l1_quantitative.py`` (retired scripts layer, git history) (#141): auditable
 JSON/NIfTI/feature-manifest reads from controlled storage and the strict-JSON
 report write that refuses any path inside a git work tree (DUA rule). The
 pinned MR [0, 1] intensity protocol comes from ``ctmr.domain.intensity_protocol``.

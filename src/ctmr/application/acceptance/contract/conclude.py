@@ -12,7 +12,7 @@
 
 """Final-acceptance orchestration: evidence collection, judgement, immutability.
 
-Migrated from ``scripts/brats_phase_run_contract.py`` (#141). Collection and
+Migrated from ``brats_phase_run_contract.py`` (retired scripts layer, git history) (#141). Collection and
 persistence stay here; the cross-layer verdict itself is the pure domain
 kernel ``ctmr.domain.acceptance.FinalAcceptanceRule`` -- the non-compensatory
 L1∧L2∧L3 AND where any L2 ``undecided`` blocks exactly like a fail (issue

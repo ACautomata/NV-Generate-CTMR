@@ -12,7 +12,7 @@
 
 """The holdout guard: final-holdout cases never enter run inputs or selection.
 
-Migrated verbatim from ``scripts/brats_phase_run_contract.py`` (#141, spec
+Migrated verbatim from ``brats_phase_run_contract.py`` (retired scripts layer, git history) (#141, spec
 decision 3): while a run is open, no data list and no selection evidence may
 reference a final-holdout case of the pinned manifest, and selection evidence
 may only reference dev-side cases.

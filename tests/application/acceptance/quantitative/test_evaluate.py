@@ -12,7 +12,7 @@
 
 """The quantitative acceptance chain, observed as pytest (#141).
 
-The resident ``L1SelfTest`` of ``scripts/brats_l1_quantitative.py`` became
+The resident ``L1SelfTest`` of ``brats_l1_quantitative.py`` (retired scripts layer, git history) became
 this file when the FID/paired-error chain moved into the quantitative package
 (ADR-0015 §6: ``selftest`` subcommands die with the script move; assertion
 logic turns into real test functions). Every assertion is the deterministic

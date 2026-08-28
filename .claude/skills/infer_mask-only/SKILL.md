@@ -1,13 +1,13 @@
 ---
 name: infer_mask-only
-description: Explains the mask-generation stage of NV-Generate-CTMR — how to drive it via config_infer.json (Path A "diffusion from scratch" vs Path B "training-mask database"), the anatomy_size conditioning vector, and the output mask format. Trigger when the user asks "how do I control the mask shape", "what does controllable_anatomy_size do", "how does Path A / Path B differ", or wants to understand the mask stage of the paired pipeline.
+description: Reference guide to the retired mask-generation stage: Path A/B dispatch through config_infer.json, anatomy_size conditioning, and output-mask contract. It has no standalone live entry; use it to assess a future paired runner, not to launch one. Trigger when the user asks "what does controllable_anatomy_size do" or "how does Path A / Path B differ".
 ---
 
-# Mask-only generation (NV-Generate-CTMR)
+# Mask-generation reference (NV-Generate-CTMR)
 
-This skill covers the **mask-generation stage** that runs inside the paired pipeline (`scripts.inference`). It is not a standalone CLI — masks come out of the same `python -m scripts.inference` invocation that generates the paired image (see [`infer_mask-image-paired`](infer_mask-image-paired.md) for the run command).
+This reference records the **mask-generation stage** formerly run inside the paired pipeline. Its one-command orchestrator (the `LDMSampler` class) retired with the scripts layer (issue #143), and it was never a standalone CLI. The Path A kernel remains in `ctmr.infrastructure.dataio.sample_mask`, but it is **not** a user entry point: model assembly, Path-B dispatch, I/O, and output publication have no canonical live runner. See [`infer_mask-image-paired`](../infer_mask-image-paired/SKILL.md) for the full retired contract.
 
-The mask stage produces a 3D MAISI-labeled volume that subsequently conditions the image LDM. **CT-only** — the mask DM was trained on CT masks, and there is no MR equivalent.
+The mask stage produced a 3D MAISI-labeled volume to condition the image LDM. **CT-only** — the mask DM was trained on CT masks, and there is no MR equivalent.
 
 ## Workflow
 
@@ -71,24 +71,24 @@ The pipeline snaps the user-specified vector to the closest entry in `configs/al
 
 ## Output
 
-A 3D integer NIfTI of MAISI labels with shape `(H, W, D)`. Contains MAISI organ labels (1..132 with gaps) and the body envelope `200`. Saved by the paired CLI as `sample_<timestamp>_label.nii.gz` alongside the paired image.
+A 3D integer NIfTI of MAISI labels with shape `(H, W, D)`. Contains MAISI organ labels (1..132 with gaps) and the body envelope `200`. Saved by the paired pipeline as `sample_<timestamp>_label.nii.gz` alongside the paired image.
 
 ## Output-size and spacing constraints
 
 The pretrained mask DM was trained at **256×256×256 × 1.5 mm isotropic** (Path A). Resampling to your requested `output_size` and `spacing` happens automatically; major upsampling degrades label boundaries, so stay close to 256³ × 1.5 mm when feasible. For Path B, mask candidates are drawn from a training-FOV distribution — the closer your requested FOV is to a mode of that distribution, the less reshaping is needed.
 
-## Related scripts
+## Related entries
 
-| Script | Role |
+| Entry | Role |
 |---|---|
-| `scripts/sample_mask.py` | Path A core sampler: `ldm_conditional_sample_one_mask` (DDPM → softmax/argmax → label remap → post-process). |
-| `scripts/find_masks.py` | Path B exact-match DB lookup: `find_masks(body_region, anatomy_list, spacing, output_size, ...)`. |
-| `scripts/sample.py` (`LDMSampler`) | Orchestrator: chooses Path A or B based on `controllable_anatomy_size`, then chains the image stage. Hosts `LDMSampler.find_closest_masks` for Path B's closest-match fallback. |
-| `scripts/inference.py` | CLI entry point for the paired pipeline (mask stage + image stage together). |
-| `scripts/utils.py` | Label utilities: `binarize_labels`, `remap_labels`, `general_mask_generation_post_process`. |
+| `ctmr.infrastructure.dataio.sample_mask` | Path A core sampler: `ldm_conditional_sample_one_mask` (DDPM → softmax/argmax → label remap → post-process). |
+| `ctmr.infrastructure.dataio.find_masks` | Path B exact-match DB lookup: `find_masks(body_region, anatomy_list, spacing, output_size, ...)`. |
+| former `sample.py` (scripts layer, git history) — `LDMSampler` | Orchestrator: chose Path A or B based on `controllable_anatomy_size`, then chained the image stage. Hosted `LDMSampler.find_closest_masks` for Path B's closest-match fallback. |
+| former `inference.py` (scripts layer, git history) | Paired-pipeline entry point (mask stage + image stage together). |
+| `ctmr.infrastructure.dataio.mask_postprocess` | Label utilities: `remap_labels`, `general_mask_generation_post_process`. |
 
 ## Related skills
 
-- [`infer_mask-image-paired`](infer_mask-image-paired.md) — the CLI that drives this stage end-to-end.
-- [`infer_image-from-mask`](infer_image-from-mask.md) — what happens to the mask after this stage.
-- [`infer_image-only`](infer_image-only.md) — image-only generation (no mask DM involved).
+- [`infer_mask-image-paired`](../infer_mask-image-paired/SKILL.md) — the pipeline that drives this stage end-to-end.
+- [`infer_image-from-mask`](../infer_image-from-mask/SKILL.md) — what happens to the mask after this stage.
+- [`infer_image-only`](../infer_image-only/SKILL.md) — image-only generation (no mask DM involved).

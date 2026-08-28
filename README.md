@@ -36,7 +36,7 @@ Key capabilities:
 ## News
 
 - **[August 2026]** — Updated NV-Generate-MR-Brain model weights from v0 to v1. Code usage is unchanged.
-- **[May 2026]** — Added [operator-focused inference skills](skills/) — ask an AI coding agent (Claude Code, Cursor, Codex, etc.) to use the matching skill and it will run the inference workflow end-to-end.
+- **[May 2026]** — Added [operator-focused inference skills](.claude/skills/) — ask an AI coding agent (Claude Code, Cursor, Codex, etc.) to use the matching skill and it will run the inference workflow end-to-end.
 - **🎆 March 2026 🎇** — Released NV-Generate-MR-Brain v0 models `rflow-mr-brain` for fast high-resolution 3D MR brain image generation, which covers both whole brain and skull-stripped brain generation for T1w, T2w, FLAIR, SWI images. The training data of this version v0 is [MR-RATE](https://huggingface.co/datasets/Forithmus/MR-RATE).
 - **[October 2025]** — Released rectified flow models `rflow-mr` for fast high-resolution 3D MR image generation. Upgraded previous MAISI
 repo to this NV-Generate-CTMR repo.
@@ -103,7 +103,7 @@ This repository provides **four model variants** for medical image generation: `
 
 ## 2. Quick Start (requires at least a 16G GPU)
 
-> 💡 **Using an AI coding agent (Claude Code, Cursor, Codex, etc.)?** Each subsection below links to a per-workflow skill in [`skills/`](skills/). Ask the agent to read this README then use the corresponding skill file — it will run the matching workflow end-to-end, including model download, config edits, and the inference command.
+> 💡 **Using an AI coding agent (Claude Code, Cursor, Codex, etc.)?** Each subsection below links to a project skill in [`.claude/skills/`](.claude/skills/). Skills with a live entry can guide end-to-end execution; a **reference-only** skill records the configuration and data contract of a retired pipeline until a dedicated ticket restores its canonical `ctmr` command.
 >
 > **Example prompt — copy into your agent:**
 >
@@ -125,7 +125,7 @@ pip install -r requirements.txt
 
 ### 2.2 MR Brain Image Generation
 
-**Skill:** [`infer_image-only`](skills/infer_image-only.md) — feed this file to an AI coding agent to run the workflow below end-to-end.
+**Skill:** [`infer_image-only`](.claude/skills/infer_image-only/SKILL.md) — feed this file to an AI coding agent to run the workflow below end-to-end.
 
 You can also run it in command line to generate MR image without mask. Please change "modality" in [configs/config_maisi_diff_model_rflow-mr-brain.json](configs/config_maisi_diff_model_rflow-mr-brain.json) according to [configs/modality_mapping.json](configs/modality_mapping.json) to control the output MR contrast. Currently we support both whole brain and skull-stripped brain generation for T1w, T2w, FLAIR, SWI images.
 
@@ -144,70 +144,56 @@ You can also run it in command line to generate MR image without mask. Please ch
 ```bash
 network="rflow"
 generate_version="rflow-mr-brain"
-python -m scripts.download_model_data --version ${generate_version} --root_dir "./" --model_only
-python -m scripts.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+python -m ctmr.infrastructure.maiisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
 ```
 
 ### 2.3 CT Paired Image/Mask Generation
 
-**Skill:** [`infer_mask-image-paired`](skills/infer_mask-image-paired.md) — feed this file to an AI coding agent to run the workflow below end-to-end.
+**Reference skill:** [`infer_mask-image-paired`](.claude/skills/infer_mask-image-paired/SKILL.md) — configuration, Path-A/B dispatch, and output contract.
 
-```bash
-export MONAI_DATA_DIRECTORY="./temp_work_dir"
-network="rflow"
-generate_version="rflow-ct" # can change to "ddpm-ct"
-python -m scripts.inference -t ./configs/config_network_${network}.json -i ./configs/config_infer.json -e ./configs/environment_${generate_version}.json --random-seed 0 --version ${generate_version}
-```
+> ⚠️ **No live paired-generation entry currently exists.** The one-command `LDMSampler` orchestrator was retired in the ADR-0015 restructuring (issue #143); its full model assembly, dispatch, retry, NIfTI I/O, and publication boundary has not yet migrated to `ctmr`. The reference skill is not an invocation guide. Use git history only to reproduce a historical run; a future dedicated ticket must restore a canonical command.
 
 ### 2.4 CT Image Generation
 
-**Skill:** [`infer_image-only`](skills/infer_image-only.md) — feed this file to an AI coding agent to run the workflow below end-to-end.
+**Skill:** [`infer_image-only`](.claude/skills/infer_image-only/SKILL.md) — feed this file to an AI coding agent to run the workflow below end-to-end.
 
 ```bash
 network="rflow"
 generate_version="rflow-ct" # can change to "ddpm-ct"
-python -m scripts.download_model_data --version ${generate_version} --root_dir "./" --model_only
-python -m scripts.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+python -m ctmr.infrastructure.maiisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
 ```
 
 ### 2.5 MR Image Generation
 
-**Skill:** [`infer_image-only`](skills/infer_image-only.md) — feed this file to an AI coding agent to run the workflow below end-to-end.
+**Skill:** [`infer_image-only`](.claude/skills/infer_image-only/SKILL.md) — feed this file to an AI coding agent to run the workflow below end-to-end.
 
 Change `"modality"` in [configs/config_maisi_diff_model_rflow-mr.json](configs/config_maisi_diff_model_rflow-mr.json) according to [configs/modality_mapping.json](configs/modality_mapping.json) to control the output MR contrast. Supported contrasts: T1/T2 brain, FLAIR skull-stripped brain, T2 prostate, T1 breast, T1/T2 abdomen. But if you are going to synthesize brain images, we recommend using `rflow-mr-brain` model instead. Please see [2.2 MR Brain Image Generation](#22-mr-brain-image-generation). Different body region has different recommended FOV, please see [detailed inference guide](./docs/inference.md#recommended-fov-for-mr-rflow-mr-model).
 
 ```bash
 network="rflow"
 generate_version="rflow-mr"
-python -m scripts.download_model_data --version ${generate_version} --root_dir "./" --model_only
-python -m scripts.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+python -m ctmr.infrastructure.maiisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
 ```
 
 ### 2.6 CT Image Generation from Your Own Mask
 
-**Skill:** [`infer_image-from-mask`](skills/infer_image-from-mask.md) — feed this file to an AI coding agent to run the workflow below end-to-end (including mask preprocessing).
+**Reference skill:** [`infer_image-from-mask`](.claude/skills/infer_image-from-mask/SKILL.md) — input-mask, configuration, and output contract.
 
-If you already have a 3D label mask in the **MAISI 132-class vocabulary** with the body envelope (label `200`) added, you can feed it directly to the CT ControlNet to synthesize a paired CT image — no mask diffusion step needed:
+> ⚠️ **No live image-from-mask entry currently exists.** The former one-command runner was retired in the ADR-0015 restructuring (issue #143), and its model assembly, validation, NIfTI I/O, sampling, and output-publication boundary has not yet moved to `ctmr`. The lower-level package kernel is not a user entry point; use git history only to reproduce a historical run.
 
-```bash
-network="rflow"
-generate_version="rflow-ct" # can change to "ddpm-ct"
-python -m scripts.download_model_data --version ${generate_version} --root_dir "./"
-python -m scripts.infer_image_from_mask \
-  -t ./configs/config_network_${network}.json \
-  -i ./configs/config_infer.json \
-  -e ./configs/environment_${generate_version}.json \
-  --mask /path/to/your_mask.nii.gz
-```
+A future runner must accept a 3D label mask in the **MAISI 132-class vocabulary** with the body envelope (label `200`) added. The input contract is preserved below:
 
 > ⚠️ **The mask must be in the MAISI 132-class label vocabulary AND include the body envelope (label 200).** In concrete terms, the MAISI 132-class vocabulary is the same as the `nv-segment-ct` output label definition **plus the body envelope (label 200)**. The authoritative reference is [`configs/label_dict.json`](configs/label_dict.json). Two practical ways to produce a valid mask:
 >
-> - **From `nv-segment-ct`** (recommended — already in MAISI vocabulary): run `nv-segment-ct` on the CT, then add the body envelope via `scripts.utils.add_body_envelope` (label 200 is never emitted by `nv-segment-ct`).
-> - **From another segmenter**: remap the output labels to the MAISI 132-class IDs in `configs/label_dict.json`, then add the body envelope.
+> - **From `nv-segment-ct`**: it yields MAISI-vocabulary organ labels but not the body envelope. The envelope-assembly operation retired with no live replacement, so the current repository cannot complete this preprocessing path; see the reference skill for the required contract.
+> - **From another segmenter**: remap output labels to the MAISI 132-class IDs in `configs/label_dict.json`; a future runner must also restore body-envelope assembly before accepting the result.
 >
-> See the [`infer_image-from-mask` skill](skills/infer_image-from-mask.md) for the full preprocessing chain and the complete spec of "valid mask format".
+> See the [`infer_image-from-mask` reference](.claude/skills/infer_image-from-mask/SKILL.md) for the full contract.
 
-For batch generation from many masks listed in a JSON, see [`scripts.infer_image_from_mask_batch`](scripts/infer_image_from_mask_batch.py).
+Batch generation from a mask JSON is likewise unavailable until the dedicated image-from-mask runner is restored.
 
 ### 2.7 Example Applications (Community)
 

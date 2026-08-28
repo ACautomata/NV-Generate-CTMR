@@ -1,4 +1,4 @@
-"""Config-level and end-to-end tests for ctmr.infrastructure.dataio.transforms (migrated from scripts/transforms)."""
+"""Config-level and end-to-end tests for ctmr.infrastructure.dataio.transforms (migrated from the retired scripts layer (git history; ``transforms``))."""
 
 import nibabel as nib
 import numpy as np

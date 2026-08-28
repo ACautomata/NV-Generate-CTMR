@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The installable nnU-Net trainer variant required by the issue #35 training contract (migrated from scripts/nnunet_trainer_250_epochs, ticket #140).
+"""The installable nnU-Net trainer variant required by the issue #35 training contract (migrated from the retired scripts layer (git history; ``nnunet_trainer_250_epochs``), ticket #140).
 
 Before formal training starts, ``install_trainer`` copies this module into the
 installed ``nnunetv2`` trainer variants package. It only changes the upstream

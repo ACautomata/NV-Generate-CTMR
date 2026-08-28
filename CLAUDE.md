@@ -27,3 +27,7 @@ Default triage label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`
 ### Domain docs
 
 Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Operational skills
+
+操作型工作流 skill(模型下载/推理/训练)入住 `.claude/skills/<name>/SKILL.md`(Claude Code 项目级 skill,会话自动发现);**具有 live entry 的操作型 skill** 必须跟随 ADR-0015 终态(ctmr CLI 与 src.ctmr 包路径),不得指向退役入口。尚未迁入完整编排器的文件必须显式标为 reference-only,不得伪称可执行；终态守卫见 `tests/test_endstate_guards.py`。

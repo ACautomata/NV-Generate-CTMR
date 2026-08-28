@@ -1,4 +1,4 @@
-"""Tests for ctmr.infrastructure.dataio.find_masks (candidate mask database lookup, migrated from scripts/find_masks)."""
+"""Tests for ctmr.infrastructure.dataio.find_masks (candidate mask database lookup, migrated from the retired scripts layer (git history; ``find_masks``))."""
 
 import json
 

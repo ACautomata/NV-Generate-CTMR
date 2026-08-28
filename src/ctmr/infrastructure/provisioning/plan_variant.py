@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Derive the audited SSA 8-card batch-16 nnU-Net plan variant (migrated from scripts/nnunet_plan_variant, ticket #140).
+"""Derive the audited SSA 8-card batch-16 nnU-Net plan variant (migrated from the retired scripts layer (git history; ``nnunet_plan_variant``), ticket #140).
 
 This tool never changes the source plan. It adds only the approved
 ``3d_fullres_bs16`` configuration to a new plans file and writes a compact

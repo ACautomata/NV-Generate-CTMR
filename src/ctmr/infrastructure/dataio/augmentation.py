@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Label-volume augmentation family: elastic organ/tumor deformation and tumor removal (migrated verbatim from scripts/augmentation, ticket #132).
+"""Label-volume augmentation family: elastic organ/tumor deformation and tumor removal (migrated verbatim from the retired scripts layer (git history; ``augmentation``), ticket #132).
 
 Two Codex-reported defects (PR #155) are fixed against the migrated copy: the liver/lung/pancreas/bone
 retry loops are bounded by ``MAX_COUNT`` like ``augmentation_tumor_only``, and ``finalize_tumor_mask``

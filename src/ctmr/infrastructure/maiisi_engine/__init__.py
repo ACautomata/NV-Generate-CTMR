@@ -25,14 +25,15 @@ supported by two freeze-side primitive modules:
 - ``instance_definition``     config-key -> MONAI object instantiation plus modality intensity transforms
 - ``inference_primitives``    stateless inference helpers and input constraint guards
 
-Behavior stays byte-stable versus the legacy ``scripts/`` originals; that is
+Behavior stays byte-stable versus the retired originals; that is
 machine-guarded by ``tests/infrastructure/maiisi_engine/test_vendored_parity.py``:
 whole-file AST equality (import statements stripped) for the five engine files,
 and function-level AST equality for the seven symbols extracted into the two
-support modules. Consumers on ``scripts.*`` keep working untouched during the
-expand phase; use-case-family tickets switch them over later.
+support modules. All former legacy-layer consumers switched over with their
+use-case-family migration batches.
 
-Deliberately NOT vendored here: ``scripts/sample.py`` (the LDMSampler
+Deliberately NOT vendored here: ``sample.py`` from the retired scripts layer
+(git history; the LDMSampler
 backward-compat shell). Its re-exported mask/image pipelines live in
 ``sample_mask``/``infer_image_from_mask``, which belong to the dataio and
 application layers of later migration batches, not to the frozen engine.

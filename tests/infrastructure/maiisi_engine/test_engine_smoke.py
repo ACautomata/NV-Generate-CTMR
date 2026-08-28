@@ -5,7 +5,7 @@ Same synthetic config/argv in, expected observable out — CPU-only real executi
 requires torch to be installed, not skipped around).
 
 Before #143 these gates ran as an equivalence check against the legacy
-``scripts/`` originals. That package is retired (ADR-0015 M5: git history is the
+upstream originals. That package is retired (ADR-0015 M5: git history is the
 reproduction anchor), so the freeze-vs-upstream guarantee no longer has a live
 reference — these tests now pin the vendored engine's own observable behavior
 directly. GPU-bound paths (``initialize_distributed``'s CUDA branch,

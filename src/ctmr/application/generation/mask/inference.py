@@ -19,7 +19,7 @@ binary ControlNet conditioning tensor, the CFG branch builds the tumor-free
 unconditional counterpart via ``remove_tumors``, and ``crop_img_body_mask``
 regularizes background voxels after decoding. The inner timestep loop is
 delegated to ``ctmr.infrastructure.maiisi_engine.utils_infer``. Relocated
-verbatim from ``scripts/infer_image_from_mask.py`` / ``scripts/utils.py``
+verbatim from ``infer_image_from_mask.py`` (retired scripts layer, git history) / ``utils.py`` (retired scripts layer, git history)
 (git history is the provenance anchor).
 """
 

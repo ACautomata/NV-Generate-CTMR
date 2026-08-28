@@ -158,7 +158,7 @@ class CtmrCli:
         (help/usage/errors); each layer's flags belong to the layer module's own
         parser, so routing happens in :meth:`run` via :meth:`_peel_accept` --
         both read the ACCEPT_LAYERS table."""
-        accept_subparsers = fam_parser.add_subparsers(dest="layer", metavar="<layer>")
+        accept_subparsers = fam_parser.add_subparsers(dest="layer", metavar="<layer>", required=True)
         for layer, (_peel_verb, blurb, verbs) in ACCEPT_LAYERS.items():
             layer_parser = accept_subparsers.add_parser(layer, help=blurb)
             verb_subparsers = layer_parser.add_subparsers(dest="verb", metavar="<verb>")

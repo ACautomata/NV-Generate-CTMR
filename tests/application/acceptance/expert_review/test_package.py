@@ -13,7 +13,7 @@
 """The blinding-package renderer, observed as pytest (#141).
 
 The resident ``L3SelfTest`` package-build assertions of
-``scripts/brats_l3_blind_eval.py`` became this file when the chain moved into
+``brats_l3_blind_eval.py`` (retired scripts layer, git history) became this file when the chain moved into
 the expert_review package (ADR-0015 §6). Every assertion is the blinding
 protocol on a synthetic catalog: reproducible seeded draw, fully blinded
 entry ids, no source/case leakage into the reviewer package, exact per-cell

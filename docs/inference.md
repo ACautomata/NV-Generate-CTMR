@@ -1,37 +1,27 @@
 # Inference Guide
 
-This guide covers how to run inference with each NV-Generate-CTMR variant, how to size the output volume (FOV) for your anatomy, and how to tune the runtime knobs. For a quick orientation see the README §2 quick-start; for end-to-end skill-style walkthroughs see [`skills/`](../skills/).
+This guide covers inference variants, output-volume FOV, and runtime knobs. For quick orientation see README §2; [`.claude/skills/`](../.claude/skills/) identifies whether each workflow has a live entry or is reference-only pending a dedicated runner.
 
 ## Overview
 
 NV-Generate-CTMR supports four inference modes, each backed by a different model variant:
 
-| Mode | Variant | Skill |
-|---|---|---|
-| Paired CT image + segmentation mask | `rflow-ct`, `ddpm-ct` | [`infer_mask-image-paired`](../skills/infer_mask-image-paired.md) |
-| CT image only (no mask) | `rflow-ct`, `ddpm-ct` | [`infer_image-only`](../skills/infer_image-only.md) |
-| MR image only (non-brain — prostate / breast / abdomen) | `rflow-mr` | [`infer_image-only`](../skills/infer_image-only.md) |
-| MR brain image only (T1 / T2 / FLAIR / SWI, whole-brain or skull-stripped) | `rflow-mr-brain` | [`infer_image-only`](../skills/infer_image-only.md) |
+| Mode | Variant | Entry status | Skill |
+|---|---|---|---|
+| Paired CT image + segmentation mask | `rflow-ct`, `ddpm-ct` | **Reference-only** — runner not migrated | [`infer_mask-image-paired`](../.claude/skills/infer_mask-image-paired/SKILL.md) |
+| CT image only (no mask) | `rflow-ct`, `ddpm-ct` | **Live** — vendored engine module | [`infer_image-only`](../.claude/skills/infer_image-only/SKILL.md) |
+| MR image only (non-brain — prostate / breast / abdomen) | `rflow-mr` | **Live** — vendored engine module | [`infer_image-only`](../.claude/skills/infer_image-only/SKILL.md) |
+| MR brain image only (T1 / T2 / FLAIR / SWI, whole-brain or skull-stripped) | `rflow-mr-brain` | **Live** — vendored engine module | [`infer_image-only`](../.claude/skills/infer_image-only/SKILL.md) |
 
 CT supports a ControlNet pipeline (mask-conditioned image synthesis); MR does not — there is no MR ControlNet in this repo.
 
 ## Execute inference
 
-### Paired CT image + mask
+### Paired CT image + mask (reference-only)
 
-```bash
-export MONAI_DATA_DIRECTORY=<dir_you_will_download_data>
-network="rflow"                       # or "ddpm" for ddpm-ct
-generate_version="rflow-ct"           # or "ddpm-ct"
+> ⚠️ **No live paired-inference runner exists.** The one-command `LDMSampler` orchestrator retired with the scripts layer (issue #143), and its orchestration boundary has not yet migrated to `ctmr`. The [`infer_mask-image-paired`](../.claude/skills/infer_mask-image-paired/SKILL.md) reference preserves the frozen configuration and Path-A/B dispatch contract; it is not a function-level replacement or invocation guide.
 
-python -m scripts.inference \
-    -t ./configs/config_network_${network}.json \
-    -i ./configs/config_infer.json \
-    -e ./configs/environment_${generate_version}.json \
-    --random-seed 0 --version ${generate_version}
-```
-
-> ⚠️ `ddpm-ct` requires `"num_inference_steps": 1000` in `config_infer.json`. `rflow-ct` uses `30`. Lower DDPM step counts emit a warning and produce low-quality output.
+`ddpm-ct` required `"num_inference_steps": 1000` in `config_infer.json`; `rflow-ct` used `30`. Any future runner must preserve this behavior.
 
 There is currently no ControlNet for MRI — MR variability is too large to train one whole-body model.
 
@@ -41,8 +31,8 @@ There is currently no ControlNet for MRI — MR variability is too large to trai
 network="rflow"                       # or "ddpm" for ddpm-ct
 generate_version="rflow-ct"           # or "ddpm-ct"
 
-python -m scripts.download_model_data --version ${generate_version} --root_dir "./" --model_only
-python -m scripts.diff_model_infer \
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+python -m ctmr.infrastructure.maiisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \
     -c ./configs/config_maisi_diff_model_${generate_version}.json
@@ -54,8 +44,8 @@ python -m scripts.diff_model_infer \
 network="rflow"
 generate_version="rflow-mr"
 
-python -m scripts.download_model_data --version ${generate_version} --root_dir "./" --model_only
-python -m scripts.diff_model_infer \
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+python -m ctmr.infrastructure.maiisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \
     -c ./configs/config_maisi_diff_model_${generate_version}.json
@@ -69,8 +59,8 @@ Set `"modality"` in `config_maisi_diff_model_rflow-mr.json` per the [Modality co
 network="rflow"
 generate_version="rflow-mr-brain"
 
-python -m scripts.download_model_data --version ${generate_version} --root_dir "./" --model_only
-python -m scripts.diff_model_infer \
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+python -m ctmr.infrastructure.maiisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \
     -c ./configs/config_maisi_diff_model_${generate_version}.json
@@ -80,16 +70,7 @@ Whole-brain (modality 9, 10, 11, 20) and skull-stripped (29, 30, 31, 32) outputs
 
 ### Accelerated inference with TensorRT (CT only)
 
-Pass an extra `-x ./configs/config_trt.json` to the CT paired-inference command:
-
-```bash
-python -m scripts.inference \
-    -t ./configs/config_network_rflow.json \
-    -i ./configs/config_infer.json \
-    -e ./configs/environment_rflow-ct.json \
-    --random-seed 0 --version rflow-ct \
-    -x ./configs/config_trt.json
-```
+Pass an extra `-x ./configs/config_trt.json` to the CT paired-inference recomposition (the retired paired entry accepted it; the TensorRT compile path rides the same `config_infer.json` knobs — see the paired skill):
 
 [`config_trt.json`](../configs/config_trt.json) uses MONAI's `trt_compile()` to convert select modules to TensorRT, overriding their definitions from `config_infer.json`.
 
@@ -198,7 +179,7 @@ The user-facing config knobs live in [`../configs/config_infer.json`](../configs
 | `autoencoder_sliding_window_infer_overlap` | `[0, 1)`. Higher = smoother seams, more compute. |
 | `autoencoder_tp_num_splits` | `∈ {1, 2, 4, 8, 16}`. Higher = lower per-GPU VRAM, slower. |
 
-For validated `(GPU memory, output_size) → (AE sliding-window knobs)` presets, see the "How to configure a run" section of [`infer_mask-image-paired`](../skills/infer_mask-image-paired.md).
+For validated `(GPU memory, output_size) → (AE sliding-window knobs)` presets, see the "How to configure a run" section of [`infer_mask-image-paired`](../.claude/skills/infer_mask-image-paired/SKILL.md).
 
 ## Quality check (CT only)
 
