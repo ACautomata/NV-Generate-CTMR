@@ -13,7 +13,7 @@
 # Vendored snapshot (issue #134, ADR-0015 §2 maisi_engine): byte-for-byte
 # copy of ``diff_model_train.py`` (retired scripts layer, git history) with import lines rewritten to this package home.
 # Behavior must stay stable — machine-guarded by
-# tests/infrastructure/maisi_engine/test_vendored_parity.py (AST equality).
+# tests/infrastructure/maisi_engine/test_engine_smoke.py (execution smoke).
 # ---------------------------------------------------------------------------
 from __future__ import annotations
 

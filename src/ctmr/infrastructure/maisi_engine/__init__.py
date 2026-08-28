@@ -25,12 +25,12 @@ supported by two freeze-side primitive modules:
 - ``instance_definition``     config-key -> MONAI object instantiation plus modality intensity transforms
 - ``inference_primitives``    stateless inference helpers and input constraint guards
 
-Behavior stays byte-stable versus the retired originals; that is
-machine-guarded by ``tests/infrastructure/maisi_engine/test_vendored_parity.py``:
-whole-file AST equality (import statements stripped) for the five engine files,
-and function-level AST equality for the seven symbols extracted into the two
-support modules. All former legacy-layer consumers switched over with their
-use-case-family migration batches.
+Behavior stays byte-stable versus the retired originals; the observable
+behavior is guarded by ``tests/infrastructure/maisi_engine/test_engine_smoke.py``
+(execution smoke on synthetic config/argv). The #143 upstream-equivalence AST
+gate is retired — git history is the reproduction anchor (ADR-0015 M5). All
+former legacy-layer consumers switched over with their use-case-family
+migration batches.
 
 Deliberately NOT vendored here: ``sample.py`` from the retired scripts layer
 (git history; the LDMSampler
@@ -39,8 +39,8 @@ backward-compat shell). Its re-exported mask/image pipelines live in
 application layers of later migration batches, not to the frozen engine.
 
 Process-spawn precedent (#123) is preserved by construction: neither this
-package nor its parity guard touches multiprocessing context choices.
+package nor its smoke test touches multiprocessing context choices.
 DDP/torchrun launch behavior lives in ``diff_model_setting.run_torchrun``
-and reaches the server only through gpu-flagged callers; the CPU parity test
-keeps that code byte-identical without executing it.
+and reaches the server only through gpu-flagged callers; the CPU smoke test
+does not execute those GPU-bound paths.
 """
