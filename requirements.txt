@@ -18,3 +18,5 @@ PyYAML>=6.0
 Pillow>=10.0.0
 SimpleITK>=2.2.0
 connected-components-3d>=3.0.0  # imports as cc3d (L2 calibration connected-components)
+nnunetv2>=2.1.0  # nnUNetTrainer base class (L2 instrument runner, provisioning trainer)
+pytest>=8.0.0  # the repo test surface (ADR-0013); CI installs the same set
