@@ -95,3 +95,44 @@ class ModalityLabelPerturber:
 
         mask_zero = torch.rand(modality_tensor.size(), device=modality_tensor.device) > self._prob
         return modality_tensor * mask_zero.long()
+
+
+class TumourWeightedTarget:
+    """The pinned P2 weighted target: weights = 1, = the weight on the tumour ROI.
+
+    The tumour-region weighting the ADR-0016 objective module carries for the
+    mask-conditioned families: the combined label mask is nearest-neighbour
+    aligned onto the (latent) image grid, the ROI is the union of the given
+    label ids ({129, 130, 131} for the P2 recipe), and the weight broadcasts
+    across the latent channels.  A weight at or below 1.0 disables the ROI
+    entirely (``None`` -- the plain-L1 branch), matching the migrated kernel's
+    branch condition verbatim.
+    """
+
+    def __init__(self, weight: float, labels: list[int]):
+        self._weight = weight
+        self._labels = list(labels)
+
+    @property
+    def weight(self) -> float:
+        return self._weight
+
+    @property
+    def labels(self) -> list[int]:
+        return list(self._labels)
+
+    def weights(self, mask_labels, images) -> torch.Tensor | None:
+        """The per-voxel weight tensor for one batch, or ``None`` when weighting is off.
+
+        ``mask_labels`` is the combined label mask ``[B,1,X,Y,Z]`` as the
+        loader hands it over; ``images`` fixes the target grid and device.
+        """
+        if self._weight <= 1.0:
+            return None
+        weights = torch.ones_like(images)
+        roi = torch.zeros([images.shape[0], 1] + list(images.shape[2:]), device=images.device)
+        interpolate_label = torch.nn.functional.interpolate(mask_labels.float(), size=images.shape[2:], mode="nearest").long()
+        for label in self._labels:
+            roi[interpolate_label == label] = 1
+        weights[roi.repeat(1, images.shape[1], 1, 1, 1) == 1] = self._weight
+        return weights

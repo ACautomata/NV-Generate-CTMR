@@ -64,13 +64,19 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import torch
+from monai.networks.schedulers import RFlowScheduler
 
-from ctmr.application.generation.mask.inference import ldm_conditional_sample_one_image_from_mask
+from ctmr.application.generation.mask.inference import binarize_labels, crop_img_body_mask
 from ctmr.application.shell import MODALITY_TOKENS, TARGET_MODALITIES
+from ctmr.domain.generation.bypass import ControlNetBypass
+from ctmr.domain.generation.model import DiffusionModel
+from ctmr.infrastructure.dataio.augmentation import remove_tumors
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
+from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, dynamic_infer
 
 GRID = (256, 256, 128)
+LATENT_SHAPE = (1, 4, 64, 64, 32)  # the VAE latent grid (4x downsampled per axis)
 IDENTITY_AFFINE = np.diag([1.0, 1.0, 1.0, 1.0])
 
 
@@ -98,8 +104,8 @@ class CandidateSampler:
         controlnet = define_instance(self._args, "controlnet_def").to(self._device)
         cn_ckpt = torch.load(checkpoint_path, map_location=self._device, weights_only=True)
         controlnet.load_state_dict(cn_ckpt["controlnet_state_dict"], strict=False)
-        for model in (autoencoder, unet, controlnet):
-            model.eval()
+        for network in (autoencoder, unet, controlnet):
+            network.eval()
         # Upstream inference convention is fp16 on the DCU (float16 latents); a
         # half-precision model keeps the conv input/weight/bias set consistent
         # with the HIP bf16 SDPA flash adapter that emits fp16 (P1 convention).
@@ -107,7 +113,17 @@ class CandidateSampler:
         unet = unet.half()
         controlnet = controlnet.half()
         scale = float(dm_ckpt["scale_factor"])
-        return autoencoder, unet, controlnet, scale
+        # The domain composition carries the sampling rules: the frozen DM +
+        # the ControlNet bypass (CFG double forward, fresh DiffusionScheduler
+        # per sample call, ADR-0016 / issue #172).  The VAE reconstruction
+        # stays an application adapter (ReconModel) below the latent.
+        model = DiffusionModel(
+            unet=unet,
+            scale_factor=torch.tensor(scale, device=self._device),
+            noise_scheduler=RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"}),
+            bypass=ControlNetBypass(controlnet),
+        )
+        return model, ReconModel(autoencoder=autoencoder, scale_factor=scale).to(self._device).half()
 
     @staticmethod
     def load_condition_mask(mask_source, case, device):
@@ -131,41 +147,55 @@ class CandidateSampler:
         return label.to(device)
 
     @torch.inference_mode()
-    def sample_one(self, autoencoder, unet, controlnet, scale, modality_token, spacing, seed, condition):
-        from monai.networks.schedulers import RFlowScheduler
+    def sample_one(self, model, recon, modality_token, spacing, seed, condition):
+        from monai.inferers import SlidingWindowInferer
 
         torch.manual_seed(seed)
-        noise_scheduler = RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"})
-        noise_scheduler.set_timesteps(
-            num_inference_steps=self._args.diffusion_unet_inference["num_inference_steps"],
-            input_img_size_numel=torch.prod(torch.tensor((64, 64, 32))),
-        )
         spacing_tensor = torch.tensor([[s * 1e2 for s in spacing]], device=self._device)
         modality_tensor = torch.tensor([modality_token], device=self._device)
-        # Returns (synthetic_image, combine_label); only the image is used here.
-        synthetic, _returned_label = ldm_conditional_sample_one_image_from_mask(
-            autoencoder=autoencoder,
-            diffusion_unet=unet,
-            controlnet=controlnet,
-            noise_scheduler=noise_scheduler,
-            scale_factor=scale,
-            device=self._device,
-            combine_label_or=condition,
-            spacing_tensor=spacing_tensor,
-            latent_shape=(4, 64, 64, 32),
-            output_size=(256, 256, 128),
-            noise_factor=1.0,
-            modality_tensor=modality_tensor,
-            num_inference_steps=self._args.diffusion_unet_inference["num_inference_steps"],
-            autoencoder_sliding_window_infer_size=(96, 96, 96),
-            autoencoder_sliding_window_infer_overlap=0.25,
-            cfg_guidance_scale=self._args.cfg_guidance_scale,
+        # Mask-specific conditioning prep, verbatim from the retired wrapper: the
+        # combined mask interpolates onto the output grid first (the crop uses
+        # the aligned mask too), then binarizes to the 8-bit channels; the
+        # cfg > 0 unconditional branch is the tumour-free counterpart via
+        # remove_tumors.  P2 is MR-only, so the crop floor stays a_min = 0.
+        combine_label = condition.to(self._device)
+        if tuple(combine_label.shape[2:]) != GRID:
+            combine_label = torch.nn.functional.interpolate(combine_label, size=GRID, mode="nearest")
+        controlnet_cond = binarize_labels(combine_label.as_tensor().long()).half()
+        controlnet_uncond = None
+        if self._args.cfg_guidance_scale > 0:
+            combine_label_no_tumor = torch.nn.functional.interpolate(
+                remove_tumors(combine_label.squeeze(0)).unsqueeze(0).float(),
+                size=GRID,
+                mode="nearest",
+            ).to(combine_label.dtype)
+            controlnet_uncond = binarize_labels(combine_label_no_tumor.as_tensor().long()).half()
+        # The domain denoising trajectory: fresh DiffusionScheduler per sample
+        # call, CFG-composed bypass + DM step per position (ADR-0016).  The
+        # initial noise keeps the legacy initialize_noise_latents seed stream
+        # (CPU fp32 randn -> half -> device: the pinned float16-latent
+        # convention, so a fixed seed reproduces the legacy samples).
+        image = torch.randn(LATENT_SHAPE).half().to(self._device)
+        scheduler = model.begin_sampling(image.shape, self._args.diffusion_unet_inference["num_inference_steps"])
+        with torch.amp.autocast("cuda", enabled=True, dtype=torch.float16):
+            while not scheduler.complete:
+                image = model.denoise_conditioned(
+                    scheduler, image, spacing_tensor, modality_tensor, controlnet_cond, controlnet_uncond, self._args.cfg_guidance_scale
+                )
+        # VAE decode + the pinned generation post-processing (application adapter):
+        # clip to [0, inf) then the x1000 MR intensity mapping, then mask==0 -> 0.
+        inferer = SlidingWindowInferer(
+            roi_size=[96, 96, 96], sw_batch_size=1, mode="gaussian", overlap=0.25, sw_device=self._device, device=torch.device("cpu")
         )
+        with torch.amp.autocast("cuda", enabled=True, dtype=torch.float16):
+            synthetic = dynamic_infer(inferer, recon, image)
+        synthetic = torch.clip(synthetic, 0, None) * 1000.0  # [0,1] -> MR 0..1000 scale
+        synthetic = crop_img_body_mask(synthetic, combine_label, a_min=0)
         data = synthetic.squeeze().float().cpu().numpy()
         return np.clip(data, 0, None).astype(np.int16)
 
     def generate_cohort(self, checkpoint_path, cohort, spacings, masks, out_dir):
-        autoencoder, unet, controlnet, scale = self.load_models(checkpoint_path)
+        model, recon = self.load_models(checkpoint_path)
         samples = []
         for item in cohort:
             condition = self.load_condition_mask(masks, item["case"], self._device)
@@ -175,10 +205,8 @@ class CandidateSampler:
                 if not out.is_file():
                     out.parent.mkdir(parents=True, exist_ok=True)
                     data = self.sample_one(
-                        autoencoder,
-                        unet,
-                        controlnet,
-                        scale,
+                        model,
+                        recon,
                         MODALITY_TOKENS[modality],
                         spacings.spacing_of(item["case"]),
                         seed,
@@ -186,7 +214,7 @@ class CandidateSampler:
                     )
                     nib.save(nib.Nifti1Image(data, np.diag([1.0, 1.0, 1.0, 1.0])), out)
                 samples.append({"sub": item["sub"], "case": item["case"], "modality": modality, "path": str(out)})
-        del autoencoder, unet, controlnet
+        del model, recon
         torch.cuda.empty_cache()
         return samples
 
@@ -267,7 +295,7 @@ class HoldoutSampleWriter:
     def write(self, cohort, spacings, masks):
         checkpoint_path = self._run_record["selection"]["checkpoint"]["path"]
         sampler = CandidateSampler(self._merged, self._device, self._logger)
-        autoencoder, unet, controlnet, scale = sampler.load_models(checkpoint_path)
+        model, recon = sampler.load_models(checkpoint_path)
         self._logger(f"[gen] candidate checkpoint: {checkpoint_path} (epoch {self._run_record['selection']['checkpoint'].get('epoch')})")
         entries = []
         generated_dir = self._out_root / "generated"
@@ -285,10 +313,8 @@ class HoldoutSampleWriter:
                     out = case_dir / f"{case}_{modality}_seed{seed}.nii.gz"
                     if not out.is_file():
                         data = sampler.sample_one(
-                            autoencoder,
-                            unet,
-                            controlnet,
-                            scale,
+                            model,
+                            recon,
                             MODALITY_TOKENS[modality],
                             spacing,
                             seed,
@@ -310,7 +336,7 @@ class HoldoutSampleWriter:
                     }
                 )
         finally:
-            del autoencoder, unet, controlnet
+            del model, recon
             torch.cuda.empty_cache()
         return entries
 
