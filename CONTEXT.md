@@ -47,8 +47,8 @@ _Avoid_: 模态组合、模态配对(易与 seg 配对混淆)
 ### 模型挂接
 
 **image-conditioned ControlNet(P3)/ mask-conditioned ControlNet(P2)**:
-同一 P1-DM 挂载的两个独立旁路,推理按任务选挂;P3 旁路从 DM encoder 重新初始化,不沿用 P2 权重(条件嵌入形状与语义不同)。
-_Avoid_: 「the ControlNet」不加限定地单称
+同一 P1-DM 挂载的两个独立旁路,推理按任务选挂;P3 旁路从 DM encoder 重新初始化,不沿用 P2 权重(条件嵌入形状与语义不同)。旁路由 ControlNetBypass 行为实体承载,以组合注入组成 DiffusionModel 的条件前向路径;其运行时对象不代表权重身份。
+_Avoid_: 「the ControlNet」不加限定地单称、将旁路 Python 对象当作 checkpoint 身份
 
 **DM source(唯一 DM 来源)**:
 通过完整终验(L1∧L2∧L3 全 pass)后被 `dm_source.json` 账本冻结的 P1-DM——记录其 checkpoint 身份、配置与 provenance,是 P2/P3 旁路唯一允许挂接的对象;后续 P1 候选通过终验即取代之,被取代后挂旧 DM 的旁路 verify 显式失配。
@@ -152,10 +152,20 @@ _Avoid_: 生产侧重写五键提取、frozen 门禁留在各调用点、以共�
 **weighted_loss(肿瘤区加权)**:
 以 label 构造的图像体素损失加权(作用于肿瘤亚区),与条件模态无关——label 进 loss 与验收,不进 P3 条件。
 
+### 生成内核
+
+**扩散模型实体(DiffusionModel)**:
+生成侧的充血行为载体——持有 UNet 权重、scale_factor 与训练/采样配方;单步训练数学(train_step:批损失→反传→优化器一步)与去噪采样循环(sample,含 RF 插值起点与 CFG 语义)是其方法。实例由 checkpoint payload 经工厂方法重建,不含身份;epoch 循环、数据载入、进程派生与写盘编排不进实体方法(留 application)。
+_Avoid_: 把 nn.Module 架构类当实体身份、实体自带 sha256 冒充身份、把 epoch 循环或写盘编排做进实体方法
+
+**扩散调度实体(DiffusionScheduler)**:
+一次具体去噪轨迹的有状态充血实体——由 DiffusionModel 在每个 sample 调用中创建,持有该轨迹的 timestep 序列与当前推进位置,并以准备/推进/完成方法执行加噪与反向步进;采样完成即终结,不持久化且不进入 checkpoint。它的身份只在本次采样会话内成立,不与 WeightsRef 的权重血统混同。
+_Avoid_: 把 Scheduler 作为跨运行/跨 checkpoint 的恒久身份、在同一模型实例上复用可变采样进度、将 Scheduler 的对象地址当作领域身份
+
 ### 执行外壳
 
 **阶段脚本外壳(PhaseHarness)**:
-训练/dev_eval/生成链驱动中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询、训练 provenance 写盘、dev watch/select 轮询骨架、幂等守卫——统一收敛于 `ctmr.application.shell`;各阶段只以内核(数据构成/模型挂接/单 batch 损失/checkpoint payload 四方法)组合注入,外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。checkpoint 原子发布与 latest.json 协议归 CheckpointRepository(仓储 b 档);「CLI 面保持不变」已被 ADR-0015 取代为统一 `ctmr` CLI 子命令(namespace 等价断言护航迁移)。
+训练/dev_eval/生成链驱动中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询、训练 provenance 写盘、dev watch/select 轮询骨架、幂等守卫——统一收敛于 `ctmr.application.shell`;各阶段仅以数据构成、条件张量构造与 checkpoint payload 的薄适配器组合领域实体,模型挂接与单 batch 参数更新归 DiffusionModel/ControlNetBypass,运行时精度策略以 GradientExecutor 注入。外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。checkpoint 原子发布与 latest.json 协议归 CheckpointRepository(仓储 b 档);「CLI 面保持不变」已被 ADR-0015 取代为统一 `ctmr` CLI 子命令(namespace 等价断言护航迁移)。
 _Avoid_: 在新用例中再抄外壳骨架(应注入内核)、把配方值下沉进外壳、把 launcher/nohup/sidecar 类编排能力写成 bash 或放入 deploy/(编排属应用层)
 
 **历史运行器(legacy run orchestrator)**:
@@ -165,7 +175,7 @@ _Avoid_: 从 git 捡回退役件当活入口复用或从中再抄、为复现而
 ### 身份与运维
 
 **检查点身份(Checkpoint Identity)**:
-模型权重的业务身份——以 checkpoint sha256 内容寻址标识的血统实例,不是 Python 对象或网络类:同一 Unet 架构会实例化出基模/P1 各 epoch 候选/P2 冻结底座等互异实体。载体是权重集 payload 及其血统记录;dm_source.json 账本是 DM source 血统的权威登记处。CheckpointRepository 是其唯一持久化协议(state_dict 存取＋tmp 原子发布＋latest.json 指针,b 档辖区——provenance 运行日志不入仓储)。
+模型权重的业务身份——以 checkpoint sha256 内容寻址标识的血统实例,不是 Python 对象或网络类:同一 Unet 架构会实例化出基模/P1 各 epoch 候选/P2 冻结底座等互异实体。载体是权重集 payload 及其血统记录;dm_source.json 账本是 DM source 血统的权威登记处。CheckpointRepository 是其唯一持久化协议(state_dict 存取＋tmp 原子发布＋latest.json 指针,b 档辖区——provenance 运行日志不入仓储)。DiffusionModel 行为实体不含身份——由 checkpoint payload 经工厂方法重建,身份不入实体本身。
 _Avoid_: 把架构类当实体类型作身份、以文件路径代替内容寻址、绕开仓储直接读写 checkpoint
 
 **运维面(deploy)**:
