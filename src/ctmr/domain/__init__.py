@@ -21,7 +21,7 @@ modules live here as of the migration batches (#133):
 - ``instrument_spec`` -- frozen instrument command        (ADR-0009, #107)
 - ``recipe``          -- pinned-recipe guards             (ADR-0011, #111)
 - ``identity``        -- weight lineage, sha256-addressed (#133)
-- ``losses``          -- pure VAE loss math, out of the retired ``utils`` (git history; #142)
+- ``generation``      -- generation behaviour entities incl. VAE objective (ADR-0016)
 
 The package re-exports nothing: import the submodules directly.
 """
