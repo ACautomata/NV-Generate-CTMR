@@ -13,13 +13,13 @@ description: How to run image-only inference (no mask, no ControlNet) with NV-Ge
 >
 > **Common failure mode**: user picks `dim=(256,256,256), spacing=(0.5,0.5,0.5)` to "make a high-res small volume." Validator accepts it (FOV=128mm cube). The DM produces noise because it never saw 128 mm body FOVs at training. **Fix**: match a row in the recommended table below.
 
-This skill covers running the **image-only** diffusion model — no ControlNet, no mask input. The CLI is `scripts.diff_model_infer`. Three Quick Start subsections of the README use this path:
+This skill covers running the **image-only** diffusion model — no ControlNet, no mask input. The entry is the vendored engine module, run as `python -m ctmr.infrastructure.maiisi_engine.diff_model_infer`. Three Quick Start subsections of the README use this path:
 
 - §2.2 MR Brain Image Generation (`rflow-mr-brain`)
 - §2.4 CT Image Generation (`rflow-ct` or `ddpm-ct`)
 - §2.5 MR Image Generation (`rflow-mr`)
 
-This is distinct from the mask-image-paired pipeline in §2.3, which uses `scripts.inference` and the `LDMSampler` orchestrator (see the `infer_mask-image-paired` skill).
+This is distinct from the mask-image-paired pipeline in §2.3: its one-command orchestrator (`LDMSampler`) retired with the scripts layer (issue #143), and the paired skill now walks the function-level composition instead (see the `infer_mask-image-paired` skill).
 
 ## Picking a model variant
 
@@ -43,9 +43,9 @@ Each variant follows the same two-step pattern: download weights, then run infer
 network="rflow"   # or "ddpm" for ddpm-ct
 generate_version="rflow-mr-brain"   # or rflow-ct / rflow-mr / ddpm-ct
 
-python -m scripts.download_model_data --version ${generate_version} --root_dir "./" --model_only
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
 
-python -m scripts.diff_model_infer \
+python -m ctmr.infrastructure.maiisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \
     -c ./configs/config_maisi_diff_model_${generate_version}.json
@@ -61,7 +61,7 @@ Most-supported combination in the MR-RATE training set (98,769 axial T1 images i
 
 ```bash
 # 1. Download weights (one-time, ~3 GB).
-python -m scripts.download_model_data --version rflow-mr-brain --root_dir "./" --model_only
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('rflow-mr-brain', './', model_only=True)"
 
 # 2. Edit configs/config_maisi_diff_model_rflow-mr-brain.json so the
 #    `diffusion_unet_inference` block contains:
@@ -73,7 +73,7 @@ python -m scripts.download_model_data --version rflow-mr-brain --root_dir "./" -
 #      "random_seed": 0
 
 # 3. Run inference (single GPU).
-python -m scripts.diff_model_infer \
+python -m ctmr.infrastructure.maiisi_engine.diff_model_infer \
     -t ./configs/config_network_rflow.json \
     -e ./configs/environment_maisi_diff_model_rflow-mr-brain.json \
     -c ./configs/config_maisi_diff_model_rflow-mr-brain.json
@@ -85,7 +85,7 @@ For another (modality, plane) combination, look up the median FOV in the [per-pl
 
 ## How to configure a run
 
-All knobs live in `configs/config_maisi_diff_model_<variant>.json` under the `diffusion_unet_inference` block. The numbered steps below mirror the parallel **"How to configure a run"** in [`infer_mask-image-paired.md`](infer_mask-image-paired.md) so the two skills are easy to compare. Steps that don't apply here (AE sliding-window knobs, tumor-CFG) are flagged N/A.
+All knobs live in `configs/config_maisi_diff_model_<variant>.json` under the `diffusion_unet_inference` block. The numbered steps below mirror the parallel **"How to configure a run"** in [`infer_mask-image-paired`](../infer_mask-image-paired/SKILL.md) so the two skills are easy to compare. Steps that don't apply here (AE sliding-window knobs, tumor-CFG) are flagged N/A.
 
 ### 1. `modality` → driven by your anatomy
 
@@ -115,7 +115,7 @@ Slots are `[head, chest, abdomen, pelvis]`. `rflow-ct` / `rflow-mr` / `rflow-mr-
 
 ### 2. AE sliding-window knobs → N/A in this path
 
-`autoencoder_sliding_window_infer_size` / `_overlap` / `autoencoder_tp_num_splits` are **not exposed** by `scripts.diff_model_infer` — they're hardcoded (`roi_size=[80, 80, 80]`, `overlap=0.4`, no TP split). If you hit OOM on the AE decode, your only knob is reducing `dim`. See the GPU-memory presets table in [`infer_mask-image-paired.md`](infer_mask-image-paired.md#2-autoencoder_sliding_window_infer_size-autoencoder_sliding_window_infer_overlap-autoencoder_tp_num_splits--from-gpu-memory--output_size) if you need those.
+`autoencoder_sliding_window_infer_size` / `_overlap` / `autoencoder_tp_num_splits` are **not exposed** by the vendored engine entry — they're hardcoded (`roi_size=[80, 80, 80]`, `overlap=0.4`, no TP split). If you hit OOM on the AE decode, your only knob is reducing `dim`. See the GPU-memory presets table in [`infer_mask-image-paired`](../infer_mask-image-paired/SKILL.md#2-autoencoder_sliding_window_infer_size-autoencoder_sliding_window_infer_overlap-autoencoder_tp_num_splits--from-gpu-memory--output_size) if you need those.
 
 ### 3. `dim` and `spacing` → from FOV
 
@@ -174,7 +174,7 @@ Recommended values per variant (these are the shipped defaults — keep them):
 | `rflow-mr-brain` | **10** |
 | `rflow-mr` | **10** |
 
-Note: the same key name `cfg_guidance_scale` also appears in `config_infer.json` (consumed by `scripts.inference` / `scripts.infer_image_from_mask`), where it gates the **tumor** branch instead — see [`infer_mask-image-paired`](infer_mask-image-paired.md). The semantics depend on which script reads the config, not on the key name.
+Note: the same key name `cfg_guidance_scale` also appears in `config_infer.json` (consumed by the retired paired / image-from-mask entries, git history #143), where it gates the **tumor** branch instead — see [`infer_mask-image-paired`](../infer_mask-image-paired/SKILL.md). The semantics depend on which entry reads the config, not on the key name.
 
 ### 5. Tumor-CFG → N/A in this path
 
@@ -194,17 +194,17 @@ One file per sample is saved into `output_dir` (set in the environment config), 
 | CT (modality `1..7`) | int16 NIfTI | HU, clipped to `[-1000, 1000]` |
 | MR (codes `8..32`) | int16 NIfTI | `[0, +∞)` |
 
-## Related scripts
+## Related entries
 
-| Script | Role |
+| Entry | Role |
 |---|---|
-| `scripts/diff_model_infer.py` | CLI for this skill. Runs the image DM in isolation (no mask, no ControlNet). |
-| `scripts/download_model_data.py` | Downloads image-DM + AE weights for the chosen variant. |
-| `scripts/diff_model_setting.py` | Helper: distributed-init / config-loading / logger setup. |
+| `ctmr.infrastructure.maiisi_engine.diff_model_infer` | Entry for this skill. Runs the image DM in isolation (no mask, no ControlNet). |
+| `ctmr.infrastructure.dataio.downloads` (`download_model_data`) | Downloads image-DM + AE weights for the chosen variant. |
+| `ctmr.infrastructure.maiisi_engine.diff_model_setting` | Helper: distributed-init / config-loading / logger setup. |
 
 ## Related skills
 
-- [`download-models`](download-models.md) — fetch the right checkpoints.
-- [`infer_mask-only`](infer_mask-only.md) — mask-generation stage (the other half of the paired pipeline).
-- [`infer_image-from-mask`](infer_image-from-mask.md) — generate an image from an existing mask (CT-only, uses ControlNet).
-- [`infer_mask-image-paired`](infer_mask-image-paired.md) — full mask + image paired pipeline (chains both).
+- [`download-models`](../download-models/SKILL.md) — fetch the right checkpoints.
+- [`infer_mask-only`](../infer_mask-only/SKILL.md) — mask-generation stage (the other half of the paired pipeline).
+- [`infer_image-from-mask`](../infer_image-from-mask/SKILL.md) — generate an image from an existing mask (CT-only, uses ControlNet).
+- [`infer_mask-image-paired`](../infer_mask-image-paired/SKILL.md) — full mask + image paired pipeline (chains both).

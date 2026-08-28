@@ -11,15 +11,15 @@
 
 # ---------------------------------------------------------------------------
 # Vendored snapshot (issue #134, ADR-0015 §2 maiisi_engine): byte-for-byte
-# copy of ``scripts/utils_infer.py`` with import lines rewritten to this package home.
+# copy of ``utils_infer.py`` (retired scripts layer, git history) with import lines rewritten to this package home.
 # Behavior must stay stable — machine-guarded by
 # tests/infrastructure/maiisi_engine/test_vendored_parity.py (AST equality).
 # ---------------------------------------------------------------------------
 """
 Shared inference helpers reused across:
 
-- ``scripts/sample_mask.py``           — mask DDPM (anatomy_size → mask)
-- ``scripts/infer_image_from_mask.py`` — mask → CT/MR via ControlNet image DM
+- ``sample_mask.py`` (retired scripts layer, git history)           — mask DDPM (anatomy_size → mask)
+- ``infer_image_from_mask.py`` (retired scripts layer, git history) — mask → CT/MR via ControlNet image DM
 
 The core function ``run_controlnet_conditioned_image_dm`` is conditioning-
 modality-agnostic (it takes a pre-prepared ControlNet conditioning tensor),
@@ -42,8 +42,8 @@ What lives here:
 What is NOT here (lives elsewhere):
 
 - Mask-specific helpers (``binarize_labels``, ``remap_labels``,
-  ``general_mask_generation_post_process``) → ``scripts/utils.py``
-- Mask wrapper + CLI                      → ``scripts/infer_image_from_mask.py``
+  ``general_mask_generation_post_process``) → ``utils.py`` (retired scripts layer, git history)
+- Mask wrapper + CLI                      → ``infer_image_from_mask.py`` (retired scripts layer, git history)
 """
 
 from __future__ import annotations
@@ -140,7 +140,7 @@ def run_controlnet_conditioned_image_dm(
     **Conditioning-modality-agnostic** — the caller supplies a pre-prepared
     ``controlnet_cond_tensor`` (and optionally an ``controlnet_uncond_tensor``
     for classifier-free guidance). The mask-conditioned wrapper lives in
-    ``scripts/infer_image_from_mask.py``; future ControlNet variants trained
+    ``infer_image_from_mask.py`` (retired scripts layer, git history); future ControlNet variants trained
     on other conditioning modalities (e.g. image) can add their own wrapper
     and reuse this core.
 

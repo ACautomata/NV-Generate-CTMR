@@ -11,7 +11,7 @@
 
 # ---------------------------------------------------------------------------
 # Vendored snapshot (issued #134 style, ticked 08 / ADR-0015 §2 maiisi_engine):
-# byte-for-byte copy of ``scripts/img2img_infer.py`` with import lines rewritten
+# byte-for-byte copy of ``img2img_infer.py`` (retired scripts layer, git history) with import lines rewritten
 # to this package home. Behavior must stay stable -- machine-guarded by
 # tests/infrastructure/maiisi_engine/test_vendored_parity.py (AST equality).
 # ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@
 timestep 序列去噪到 0 → decode → ·1000 → int16。
 
 用法（与 diff_model_infer 相同的配置体系，另加 -i 锚图像与 --strength）：
-  python3 -m scripts.img2img_infer -e <env> -c <model_cfg> -t <net_def> \
+  python3 -m ctmr.infrastructure.maiisi_engine.img2img_infer -e <env> -c <model_cfg> -t <net_def> \
       -i <anchor.nii.gz> --strength 0.9 -g 1
 模型配置中 diffusion_unet_inference.modality 为目标模态标签。
 """
@@ -126,7 +126,7 @@ def run_img2img(
         raise ValueError(f"strength={strength} 截断后步数不足（timesteps={all_timesteps.tolist()[:5]}...）")
     timesteps = all_timesteps[start_idx:]
     next_timesteps = torch.cat((timesteps[1:], torch.tensor([0], dtype=timesteps.dtype)))
-    logger.info(f"img2img: strength={strength}, skip first {start_idx} steps, " f"t {float(timesteps[0])} -> 0 over {len(timesteps)} steps")
+    logger.info(f"img2img: strength={strength}, skip first {start_idx} steps, t {float(timesteps[0])} -> 0 over {len(timesteps)} steps")
 
     # x_t = (1 - t/1000)·x0 + (t/1000)·ε —— 与训练 add_noise 同一概率路径
     noise = torch.randn(anchor_latent.shape, device=device, dtype=anchor_latent.dtype)

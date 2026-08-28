@@ -12,7 +12,7 @@
 
 """Quantitative acceptance layer: the FID / paired-error evidence chain.
 
-The whole chain migrated from ``scripts/brats_l1_quantitative.py`` (#141 /
+The whole chain migrated from ``brats_l1_quantitative.py`` (retired scripts layer, git history) (#141 /
 ADR-0015 §2): ``fid`` (Fréchet metric, case-level bootstrap, three-plane FID
 assessment), ``paired`` (P3 candidate-vs-baseline MAE/SSIM with the t1n->t1c
 exception), ``report`` (the versioned candidate-bound report assembly),

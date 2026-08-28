@@ -9,9 +9,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Negative probe: the legacy ``scripts/`` namespace is gone by design (issue #143).
+"""Negative probe: the legacy top-level ``scripts`` namespace is gone by design (issue #143).
 
-ADR-0015 M5 retires the top-level ``scripts/`` package outright -- git history is
+ADR-0015 M5 retires the top-level ``scripts`` package outright -- git history is
 the reproduction anchor for everything it held. These are the guard-suite probes
 for acceptance criterion 2: the directory must be physically absent, and a fresh
 interpreter launched from the repo root (so the root is on ``sys.path``) must not

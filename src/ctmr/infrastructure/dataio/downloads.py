@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Model/data download assembly from Hugging Face (migrated from scripts/download_model_data, ticket #132).
+"""Model/data download assembly from Hugging Face (migrated from the retired scripts layer (git history; ``download_model_data``), ticket #132).
 
 The script ``__main__`` glue and argparse block do not travel: the ``ctmr data``
 command family takes over the entry point in a later slice.

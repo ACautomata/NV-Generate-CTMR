@@ -12,7 +12,7 @@
 
 """Run-lifecycle mutations: open, select, freeze, attach.
 
-Migrated verbatim from ``scripts/brats_phase_run_contract.py`` (#141). Every
+Migrated verbatim from ``brats_phase_run_contract.py`` (retired scripts layer, git history) (#141). Every
 mutation enforces its contract rule at write time:
 
 - init fingerprints inputs and enforces the phase chain (a P2/P3 run pins a

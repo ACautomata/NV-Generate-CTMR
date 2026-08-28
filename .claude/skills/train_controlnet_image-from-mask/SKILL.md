@@ -1,32 +1,32 @@
 ---
 name: train_controlnet_image-from-mask
-description: How to train a 3D image-from-mask ControlNet with scripts.train_controlnet — for any modality (CT or MR) and any label vocabulary. Focuses on the training-data format the loop consumes (paired VAE latent embedding + combined integer label mask, the JSON data list schema, required vs conditional fields, the label→8-bit binary condition, folds, modality, multi-dataset lists) and the spatial relationship between the latent embedding and the label (the label must be on the same grid as the image that was VAE-encoded = 4× the latent per axis; the ControlNet downsamples it internally). Covers configs, single/multi-GPU launch, key knobs (n_epochs, lr, fold, weighted_loss), and outputs. Trigger when the user asks "how do I train the ControlNet", "what is the training data format / JSON schema", "what shape must the label mask be vs the embedding", "do I resample the label to match the latent and how", "how do I train a ControlNet for a new modality or vocabulary", or "which config/command trains train_controlnet".
+description: How to train a 3D image-from-mask ControlNet — for any modality (CT or MR) and any label vocabulary. Focuses on the training-data format the loop consumes (paired VAE latent embedding + combined integer label mask, the JSON data list schema, required vs conditional fields, the label→8-bit binary condition, folds, modality, multi-dataset lists) and the spatial relationship between the latent embedding and the label (the label must be on the same grid as the image that was VAE-encoded = 4× the latent per axis; the ControlNet downsamples it internally). Covers configs, key knobs (n_epochs, lr, fold, weighted_loss), and outputs. The generic upstream trainer entry retired with the scripts layer; the project's own ControlNet chain is `ctmr generate mask train`. Trigger when the user asks "how do I train the ControlNet", "what is the training data format / JSON schema", "what shape must the label mask be vs the embedding", "do I resample the label to match the latent and how", or "how do I train a ControlNet for a new modality or vocabulary".
 ---
 
 # Training an image-from-mask ControlNet
 
-This skill covers training a 3D ControlNet with `scripts.train_controlnet`, for **any modality (CT or MR) and any label vocabulary**. It sits between:
+This skill covers training a 3D image-from-mask ControlNet, for **any modality (CT or MR) and any label vocabulary**. The generic upstream trainer entry retired with the scripts layer (issue #143; git history is its reproduction anchor) — the training-loop knowledge below describes exactly what that entry executed, and the project's own ControlNet candidate chain (same loop shape, pinned recipe) runs via `ctmr generate mask train` (see the P2 section of [docs/training.md](../../../docs/training.md)). It sits between:
 
-1. **Prepare data** → [`finetune_image-from-mask_data-prep`](finetune_image-from-mask_data-prep.md) produces the two per-case files (`*_emb.nii.gz`, `*_combined_label.nii.gz`) + the JSON data list.
+1. **Prepare data** → [`finetune_image-from-mask_data-prep`](../finetune_image-from-mask_data-prep/SKILL.md) produces the two per-case files (`*_emb.nii.gz`, `*_combined_label.nii.gz`) + the JSON data list.
 2. **Train** ← *you are here.*
-3. **Generate** → [`infer_image-from-mask`](infer_image-from-mask.md) runs the trained checkpoint on a mask.
+3. **Generate** → [`infer_image-from-mask`](../infer_image-from-mask/SKILL.md) runs the trained checkpoint on a mask.
 
 ## How training is wired
 
-`scripts/train_controlnet.py` needs a **frozen pretrained diffusion U-Net** (`trained_diffusion_path`) — *not* the ControlNet. The training:
+The trainer needs a **frozen pretrained diffusion U-Net** (`trained_diffusion_path`) — *not* the ControlNet. The training:
 
 1. Loads the frozen DM, reads its `scale_factor`, sets every U-Net param `requires_grad = False`.
 2. Builds the ControlNet and **initializes it by copying the DM's encoder/mid weights** (`copy_model_state`).
 3. Optionally loads a ControlNet checkpoint from **`existing_ckpt_filepath`** to continue/finetune. Leave it `null` to start from the DM-copied init; set it to a checkpoint path to warm-start — your choice.
 4. Trains **only** the ControlNet (AdamW, L1 loss, `PolynomialLR` power 2.0), saving after every epoch.
 
-The DM you supply must match your modality (`diff_unet_3d_rflow-ct` for CT; `diff_unet_3d_rflow-mr` for MR). The **autoencoder is not loaded by this script** — it is used earlier, in data-prep, to produce the `*_emb.nii.gz` embeddings; by training time the `image` is already a latent. (`trained_autoencoder_path` may appear in the env config but the trainer ignores it.)
+The DM you supply must match your modality (`diff_unet_3d_rflow-ct` for CT; `diff_unet_3d_rflow-mr` for MR). The **autoencoder is not loaded by the trainer** — it is used earlier, in data-prep, to produce the `*_emb.nii.gz` embeddings; by training time the `image` is already a latent. (`trained_autoencoder_path` may appear in the env config but the trainer ignores it.)
 
 ---
 
 ## Training data format
 
-The loop consumes **one thing per training case: a `(image, label)` pair**, listed in a JSON data list. `scripts/utils.py::prepare_maisi_controlnet_json_dataloader` loads it; the loader does **no spatial resampling** — the files must already be on compatible grids (see below).
+The loop consumes **one thing per training case: a `(image, label)` pair**, listed in a JSON data list. `prepare_maisi_controlnet_json_dataloader` (now in `ctmr.application.generation.mask.train`) loads it; the loader does **no spatial resampling** — the files must already be on compatible grids (see below).
 
 ### Per-case files
 
@@ -106,7 +106,7 @@ The loader orients both `image` and `label` to canonical RAS, so their axes alwa
 }
 ```
 
-> To warm-start from a ControlNet checkpoint, set **`existing_ckpt_filepath`** — the training loop reads that key (train_controlnet.py:309), *not* `trained_controlnet_path`. (The stale `environment_maisi_controlnet_train.json` uses the old `trained_controlnet_path` key, which the trainer ignores — prefer the versioned `_rflow-ct` / `_rflow-mr` / `_ddpm-ct` env configs.)
+> To warm-start from a ControlNet checkpoint, set **`existing_ckpt_filepath`** — the training loop reads that key (former `train_controlnet.py:309`), *not* `trained_controlnet_path`. (The stale `environment_maisi_controlnet_train.json` uses the old `trained_controlnet_path` key, which the trainer ignores — prefer the versioned `_rflow-ct` / `_rflow-mr` / `_ddpm-ct` env configs.)
 
 ### Training config (`-c`) — the `controlnet_train` knobs
 
@@ -128,43 +128,19 @@ The shipped `config_maisi_controlnet_train_rflow-ct.json` (values as delivered �
 ```
 
 - **`weighted_loss` / `weighted_loss_label`** — up-weight the L1 loss on a small/hard ROI (e.g. a tumor). Set `weighted_loss_label` to **your** ROI/class index (the CT config ships `[23]`; the MR/ddpm configs ship `[129]`). To disable emphasis entirely, use `"weighted_loss": 1` with `"weighted_loss_label": [null]`.
-- **Region-contrastive loss** — on by default in `rflow-ct` (the `ddpm-ct` / `rflow-mr` configs omit these three keys, i.e. off). Its `remove_roi()` assumes a MAISI **tumor** ROI (`remove_tumors`); for any other vocabulary, edit `remove_roi()` in `train_controlnet.py` or set `use_region_contrasive_loss: false`.
+- **Region-contrastive loss** — on by default in `rflow-ct` (the `ddpm-ct` / `rflow-mr` configs omit these three keys, i.e. off). Its `remove_roi()` assumes a MAISI **tumor** ROI (`remove_tumors`); for any other vocabulary, edit `remove_roi()` or set `use_region_contrasive_loss: false`.
 
-## Launch
+## Launch (retired generic entry)
 
-### Single GPU
+The project's live candidate chain is `ctmr generate mask train`; use it for the pinned BraTS recipe. The generic upstream entry's behavior is retained only in git history (issue #143). Its former single-GPU input shape was `-t config_network`, `-c config_maisi_controlnet_train`, `-e environment_maisi_controlnet_train`, `-g 1`.
 
-```bash
-network="rflow"; generate_version="rflow-ct"      # CT; or rflow-mr, or network=ddpm/generate_version=ddpm-ct
+> The single-GPU snippet previously shown in [docs/training.md](../../../docs/training.md#execute-training) mistakenly passed the `config_maisi_diff_model_*` / `environment_maisi_diff_model_*` files — those lack a `controlnet_train` block. Use the **`*_controlnet_train_*`** configs above.
 
-python -m scripts.train_controlnet \
-    -t ./configs/config_network_${network}.json \
-    -c ./configs/config_maisi_controlnet_train_${generate_version}.json \
-    -e ./configs/environment_maisi_controlnet_train_${generate_version}.json \
-    -g 1
-```
-
-> The single-GPU snippet in [docs/training.md](../docs/training.md#execute-training) mistakenly passes the `config_maisi_diff_model_*` / `environment_maisi_diff_model_*` files — those lack a `controlnet_train` block. Use the **`*_controlnet_train_*`** configs above.
-
-### Multi-GPU (torchrun / DDP)
-
-`-g` must equal `--nproc_per_node`; DDP kicks in whenever `-g > 1`.
-
-```bash
-export NUM_GPUS_PER_NODE=8
-network="rflow"; generate_version="rflow-ct"
-torchrun --nproc_per_node=${NUM_GPUS_PER_NODE} --nnodes=1 \
-    --master_addr=localhost --master_port=1234 \
-    -m scripts.train_controlnet \
-    -t ./configs/config_network_${network}.json \
-    -c ./configs/config_maisi_controlnet_train_${generate_version}.json \
-    -e ./configs/environment_maisi_controlnet_train_${generate_version}.json \
-    -g ${NUM_GPUS_PER_NODE}
-```
+Multi-GPU (torchrun / DDP) had to keep `-g` equal to `--nproc_per_node`; the live candidate chain derives `torchrun` itself, so pass its desired GPU count with `ctmr generate mask train … -g <count>`.
 
 ## Version selection
 
-"AE (data-prep)" is the autoencoder used earlier to build the embeddings; "DM (`-e`)" is the frozen diffusion U-Net this script loads.
+"AE (data-prep)" is the autoencoder used earlier to build the embeddings; "DM (`-e`)" is the frozen diffusion U-Net the trainer loads.
 
 | `generate_version` | Network (`-t`) | AE (data-prep) | DM (`-e`) | `include_body_region` |
 |---|---|---|---|---|
@@ -190,7 +166,7 @@ Written to `model_dir`, named by `exp_name`, each holding `{epoch, loss, control
 - **`{exp_name}_current.pt`** — overwritten every epoch (latest).
 - **`{exp_name}_best.pt`** — written when the epoch loss improves.
 
-TensorBoard scalars go to `tfevent_path/exp_name`. To generate with the result, point the inference env's `trained_controlnet_path` at your `{exp_name}_best.pt` (the checkpoint format matches what inference loads) and follow [`infer_image-from-mask`](infer_image-from-mask.md).
+TensorBoard scalars go to `tfevent_path/exp_name`. To generate with the result, point the inference env's `trained_controlnet_path` at your `{exp_name}_best.pt` (the checkpoint format matches what inference loads) and follow [`infer_image-from-mask`](../infer_image-from-mask/SKILL.md).
 
 ## Gotchas checklist
 

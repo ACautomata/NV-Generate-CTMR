@@ -1,4 +1,4 @@
-"""Numpy-only tests for ctmr.infrastructure.dataio.quality_check (migrated from scripts/quality_check)."""
+"""Numpy-only tests for ctmr.infrastructure.dataio.quality_check (migrated from the retired scripts layer (git history; ``quality_check``))."""
 
 import numpy as np
 import pytest

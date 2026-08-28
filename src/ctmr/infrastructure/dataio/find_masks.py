@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Candidate-mask database lookup: body-region/anatomy filtering over the masks manifest (migrated verbatim from scripts/find_masks, ticket #132)."""
+"""Candidate-mask database lookup: body-region/anatomy filtering over the masks manifest (migrated verbatim from the retired scripts layer (git history; ``find_masks``), ticket #132)."""
 
 import json
 import os

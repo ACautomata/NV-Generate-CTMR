@@ -12,7 +12,7 @@
 
 """The run-contract orchestration face, observed as pytest (#141).
 
-The resident ``ContractSelfTest`` of ``scripts/brats_phase_run_contract.py``
+The resident ``ContractSelfTest`` of ``brats_phase_run_contract.py`` (retired scripts layer, git history)
 became this file when the contract moved into the acceptance.contract package
 (ADR-0015 §6): the full P1 positive path with negative attachment probes, the
 holdout/replay guards, the L2 binding/coverage/verdict chain, the

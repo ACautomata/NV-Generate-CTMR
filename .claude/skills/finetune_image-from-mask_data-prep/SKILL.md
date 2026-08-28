@@ -1,20 +1,18 @@
 ---
 name: finetune_image-from-mask_data-prep
-description: How to turn your own original images + original label masks into the preprocessed files (VAE embeddings, NV-Segment pseudo labels, combined labels) needed to finetune the CT ControlNet — whether adapting to a new site/dataset with existing MAISI classes or teaching a new class. Covers remapping an unseen user label onto any unclaimed integer index (0–255; the "dummy" placeholders are just one option) in label_dict.json, building the JSON data list, and the fold/weighted_loss settings. Trigger when the user says "I only have images and masks", "how do I prepare data to finetune the ControlNet", "how do I add my own class/tumor/lesion", "what index do I give my new label", "how do I make the *_emb / pseudo_label / combined_label files", or wants to reproduce the C4KC-KiTS example on their own data. CT-only.
+description: Reference guide to the CT ControlNet finetuning data contract: VAE embeddings, pseudo labels, combined labels, label remapping, JSON lists, and fold/weighted-loss semantics. The complete generic preparation pipeline has no canonical live entry because body-envelope assembly retired without a replacement; use this to assess or prepare a future runner, not as an end-to-end launch guide. CT-only.
 ---
 
-# Preparing your own data for ControlNet finetuning
+# ControlNet finetuning data reference
 
-This skill is for the case where **you only have two things per case**:
+This reference describes the data contract for CT ControlNet finetuning. The generic preparation pipeline is **not currently end-to-end runnable**: image embedding has a vendored engine entry, but the required body-envelope assembly retired without a replacement. Do not treat the individual steps below as a complete launch recipe; use git history only to reproduce a historical run, and restore the missing boundary in a dedicated future ticket.
+
+The reference applies when each case contains:
 
 - an **original image** (`*.nii.gz`), and
 - an **original label mask** (`*.nii.gz`) with one or more classes.
 
-You might finetune to **adapt to a new site/scanner/domain using only existing MAISI classes**, *or* to **teach a new class** the released model has never seen (a tumor, lesion, device, etc.). Both follow the same pipeline below — the only extra work in the new-class case is picking a label index for it (Step 3a). If every class in your mask already exists in the MAISI vocabulary, you just remap to the existing indices and skip the "unclaimed index" choice.
-
-It explains how to produce the **three derived files** the ControlNet training loop actually consumes, and — the part that trips people up — **how to remap your mask into the MAISI label vocabulary** (including assigning an index to any new class).
-
-> **CT-only.** The released ControlNet checkpoints were trained on CT masks; there is no MR ControlNet in this repo. The reference walkthrough is [data/README.md §4.3](../data/README.md#43-example-finetuning-on-a-new-dataset) (the C4KC-KiTS Kidney-Tumor example, which happens to add a new class mapped to index `129`).
+It records the three derived files the ControlNet training loop consumes and the MAISI label-remapping rules. **CT-only.** The released ControlNet checkpoints were trained on CT masks; there is no MR ControlNet in this repo. The reference walkthrough is [data/README.md §4.3](../../../data/README.md#43-example-finetuning-on-a-new-dataset) (the C4KC-KiTS Kidney-Tumor example, which maps a new class to index `129`).
 
 ## What you have → what you need
 
@@ -32,7 +30,7 @@ The training loop reads only `*_emb.nii.gz` (as `image`) and `*_combined_label.n
 
 ## Step 1 — Image embedding (`*_emb.nii.gz`)
 
-VAE-encode each original image with `scripts/diff_model_create_training_data.py`. It resamples every image to the nearest multiple of 128 per axis, runs the autoencoder encoder (sliding-window, AMP), and writes `<image>_emb.nii.gz`.
+VAE-encode each original image with the vendored engine entry `ctmr.infrastructure.maiisi_engine.create_training_data` (run as `python -m …`). It resamples every image to the nearest multiple of 128 per axis, runs the autoencoder encoder (sliding-window, AMP), and writes `<image>_emb.nii.gz`.
 
 Point an `environment_*` config at your data and use **`autoencoder_v1.pt`** (the CT ControlNet's autoencoder):
 
@@ -46,7 +44,7 @@ Point an `environment_*` config at your data and use **`autoencoder_v1.pt`** (th
 ```
 
 ```bash
-python -m scripts.diff_model_create_training_data \
+python -m ctmr.infrastructure.maiisi_engine.create_training_data \
     -t ./configs/config_network_rflow.json \
     -c ./configs/config_maisi_diff_model_rflow-ct.json \
     -e ./configs/<your_env>.json -g 1
@@ -56,9 +54,7 @@ python -m scripts.diff_model_create_training_data \
 
 ## Step 2 — Whole-body labels + body envelope (`mask_pseudo_label*.nii.gz`)
 
-Produce a MAISI-vocabulary whole-body segmentation **with the body envelope (`200`) already added** by following **Option A** of [`infer_image-from-mask.md` → "Producing a valid mask from a CT image"](infer_image-from-mask.md#producing-a-valid-mask-from-a-ct-image): run NV-Segment (`CT_BODY`) on the original image, then `scripts.utils.add_body_envelope(seg, ct_image)`. Save the result next to each case as `mask_pseudo_label*.nii.gz`.
-
-NV-Segment is a separate tool (not part of this repo) and emits **organ labels only** — Option A's `add_body_envelope` step is what supplies the `200` envelope the CT ControlNet requires. Don't skip it.
+**Blocked in the live package.** A valid pseudo label requires a MAISI-vocabulary whole-body segmentation with the body envelope (`200`). NV-Segment (`CT_BODY`) can supply organ labels, but the required body-envelope assembly utility retired with the scripts layer and has no canonical package replacement. Do not claim that generic data preparation is complete until a dedicated runner restores this operation. For historical reproduction only, its implementation is available in git history.
 
 ## Step 3 — Remap your mask, then combine (`mask_combined_label*.nii.gz`)
 
@@ -92,7 +88,7 @@ Overlay your remapped mask onto the Step-2 pseudo label (organs + body envelope 
 
 ```python
 import torch
-from scripts.augmentation import remap_labels   # remap_labels(tensor, {old_value: new_index})
+from ctmr.infrastructure.dataio.augmentation import remap_labels   # remap_labels(tensor, {old_value: new_index})
 
 # your_mask:  integer label tensor from mask.nii.gz
 # pseudo:     Step-2 pseudo label — MAISI organ labels + body envelope (200)
@@ -106,7 +102,7 @@ combined[remapped > 0] = remapped[remapped > 0]
 # save `combined` as mask_combined_label*.nii.gz
 ```
 
-(`scripts/utils.py::remap_labels` does the same thing but reads a JSON of `[orig, target]` pairs — handy if you prefer a config file. Use whichever fits your pipeline.)
+(`ctmr.infrastructure.dataio.mask_postprocess.remap_labels` does the same thing but reads a JSON of `[orig, target]` pairs — handy if you prefer a config file. Use whichever fits your pipeline.)
 
 ---
 
@@ -168,20 +164,12 @@ One JSON pairs each embedding with its combined label. Paths are **relative to `
 
 ## Next: train the ControlNet
 
-Once the files and JSON exist and the configs point at them, continue with the [`train_controlnet_image-from-mask`](train_controlnet_image-from-mask.md) skill — it covers the training configs, knobs (folds, `weighted_loss`, region-contrastive loss), single/multi-GPU launch, and outputs. (See also [docs/training.md → 3D ControlNet Training](../docs/training.md#3d-controlnet-training).) The short version:
-
-```bash
-network="rflow"; generate_version="rflow-ct"
-python -m scripts.train_controlnet \
-    -t ./configs/config_network_${network}.json \
-    -c ./configs/config_maisi_controlnet_train_${generate_version}.json \
-    -e ./configs/environment_maisi_controlnet_train_${generate_version}.json -g 1
-```
+Once the files and JSON exist and the configs point at them, continue with the [`train_controlnet_image-from-mask`](../train_controlnet_image-from-mask/SKILL.md) skill — it covers the training configs, knobs (folds, `weighted_loss`, region-contrastive loss), launch, and outputs. (See also [docs/training.md → 3D ControlNet Training](../../../docs/training.md#3d-controlnet-training).) The generic trainer is retired; its former input shape was `-t config_network`, `-c config_maisi_controlnet_train`, `-e environment_maisi_controlnet_train`, `-g <GPU count>`.
 
 ## Gotchas checklist
 
 - [ ] Embeddings made with **`autoencoder_v1.pt`** (not v2) for the CT ControlNet.
-- [ ] **Body envelope (`200`) added** via `scripts.utils.add_body_envelope(seg, ct)` — NV-Segment never produces it, and the ControlNet needs it on every non-organ body voxel.
+- [ ] **Body envelope (`200`) added** (retired `add_body_envelope` utility, git history) — NV-Segment never produces it, and the ControlNet needs it on every non-organ body voxel.
 - [ ] **Combined label on the encoded-image grid** — resampled (nearest-neighbor) to the Step-1 resampled size = 4× the latent per axis, or training errors out on a shape mismatch.
 - [ ] New classes remapped to **any unclaimed integer in `0–255`** (free ranges `133–199` / `201–255`, or a `dummy` slot like `129`); existing organs remapped to their real MAISI indices. Never reuse a claimed index, `0`, or `200`.
 - [ ] `label_dict.json` has a named entry for any new index. (Optional: `weighted_loss_label` set if you want to emphasize an ROI such as a tumor.)

@@ -1,16 +1,17 @@
 ---
 name: download-models
-description: How to download pretrained checkpoints (CT, MR, MR-Brain variants) and optional auxiliary data (mask database, anatomy-size-conditions JSON) for NV-Generate-CTMR inference. Trigger when the user asks "where are the checkpoints", "how do I download the model weights", "what does download_model_data.py do", or hits a missing-checkpoint error.
+description: How to download pretrained checkpoints (CT, MR, MR-Brain variants) and optional auxiliary data (mask database, anatomy-size-conditions JSON) for NV-Generate-CTMR inference. Trigger when the user asks "where are the checkpoints", "how do I download the model weights", "what does download_model_data do", or hits a missing-checkpoint error.
 ---
 
 # Downloading pretrained models + auxiliary data
 
-This skill covers `scripts/download_model_data.py` — the entry point for fetching everything you need before running inference.
+This skill covers the model-download assembly — `ctmr.infrastructure.dataio.downloads` (the former `download_model_data` script, retired to git history in #143 pending the `ctmr data` command family).
 
 ## TL;DR
 
 ```bash
-python -m scripts.download_model_data --version <VARIANT> --root_dir "./" [--model_only]
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('<VARIANT>', './')"          # full set
+python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('<VARIANT>', './', model_only=True)"  # weights only
 ```
 
 Where `<VARIANT>` is one of `rflow-ct`, `ddpm-ct`, `rflow-mr`, `rflow-mr-brain`.
@@ -19,7 +20,7 @@ Files land under `./models/` (weights) and `./datasets/` (optional auxiliary dat
 
 ## What gets downloaded per variant
 
-Source: HuggingFace Hub via `huggingface_hub.hf_hub_download`. The script also pings each repo's `config.json` once so HuggingFace's download counter ticks.
+Source: HuggingFace Hub via `huggingface_hub.hf_hub_download`. The function also pings each repo's `config.json` once so HuggingFace's download counter ticks.
 
 ### `rflow-ct` (CT, Rectified Flow — recommended for CT)
 
@@ -31,7 +32,7 @@ Always downloaded (`models/`):
 - `diff_unet_3d_rflow-ct.pt` (image DM) — from `nvidia/NV-Generate-CT`
 - `controlnet_3d_rflow-ct.pt` — from `nvidia/NV-Generate-CT`
 
-If **`--model_only` is NOT set**, also downloads (`datasets/`):
+If **`model_only=True` is NOT set**, also downloads (`datasets/`):
 
 - `all_anatomy_size_conditions.json` — anatomy-size database for `prepare_anatomy_size_condition` (Path A in mask-image paired inference)
 - `all_masks_flexible_size_and_spacing_4000.zip` — training-mask database for `find_masks` (Path B)
@@ -74,12 +75,12 @@ Only the image-DM stack (no mask DM, no ControlNet):
     └── candidate_masks_flexible_size_and_spacing_4000.json
 ```
 
-The paths above are exactly what the `environment_<variant>.json` configs expect, so as long as you run `download_model_data` from the repo root with `--root_dir "./"`, no path edits are needed.
+The paths above are exactly what the `environment_<variant>.json` configs expect, so as long as you run `download_model_data` from the repo root with `'./'`, no path edits are needed.
 
 ## When to use `--model_only`
 
-- **Skip auxiliary data**: pass `--model_only` if you only intend to use `controllable_anatomy_size` (Path A, diffusion-generated masks). The mask database (`all_masks_flexible_size_and_spacing_4000.zip` etc.) is only needed for Path B (real-mask retrieval).
-- **Full download (default)**: omit `--model_only` for the full paired-inference pipeline so both mask paths work.
+- **Skip auxiliary data**: pass `model_only=True` if you only intend to use `controllable_anatomy_size` (Path A, diffusion-generated masks). The mask database (`all_masks_flexible_size_and_spacing_4000.zip` etc.) is only needed for Path B (real-mask retrieval).
+- **Full download (default)**: omit `model_only=True` for the full paired-inference pipeline so both mask paths work.
 
 ## License gating
 
@@ -89,7 +90,7 @@ Some HuggingFace repos require you to accept their license terms before download
 - [nvidia/NV-Generate-MR](https://huggingface.co/nvidia/NV-Generate-MR) — NVIDIA Non-Commercial
 - [nvidia/NV-Generate-MR-Brain](https://huggingface.co/nvidia/NV-Generate-MR-Brain) — NVIDIA Open Model License
 
-After accepting, pass `--token YOUR_HF_TOKEN` or set `HF_TOKEN` in the environment.
+After accepting, set `HF_TOKEN` in the environment (the `huggingface_hub` client picks it up).
 
 ## Failure modes and retries
 
@@ -98,17 +99,17 @@ After accepting, pass `--token YOUR_HF_TOKEN` or set `HF_TOKEN` in the environme
 | `huggingface_hub.errors.GatedRepoError` | License not accepted | Visit repo page, accept terms, retry |
 | `requests.exceptions.ConnectionError` | Network drop | Just re-run — `hf_hub_download` resumes from cache |
 | Partial file (size mismatch) | Interrupted download | Delete the partial file in `./models/` or `./datasets/` and re-run |
-| Wrong checkpoint shape at inference | Stale cached checkpoint after a model update | Re-run with `--overwrite` (if available) or manually delete the local file |
+| Wrong checkpoint shape at inference | Stale cached checkpoint after a model update | Delete the stale local file, then re-run |
 
 ## Related scripts
 
-| Script | Role |
+| Entry | Role |
 |---|---|
-| `scripts/download_model_data.py` | CLI for this skill. Contains the HF download loop (`fetch_to_hf_path_cmd`) and the per-repo counter ping (`ensure_hf_download_tracked`). |
+| `ctmr.infrastructure.dataio.downloads` | Library home of this workflow. Contains the HF download loop (`fetch_to_hf_path_cmd`) and the per-repo counter ping (`ensure_hf_download_tracked`). |
 
 ## Related skills
 
-- [`infer_image-only`](infer_image-only.md) — uses the image DM only (no ControlNet, no mask DM). Run with `--model_only`.
-- [`infer_mask-image-paired`](infer_mask-image-paired.md) — needs the full set (mask AE + mask DM + image DM + ControlNet). Run without `--model_only` if you'll use Path B.
-- [`infer_mask-only`](infer_mask-only.md) — mask-stage details.
-- [`infer_image-from-mask`](infer_image-from-mask.md) — image-stage details.
+- [`infer_image-only`](../infer_image-only/SKILL.md) — uses the image DM only (no ControlNet, no mask DM). Run with `model_only=True`.
+- [`infer_mask-image-paired`](../infer_mask-image-paired/SKILL.md) — needs the full set (mask AE + mask DM + image DM + ControlNet). Run without `model_only=True` if you'll use Path B.
+- [`infer_mask-only`](../infer_mask-only/SKILL.md) — mask-stage details.
+- [`infer_image-from-mask`](../infer_image-from-mask/SKILL.md) — image-stage details.

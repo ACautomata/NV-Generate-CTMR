@@ -14,7 +14,7 @@
 ``add_data_dir2path`` joins the relative ``image``/``label``/condition paths of
 a MAISI-style JSON data list onto its per-list data root and splits the train /
 val sides by the ``fold`` key. Pure stdlib path assembly -- moved from
-``scripts/utils.py`` (the shared library is dissolving per ADR-0015 §7③); the
+``utils.py`` (retired scripts layer, git history) (the shared library is dissolving per ADR-0015 §7③); the
 generation-family train entries import it here.
 """
 

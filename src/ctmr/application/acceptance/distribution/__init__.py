@@ -11,7 +11,8 @@
 
 """Distribution-alignment acceptance (formerly L2): the frozen-instrument judge chain.
 
-Migrated verbatim from scripts/ along its seven internal import edges (issue
+Migrated verbatim from the retired scripts layer along its seven internal
+import edges (issue
 #140 / ADR-0015 §4): ``final_acceptance`` (assemble/predict/evaluate/verify)
 with ``measurement_run`` (NIfTI execution side), ``closing`` /
 ``freeze_audit`` (frozen-artifact gates over ``instrument_training``), the

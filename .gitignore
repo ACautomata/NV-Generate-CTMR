@@ -5,7 +5,7 @@ __pycache__/
 .venv/
 
 # Claude Code：个人本地配置不入库；worktree 工作区由 Claude Code 自建
+# （skills 自 #144 起入库存放于 .claude/skills/，作为项目级操作型 skill）
 .claude/settings.local.json
 .claude/worktrees/
-.claude/skills/
 uv.lock

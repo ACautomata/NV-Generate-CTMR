@@ -12,7 +12,7 @@
 
 """Blinded-judgment aggregation into the candidate-bound L3 report.
 
-Migrated verbatim from ``scripts/brats_l3_blind_eval.py`` (#141). Combines
+Migrated verbatim from ``brats_l3_blind_eval.py`` (retired scripts layer, git history) (#141). Combines
 >=2 independent reviewers' blinded judgments (``brats-l3-responses/1``) with
 the blind map into a ``brats-l3-report/1`` conclusion: per-reviewer
 visual-Turing balanced accuracy with a class-stratified 95% CI (must lie

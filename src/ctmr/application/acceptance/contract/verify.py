@@ -12,7 +12,7 @@
 
 """Run-record verification: hashes, guard, phase shape, chain, storage, verdict.
 
-Migrated verbatim from ``scripts/brats_phase_run_contract.py`` (#141).
+Migrated verbatim from ``brats_phase_run_contract.py`` (retired scripts layer, git history) (#141).
 Reconciles one run record against the contract: every fingerprinted entry
 against the bytes on disk, every formal layer attachment revalidated through
 the acceptance-layer registry, the holdout guard re-run, the phase chain

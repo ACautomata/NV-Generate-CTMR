@@ -12,7 +12,7 @@
 
 """The blinding-package renderer: deterministic sampling and opaque entry ids.
 
-Migrated verbatim from ``scripts/brats_l3_blind_eval.py`` (#141). For the
+Migrated verbatim from ``brats_l3_blind_eval.py`` (retired scripts layer, git history) (#141). For the
 frozen candidate's target modalities x sub-challenges it draws ``per-cell``
 real + ``per-cell`` synthetic images, blinds them into opaque entry ids
 (``L3-0001``...) in a seeded presentation order, and emits the reviewer-facing

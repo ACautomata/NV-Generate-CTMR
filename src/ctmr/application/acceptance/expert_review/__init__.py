@@ -12,7 +12,7 @@
 
 """Expert-review acceptance layer: the blinded-package and judgment-aggregation chain.
 
-Migrated verbatim from ``scripts/brats_l3_blind_eval.py`` (#141 / ADR-0015
+Migrated verbatim from ``brats_l3_blind_eval.py`` (retired scripts layer, git history) (#141 / ADR-0015
 §2): ``catalog`` (blinding protocol constants and the controlled image
 catalog), ``package`` (the deterministic blinding-package renderer) and
 ``aggregate`` (visual-Turing / Likert / Fleiss aggregation into the

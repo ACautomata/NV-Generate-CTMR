@@ -15,7 +15,7 @@
 ``FidScoreCalculator`` is the shared metric face consumed by the quantitative
 chain and the generation families' dev-trend machinery alike (ticket 10); the
 pre-registered bootstrap protocol, the case-resampling assessor and the
-feature-cohort catalog migrated verbatim from ``scripts/brats_l1_quantitative.py``
+feature-cohort catalog migrated verbatim from ``brats_l1_quantitative.py`` (retired scripts layer, git history)
 (#141). Pure numpy: no IO, no feature extractor, no network.
 """
 

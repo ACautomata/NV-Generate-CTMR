@@ -1,4 +1,4 @@
-"""Tests for ctmr.infrastructure.dataio.sample_mask (migrated from scripts/sample_mask).
+"""Tests for ctmr.infrastructure.dataio.sample_mask (migrated from the retired scripts layer (git history; ``sample_mask``)).
 
 GPU-only full sampling (``ldm_conditional_sample_one_mask``) is out of the "any machine" line
 (ADR-0015 §6); the CPU gate functions and the engine-side copies are exercised here.

@@ -41,9 +41,10 @@ class TrainCli:
         self.parser.add_argument("--amp_dtype", default="bf16", choices=["fp16", "bf16"], help="bf16 default (DCU)")
 
     def _add_stage_flags(self, stage):
-        # The ``p1``/``p2``/``p3`` discriminator keys are the seam with the
-        # still-unmigrated ``scripts/brats_p{1,2}_finetune.py`` entries; they fold
-        # away when those families migrate. New code passes its family word only.
+        # The ``p1``/``p2``/``p3`` discriminator keys date back to the retired
+        # finetune entries (git history) but stay pinned: the argv↔namespace
+        # equivalence gate freezes the migrated families' CLI face. New code
+        # passes its family word only.
         if stage == "p1":
             self.parser.add_argument(
                 "--replay-list",

@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Install the audited 250-epoch trainer into external nnunetv2 (migrated from scripts/install_nnunet_trainer_250, ticket #140).
+"""Install the audited 250-epoch trainer into external nnunetv2 (migrated from the retired scripts layer (git history; ``install_nnunet_trainer_250``), ticket #140).
 
 The trainer module itself stays version-controlled in this package. This installer
 only copies the byte-identical file into nnunetv2's trainer-discovery package and

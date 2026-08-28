@@ -12,7 +12,7 @@
 
 """Expert-review blinding protocol constants and the controlled image catalog.
 
-Migrated verbatim from ``scripts/brats_l3_blind_eval.py`` (#141). The gate
+Migrated verbatim from ``brats_l3_blind_eval.py`` (retired scripts layer, git history) (#141). The gate
 constants here are the production-side mirror of the contract-side
 ``ExpertReviewReportValidator`` constants -- different sources on purpose
 (ADR-0006 referee independence): a production bug must not be let through by

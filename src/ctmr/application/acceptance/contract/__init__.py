@@ -15,7 +15,7 @@
 The whole contract now lives here: the frozen five-key binding
 (``binding``), the acceptance-layer registry and per-layer validators
 (``registry`` / ``validators``), the evidence micro-tools (``artifacts``),
-and -- migrated from ``scripts/brats_phase_run_contract.py`` at its
+and -- migrated from ``brats_phase_run_contract.py`` (retired scripts layer, git history) at its
 retirement (#141) -- the record vocabulary + store (``record``), the holdout
 guard (``guard``), the lifecycle mutations open/select/freeze/attach
 (``lifecycle``), the final-acceptance orchestration over the domain kernel

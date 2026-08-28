@@ -14,18 +14,19 @@ The VAE training loop lives in [`ctmr.application.vae_train`](../src/ctmr/applic
 
 The information for the training hyperparameters and data processing parameters, like learning rate and patch size, are stored in [../configs/config_maisi_vae_train.json](../configs/config_maisi_vae_train.json). The provided configuration works for 16G V100 GPU. Please feel free to tune the parameters for your datasets and device.
 
-### Execute VAE Training
+### Retired VAE runner contract
 
-The end-to-end entry point is [`scripts/train_vae.py`](../scripts/train_vae.py): it loads the three config layers (network / train / environment), builds the data pipeline (`VAE_Transform` + `CacheDataset`), runs the per-epoch loop in `ctmr.application.vae_train`, publishes checkpoints and runs the periodic validation pass.
+The end-to-end VAE caller retired to git history with the scripts layer (issue #143), pending the `ctmr data` command family (ADR-0015 §3); the loop itself lives on in [`ctmr.application.vae_train`](../src/ctmr/application/vae_train.py) and its invocation shape is pinned by its tests. The retired caller wired: three config layers (network / train / environment) → data pipeline (`VAE_Transform` + `CacheDataset`) → the per-epoch loop → checkpoint publication + periodic validation.
 
-```bash
-network="rflow"
-python -m scripts.train_vae \
-    -t ./configs/config_network_${network}.json \
-    -c ./configs/config_maisi_vae_train.json \
-    -e ./configs/environment_maisi_vae_train.json \
-    --train-list train_ct.json --train-list train_mri.json \
-    --val-list val_ct.json --val-list val_mri.json
+Its input shape, for reference when the caller is rebuilt:
+
+```text
+network=rflow
+-t configs/config_network_<network>.json
+-c configs/config_maisi_vae_train.json
+-e configs/environment_maisi_vae_train.json
+--train-list train_ct.json --train-list train_mri.json
+--val-list val_ct.json --val-list val_mri.json
 ```
 
 Each `--train-list` / `--val-list` file is a JSON array of `{"image": <path>, "class": "ct"|"mri"}` entries (one file per modality). Every epoch publishes `autoencoder.pt` / `discriminator.pt` under `model_dir`, and the validation pass (every `val_interval` epochs) additionally saves the best-score epoch as `autoencoder_epoch<N>.pt`. TensorBoard/plot observers of the deleted tutorial notebook are not rebuilt -- epoch summaries go to stdout.
@@ -62,7 +63,7 @@ torchrun \
     --nproc_per_node=${NUM_GPUS_PER_NODE} \
     --nnodes=1 \
     --master_addr=localhost --master_port=1234 \
-    -m scripts.diff_model_train -t ./configs/config_network_${network}.json -c ./configs/config_maisi_diff_model_${generate_version}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -g ${NUM_GPUS_PER_NODE}
+    -m ctmr.infrastructure.maiisi_engine.diff_model_train -t ./configs/config_network_${network}.json -c ./configs/config_maisi_diff_model_${generate_version}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -g ${NUM_GPUS_PER_NODE}
 ```
 
 To run the diffusion model training script with MAISI Rectified flow for MRI, please run the code above with:
@@ -94,15 +95,9 @@ The training was performed with the following:
 - Actual Model Input (the size of 3D image feature in latent space) for the latent diffusion model: 128 x 128 x 128 for 512 x 512 x 512 volume
 - AMP: True
 
-### Execute Training
+### Retired generic ControlNet trainer contract
 
-To train with a single GPU, please run:
-
-```bash
-network="rflow"
-generate_version="rflow-ct"
-python -m scripts.train_controlnet -t ./configs/config_network_${network}.json -c ./configs/config_maisi_diff_model_${generate_version}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -g 1
-```
+> ⚠️ The upstream ControlNet trainer entry retired with the scripts layer (issue #143); git history is its reproduction anchor. The project's own ControlNet training is the mask-conditioned candidate chain below (`ctmr generate mask train`). Its former config shape was `-t config_network`, `-c config_maisi_controlnet_train`, `-e environment_maisi_controlnet_train`, `-g <GPU count>`.
 
 To run the ControlNet model training script with MAISI Rectified flow for MRI, please run the code above with:
 
@@ -118,18 +113,7 @@ network="ddpm"
 generate_version="ddpm-ct"
 ```
 
-The training script also enables multi-GPU training. For instance, if you are using eight GPUs, you can run the training script with the following command:
-
-```bash
-export NUM_GPUS_PER_NODE=8
-network="rflow"
-generate_version="rflow-ct"
-torchrun \
-    --nproc_per_node=${NUM_GPUS_PER_NODE} \
-    --nnodes=1 \
-    --master_addr=localhost --master_port=1234 \
-    -m scripts.train_controlnet -t ./configs/config_network_${network}.json -c ./configs/config_maisi_controlnet_train_${generate_version}.json -e ./configs/environment_maisi_controlnet_train_${generate_version}.json -g ${NUM_GPUS_PER_NODE}
-```
+The retired generic training entry previously supported multi-GPU DDP. The project candidate chains derive `torchrun` themselves, so invoke `ctmr generate modality-label train` or `ctmr generate mask train` with the desired `-g` count rather than hand-writing a launcher command.
 
 ## Training GPU Memory Usage
 
@@ -152,7 +136,7 @@ The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-C
 
 - **Full-parameter DM continuation, VAE frozen**, `scale_factor` **reused from the base checkpoint** (the recomputed `1/std(z)` of the first batch is logged and asserted as a sanity check only);
 - **Hyperparameters are frozen** in `configs/config_brats_p1_train.json`: `lr=2e-6`, `batch=1`, `cache_rate=0`, `n_epochs<=100`, L1 loss, Rectified Flow uniform timestep sampling (scale 1.4, `config_network_rflow.json`), PolynomialLR power 2.0, `augment_modality_label prob=0.1` (t1c token 34 included);
-- **1:1 replay** — the training list is the concatenation of the #52 BraTS `p1_image_only.json` (7404 entries) and the MR-RATE replay cohort (`scripts/brats_p1_replay_prep.py`, cohort rules in ADR-0005); replay entries keep the original whole-brain tokens `mri_t1/mri_t2/mri_flair`;
+- **1:1 replay** — the training list is the concatenation of the #52 BraTS `p1_image_only.json` (7404 entries) and the MR-RATE replay cohort (prep tooling retired to git history in #143; cohort rules in ADR-0005); replay entries keep the original whole-brain tokens `mri_t1/mri_t2/mri_flair`;
 - **bf16 autocast by default** (DCU), fp32 fallback via `--no_amp`, DDP via `torchrun` (RCCL);
 - **Per-epoch checkpoints** `epoch_<N>.pt` (upstream key layout) feed the dev-eval sidecar and the phase-run contract selection.
 
@@ -163,10 +147,13 @@ The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-C
 ### Launch (sugon DCU, P1)
 
 ```bash
-PHASE=p1 REPO=/root/nv-phase-57 bash scripts/brats_phase_launch_train.sh   # 7-GPU DDP + 1-GPU sidecar, nohup
+ctmr generate modality-label train -e run/environment.json -c configs/config_brats_p1_train.json \
+    -t configs/config_network_rflow.json --replay-list run/lists/p1_mrrate_replay.json -g 7
+# torchrun spawn is derived by the launcher; the dev-eval sidecar runs separately:
+ctmr generate modality-label dev-eval ...
 ```
 
-Prerequisites (controlled storage only): the #52 phase lists/embeddings, the replay cohort (`brats_p1_replay_prep.py download/encode-list/companions/lists/verify` on gauss + rsync), the v1 base checkpoint, and the dev real feature bank (`ctmr generate modality-label dev-eval reference`).
+Prerequisites (controlled storage only): the #52 phase lists/embeddings, the MR-RATE replay cohort (its prep/encode tooling retired to git history in #143; cohort rules in ADR-0005), the v1 base checkpoint, and the dev real feature bank (`ctmr generate modality-label dev-eval reference`).
 
 ## BraTS2023 P2 Mask→Image Candidate (ControlNet-only bypass)
 
@@ -187,12 +174,11 @@ The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100) halts
 ### Launch (sugon DCU, P2)
 
 ```bash
-PHASE=p2 REPO=/root/nv-phase-59 \
-DM_SOURCE_CKPT=/root/private_data/brats2023_rflow_p1/ckpt/epoch_20.pt \
-bash scripts/brats_phase_launch_train.sh   # 7-GPU DDP + 1-GPU sidecar, nohup
+ctmr generate mask train -e run/environment.json -c configs/config_brats_p2_train.json \
+    -t configs/config_network_rflow.json -g 7
+# torchrun spawn is derived by the launcher; the dev-eval sidecar runs separately:
+ctmr generate mask dev-eval watch ...
 ```
-
-`DM_SOURCE_CKPT` must be the frozen P1-DM checkpoint from `dm_source.json` (#58), not the v1 base. Prerequisites: the #52 phase lists/embeddings/labels, the frozen P1-DM candidate checkpoint, the v1 autoencoder, and the dev real feature bank (`ctmr generate mask dev-eval reference`).
 
 ### Run-contract wiring (P2)
 

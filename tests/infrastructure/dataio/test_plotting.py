@@ -1,4 +1,4 @@
-"""Tests for ctmr.infrastructure.dataio.plotting (migrated from scripts/utils_plot, renamed per ADR-0015 rule ③)."""
+"""Tests for ctmr.infrastructure.dataio.plotting (migrated from the retired scripts layer (git history; ``utils_plot``), renamed per ADR-0015 rule ③)."""
 
 import matplotlib
 

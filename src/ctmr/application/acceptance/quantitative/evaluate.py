@@ -12,7 +12,7 @@
 
 """L1 evaluate entry: coordinates frozen-run evidence into a controlled report.
 
-Migrated verbatim from ``scripts/brats_l1_quantitative.py`` (#141); the
+Migrated verbatim from ``brats_l1_quantitative.py`` (retired scripts layer, git history) (#141); the
 ``selftest`` subcommand died in the migration (its assertions live as pytest
 functions under tests/application/acceptance/quantitative). Reached as
 ``ctmr accept quantitative evaluate ...``.

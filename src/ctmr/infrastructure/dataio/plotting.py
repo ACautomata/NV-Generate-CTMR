@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Slice visualization helpers for generated volumes (migrated from scripts/utils_plot per the naming rule, ticket #132)."""
+"""Slice visualization helpers for generated volumes (migrated from the retired scripts layer (git history; ``utils_plot`` renamed per the naming rule), ticket #132)."""
 
 import matplotlib.pyplot as plt
 import numpy as np

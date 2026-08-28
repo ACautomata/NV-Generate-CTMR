@@ -13,7 +13,7 @@
 """The blinded-judgment aggregation chain, observed as pytest (#141).
 
 The resident ``L3SelfTest`` aggregate assertions of
-``scripts/brats_l3_blind_eval.py`` became this file when the chain moved into
+``brats_l3_blind_eval.py`` (retired scripts layer, git history) became this file when the chain moved into
 the expert_review package (ADR-0015 §6): the candidate-bound report binding,
 the over-confident reviewer failing the visual-Turing window, the sub-bound
 Likert failing the non-compensatory AND, determinism for a fixed seed, and

@@ -1,4 +1,4 @@
-"""CPU-able behavioral tests for ctmr.infrastructure.dataio.augmentation (migrated from scripts/augmentation).
+"""CPU-able behavioral tests for ctmr.infrastructure.dataio.augmentation (migrated from the retired scripts layer (git history; ``augmentation``)).
 
 The tumor-* elastic helpers route through hardcoded ``.cuda()`` calls (GPU-only paths, out of the
 "any machine" test line per ADR-0015 §6); everything tested here is the CPU-safe surface.

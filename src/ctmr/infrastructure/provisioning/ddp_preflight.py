@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Validate the SSA derived batch-16 plan before 8-card nnU-Net training (migrated from scripts/nnunet_ddp_preflight, ticket #140).
+"""Validate the SSA derived batch-16 plan before 8-card nnU-Net training (migrated from the retired scripts layer (git history; ``nnunet_ddp_preflight``), ticket #140).
 
 Run once for filesystem/configuration checks, then under ``torchrun`` with
 ``--distributed`` to prove the eight-rank NCCL/RCCL path. The script ``__main__``

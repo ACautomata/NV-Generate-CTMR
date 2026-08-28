@@ -15,9 +15,9 @@
 # Function bodies are copied byte-for-byte from their legacy homes so that
 # vendored engine files keep upstream behavior with no numeric drift:
 #
-# - ``SUPPORT_MODALITIES``              from scripts/transforms.py
-# - ``define_fixed_intensity_transform`` from scripts/transforms.py
-# - ``define_instance``                 from scripts/utils.py
+# - ``SUPPORT_MODALITIES``              from the retired scripts layer (git history; ``transforms``).py
+# - ``define_fixed_intensity_transform`` from the retired scripts layer (git history; ``transforms``).py
+# - ``define_instance``                 from the retired scripts layer (git history; ``utils``).py
 #
 # Only these extractions and this import block are new; everything below the
 # imports is guarded by tests/infrastructure/maiisi_engine/test_vendored_parity.py.

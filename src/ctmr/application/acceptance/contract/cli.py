@@ -12,7 +12,7 @@
 
 """Run-contract verb entry: init / select / freeze / attach / conclude / verify.
 
-Migrated verbatim from ``scripts/brats_phase_run_contract.py`` (#141; the
+Migrated verbatim from ``brats_phase_run_contract.py`` (retired scripts layer, git history) (#141; the
 legacy ``selftest`` verb died in the move -- its assertions live as pytest
 functions under tests/application/acceptance/contract). Reached as
 ``ctmr accept contract <verb> ...``; the argparse surface and every exit code
