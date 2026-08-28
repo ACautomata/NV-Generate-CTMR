@@ -17,3 +17,4 @@ tensorboard>=2.14.0
 PyYAML>=6.0
 Pillow>=10.0.0
 SimpleITK>=2.2.0
+connected-components-3d>=3.0.0  # imports as cc3d (L2 calibration connected-components)

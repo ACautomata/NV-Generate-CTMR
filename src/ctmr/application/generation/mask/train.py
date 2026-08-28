@@ -150,7 +150,8 @@ class DataCatalog:
             if not os.path.exists(label):
                 raise FileNotFoundError(
                     f"mask condition missing: {label} (entry {entry.get('sub')}:{entry.get('case')}); "
-                    "run the phase labels pipeline before training"
+                    "generate the required label before training (the phase-label prep pipeline retired to git "
+                    "history in #143 pending the `ctmr data` family, ADR-0015)"
                 )
             records.append(
                 {

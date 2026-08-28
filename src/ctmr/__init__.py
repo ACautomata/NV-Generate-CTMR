@@ -12,8 +12,9 @@
 """ctmr — src layout package (issue #103 / ADR-0013; installed since #130).
 
 Installable via ``pip install -e . --no-deps`` (ADR-0015 §3, console entry
-``ctmr``); the pytest ``pythonpath = ["src", "."]`` track stays until the
-migration batches close it out. The deep modules land with their
+``ctmr``); that editable install is the single import track for CI and local
+dev -- the pytest ``pythonpath`` double-track is retired (issue #143). The deep
+modules land with their
 convergence-gate tests ("born with tests", ADR-0013 §5), layered per
 ADR-0015 §2 since #133:
 

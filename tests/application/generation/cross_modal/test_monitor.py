@@ -30,21 +30,17 @@ import json
 
 import numpy as np
 import pytest
+import torch
 
-pytest.importorskip("torch")
-pytest.importorskip("monai")
-
-import torch  # noqa: E402  (importorskip must precede the torch-dependent import)
-
-from ctmr.application.generation.cross_modal.monitor import (  # noqa: E402
+from ctmr.application.generation.cross_modal.monitor import (
     PSNR_CAP_DB,
     DevCohort,
     DevList,
     PairwiseScorer,
     read_src_latent,
 )
-from ctmr.application.generation.cross_modal.plan import MODALITY_PAIRS  # noqa: E402
-from ctmr.application.shell import COHORT_QUOTAS, CheckpointWatcher, EarlyStopRule, TrendLedger  # noqa: E402
+from ctmr.application.generation.cross_modal.plan import MODALITY_PAIRS
+from ctmr.application.shell import COHORT_QUOTAS, CheckpointWatcher, EarlyStopRule, TrendLedger
 
 pytestmark = pytest.mark.torch
 

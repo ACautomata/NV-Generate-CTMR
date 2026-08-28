@@ -81,7 +81,7 @@ class DataCatalog:
             entries += payload
         if counts and len(counts) > 1 and counts[0] != counts[1]:
             raise ValueError(
-                f"1:1 replay mix violated: brats train {counts[0]} vs replay {counts[1]} " "(spec #51 decision 6 requires strict 1:1 mixing)"
+                f"1:1 replay mix violated: brats train {counts[0]} vs replay {counts[1]} (spec #51 decision 6 requires strict 1:1 mixing)"
             )
         return entries
 
@@ -93,7 +93,8 @@ class DataCatalog:
             if not os.path.exists(emb):
                 raise FileNotFoundError(
                     f"training embedding missing: {emb} (entry {entry.get('sub')}:{entry.get('case')}); "
-                    "run the phase/replay pipelines before training"
+                    "VAE-encode the training data first (the phase/replay prep+encode pipelines retired to "
+                    "git history in #143 pending the `ctmr data` family, ADR-0015)"
                 )
             info = emb + ".json"
             records.append({"image": emb, "spacing": info, "modality": info})
@@ -117,8 +118,7 @@ class ScaleFactorPolicy:
         recomputed_value = float(recomputed)
         relative = abs(recomputed_value - self._checkpoint_value) / self._checkpoint_value
         self._logger.info(
-            f"scale_factor sanity: checkpoint={self._checkpoint_value:.6f} recomputed_1/std(z)={recomputed_value:.6f} "
-            f"relative_diff={relative:.4f}"
+            f"scale_factor sanity: checkpoint={self._checkpoint_value:.6f} recomputed_1/std(z)={recomputed_value:.6f} relative_diff={relative:.4f}"
         )
         if relative > SCALE_FACTOR_RELATIVE_TOLERANCE:
             raise ValueError(

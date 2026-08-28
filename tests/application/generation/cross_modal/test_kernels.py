@@ -32,13 +32,10 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+import torch
+from monai.networks.schedulers import RFlowScheduler
 
-pytest.importorskip("torch")
-
-import torch  # noqa: E402  (importorskip must precede the torch-dependent import)
-from monai.networks.schedulers import RFlowScheduler  # noqa: E402
-
-from ctmr.application.generation.cross_modal.train import TrainKernel  # noqa: E402
+from ctmr.application.generation.cross_modal.train import TrainKernel
 
 pytestmark = pytest.mark.torch
 

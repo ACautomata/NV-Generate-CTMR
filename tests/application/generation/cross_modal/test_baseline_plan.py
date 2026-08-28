@@ -29,9 +29,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("torch")
-
-from ctmr.application.generation.cross_modal.baseline import (  # noqa: E402
+from ctmr.application.generation.cross_modal.baseline import (
     BASELINE_VARIANT,
     INFER_SCHEMA,
     PAIRS_SCHEMA,
@@ -40,7 +38,7 @@ from ctmr.application.generation.cross_modal.baseline import (  # noqa: E402
     BaselineRunGuard,
     BaselineSamplePlanBuilder,
 )
-from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of  # noqa: E402
+from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
 
 pytestmark = pytest.mark.torch
 

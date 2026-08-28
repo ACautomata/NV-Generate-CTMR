@@ -29,12 +29,10 @@ import argparse
 
 import pytest
 
-pytest.importorskip("torch")
-
-from ctmr import cli  # noqa: E402
-from ctmr.application.generation.cross_modal import baseline, candidate, monitor  # noqa: E402
-from ctmr.application.generation.launcher import num_gpus_of  # noqa: E402
-from ctmr.application.train_cli import TrainCli  # noqa: E402
+from ctmr import cli
+from ctmr.application.generation.cross_modal import baseline, candidate, monitor
+from ctmr.application.generation.launcher import num_gpus_of
+from ctmr.application.train_cli import TrainCli
 
 pytestmark = pytest.mark.torch
 

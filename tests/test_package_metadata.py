@@ -13,9 +13,10 @@
 
 The terminal-state facts read straight from pyproject.toml: metadata name
 ``ctmr``, requires-python >= 3.11, empty runtime dependencies (requirements.txt
-owns the version pins), and the ``ctmr`` console entry point. The legacy
-pytest pythonpath double-track must stay untouched until the migration
-batches close it out.
+owns the version pins), and the ``ctmr`` console entry point. The legacy pytest
+pythonpath double-track is retired (issue #143): editable install
+(``pip install -e .``) is the single import track, so no ``pythonpath`` key may
+remain in the pytest config.
 """
 
 import tomllib
@@ -40,6 +41,7 @@ def test_console_entry_point_registered():
     assert _pyproject()["project"]["scripts"]["ctmr"] == "ctmr.cli:main"
 
 
-def test_legacy_pytest_pythonpath_track_untouched():
+def test_pytest_pythonpath_key_is_retired():
     ini_options = _pyproject()["tool"]["pytest"]["ini_options"]
-    assert ini_options["pythonpath"] == ["src", "."]
+    # Editable install is the single import track; no pythonpath key may remain (issue #143).
+    assert "pythonpath" not in ini_options
