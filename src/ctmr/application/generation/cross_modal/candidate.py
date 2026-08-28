@@ -79,6 +79,7 @@ from monai.inferers.inferer import SlidingWindowInferer
 from monai.networks.schedulers import RFlowScheduler
 from monai.utils import set_determinism
 
+from ctmr.application.generation.cross_modal.anchor import AnchorLatentEncoder
 from ctmr.application.generation.cross_modal.baseline import (
     GRID,
     BaselineGenerateError,
@@ -89,7 +90,6 @@ from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config, setup_logging
-from ctmr.infrastructure.maisi_engine.img2img_infer import load_anchor_latent
 from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
 from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, load_image_models
 
@@ -379,6 +379,7 @@ class CandidateSampleWriter:
             bypass=ControlNetBypass(controlnet),
         )
         recon_model = ReconModel(autoencoder=autoencoder, scale_factor=scale_factor).to(self._device)
+        anchor_encoder = AnchorLatentEncoder(autoencoder, self._device, GRID, self._logger)
         builder = CandidateSamplePlanBuilder(
             self._run_record["run_id"],
             self._run_record["upstream"]["checkpoint"]["sha256"],
@@ -396,7 +397,7 @@ class CandidateSampleWriter:
                 for anchor in MODALITIES:
                     anchor_path = layout.real_of(challenge, case, anchor)
                     # encode once per anchor; its 4ch latent is the ControlNet condition
-                    src_latent = load_anchor_latent(str(anchor_path), autoencoder, self._device, GRID, self._logger)
+                    src_latent = anchor_encoder.encode(str(anchor_path))
                     cond = (src_latent * scale_factor).half().to(self._device)
                     for tgt in MODALITIES:
                         if tgt == anchor:
@@ -444,11 +445,11 @@ class CandidateSampleWriter:
     def render(self, recon_model, latent) -> np.ndarray:
         """The denoised latent → int16 volume: production sliding-window decode + MR intensity rescale.
 
-        Matches the migrated ``run_controlnet_conditioned_image_dm`` tail verbatim
-        (sliding-window decode on the writer's device with the aggregation on CPU,
-        MR → [0,1000], direct int16 cast); the autocast context flows in from the
-        caller.  Every P3 modality is MR (tokens ≥ 8), so the [0,1000] branch is
-        the only one.
+        Matches the retired ControlNet-conditioned core's decode tail verbatim
+        (git history; deleted with issue #175) — sliding-window decode on the
+        writer's device with the aggregation on CPU, MR → [0,1000], direct
+        int16 cast); the autocast context flows in from the caller.  Every P3
+        modality is MR (tokens ≥ 8), so the [0,1000] branch is the only one.
         """
         inferer = SlidingWindowInferer(
             roi_size=[96, 96, 96],

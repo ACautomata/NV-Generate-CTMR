@@ -72,8 +72,9 @@ from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.infrastructure.dataio.augmentation import remove_tumors
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
+from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
-from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, dynamic_infer
+from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
 
 GRID = (256, 256, 128)
 LATENT_SHAPE = (1, 4, 64, 64, 32)  # the VAE latent grid (4x downsampled per axis)

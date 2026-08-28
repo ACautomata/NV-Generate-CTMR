@@ -75,11 +75,11 @@ from monai.inferers.inferer import SlidingWindowInferer
 from monai.networks.schedulers import RFlowScheduler
 from monai.utils import set_determinism
 
+from ctmr.application.generation.cross_modal.anchor import AnchorLatentEncoder
 from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.infrastructure.maisi_engine.diff_model_infer import load_models
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config, setup_logging
-from ctmr.infrastructure.maisi_engine.img2img_infer import load_anchor_latent
 from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
 from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
 
@@ -410,6 +410,7 @@ class BaselineSampleWriter:
             noise_scheduler=RFlowScheduler(**{k: v for k, v in self._merged.noise_scheduler.items() if k != "_target_"}),
         )
         recon_model = ReconModel(autoencoder=autoencoder, scale_factor=scale_factor).to(self._device)
+        anchor_encoder = AnchorLatentEncoder(autoencoder, self._device, GRID, self._logger)
         builder = BaselineSamplePlanBuilder(
             self._run_record["run_id"],
             self._run_record["upstream"]["checkpoint"]["sha256"],
@@ -427,7 +428,7 @@ class BaselineSampleWriter:
                 for anchor in MODALITIES:
                     anchor_path = layout.real_of(challenge, case, anchor)
                     # encode once per anchor; the three targets reuse the latent (#38 convention)
-                    latent = load_anchor_latent(str(anchor_path), autoencoder, self._device, GRID, self._logger)
+                    latent = anchor_encoder.encode(str(anchor_path))
                     for tgt in MODALITIES:
                         if tgt == anchor:
                             continue

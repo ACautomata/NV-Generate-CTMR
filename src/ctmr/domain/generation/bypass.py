@@ -49,8 +49,8 @@ class ControlNetBypass:
         With ``uncond_cond`` (the CFG>0 sampling branch) this is the legacy
         batch=2 double forward: ``x``/``timesteps`` duplicated, the condition
         pair (conditioned | unconditional), and ``class_labels = (modality |
-        zeros)`` -- the ``run_controlnet_conditioned_image_dm`` CFG
-        composition bit for bit.
+        zeros)`` -- the retired ControlNet-conditioned core's CFG composition
+        bit for bit (git history; deleted with issue #175).
         """
         if uncond_cond is None:
             return self._controlnet(x=noisy_latent, timesteps=timesteps, controlnet_cond=controlnet_cond, class_labels=modality)

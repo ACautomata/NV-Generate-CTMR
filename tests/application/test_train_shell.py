@@ -26,7 +26,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from ctmr.harness.train_shell import STOP_FILE, PhaseHarness, TrainContext, TrainProvenanceWriter
+from ctmr.application.shell import STOP_FILE, PhaseHarness, TrainContext, TrainProvenanceWriter
 from ctmr.infrastructure.gradient_executors import PlainGradientExecutor
 
 # The pre-#111 provenance writer field sets, verbatim (do not edit -- the

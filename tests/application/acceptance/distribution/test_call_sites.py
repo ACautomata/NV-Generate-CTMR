@@ -138,11 +138,8 @@ def test_no_fatal_token_or_legacy_entry_name_remains_anywhere_in_scripts_deploy_
     not a call site."""
     offenders = []
     executable_call_sites = (
-        sorted((REPO_ROOT / "scripts").glob("*.py"))
-        + sorted((REPO_ROOT / "scripts").glob("*.sh"))
-        + sorted((REPO_ROOT / "deploy").rglob("*.sh"))
-        + [REPO_ROOT / "src/ctmr/instrument/predict.py"]  # reverse shim until the last consumer switches
-    )
+        sorted((REPO_ROOT / "scripts").glob("*.py")) + sorted((REPO_ROOT / "scripts").glob("*.sh")) + sorted((REPO_ROOT / "deploy").rglob("*.sh"))
+    )  # the former instrument reverse shim retired with issue #175; the canonical verb lives in nnunet_runner
     for path in executable_call_sites:
         text = path.read_text(errors="replace")
         for token in ("nnUNetv2_predict_from_raw_data", "l2_calibration_predict_entry", "--disable_tta False"):

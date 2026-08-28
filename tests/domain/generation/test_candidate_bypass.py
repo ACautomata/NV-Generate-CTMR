@@ -22,9 +22,9 @@ the P2 8ch mask) and synthetic batches:
   ControlNet/UNet forward -> weighted velocity L1 -> plain update -> lr step --
   compared over two consecutive steps (single continuous RNG stream): per-step
   loss, ControlNet parameter state and optimizer state;
-- the domain ``denoise_conditioned`` trajectory must reproduce the legacy
-  ``run_controlnet_conditioned_image_dm`` loop math for the candidate's
-  CFG=0 recipe (single conditioned forward, no unconditional branch) --
+- the domain ``denoise_conditioned`` trajectory must reproduce the
+  retired ControlNet-conditioned core's loop math (git history; deleted with
+  issue #175) for the candidate's CFG=0 recipe (single conditioned forward, no unconditional branch) --
   every intermediate latent.
 
 The candidate's CFG=0 constraint itself is pinned one level up
@@ -266,7 +266,7 @@ def test_two_image_conditioned_train_steps_match_legacy_loss_params_and_optimize
 
 
 def _legacy_denoise_loop(unet, controlnet, rflow, initial_latent, spacing, modality, cond):
-    """The migrated ``run_controlnet_conditioned_image_dm`` CFG=0 loop, verbatim math.
+    """The retired ControlNet-conditioned core's CFG=0 loop (git history; deleted with issue #175), verbatim math.
 
     The candidate recipe is CFG OFF: a single conditioned ControlNet forward
     (``class_labels`` = the target modality) composes into a single UNet

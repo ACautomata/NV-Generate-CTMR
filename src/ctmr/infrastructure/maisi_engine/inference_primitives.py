@@ -16,8 +16,11 @@
 # vendored engine files keep upstream behavior with no numeric drift:
 #
 # - ``dynamic_infer``                    from the retired scripts layer (git history; ``utils``).py
-# - ``get_body_region_index_from_mask``  from the retired scripts layer (git history; ``utils``).py
 # - ``check_input_ct`` / ``check_input_mr`` from the retired scripts layer (git history; ``sample_mask``).py
+#
+# ``get_body_region_index_from_mask`` was deleted with issue #175 (ADR-0016
+# M4): its only consumer, ``utils_infer.build_conditioning_tensors``, retired
+# with the paired-path loaders — git history is the reproduction anchor.
 #
 # Only these extractions and this import block are new; everything below the
 # imports is guarded by tests/infrastructure/maisi_engine/test_engine_smoke.py.
@@ -27,7 +30,6 @@ import json
 import logging
 import math
 
-import numpy as np
 import torch
 
 
@@ -65,45 +67,6 @@ def dynamic_infer(inferer, model, images):
         finally:
             inferer.roi_size = orig_roi
         return output
-
-
-def get_body_region_index_from_mask(input_mask):
-    """
-    Determine the top and bottom body region indices from an input mask.
-
-    Args:
-        input_mask (Tensor): Input mask tensor containing body region labels.
-
-    Returns:
-        tuple: Two lists representing the top and bottom region indices.
-    """
-    region_indices = {}
-    # head and neck
-    region_indices["region_0"] = [22, 120]
-    # thorax
-    region_indices["region_1"] = [28, 29, 30, 31, 32]
-    # abdomen
-    region_indices["region_2"] = [1, 2, 3, 4, 5, 14]
-    # pelvis and lower
-    region_indices["region_3"] = [93, 94]
-
-    nda = input_mask.cpu().numpy().squeeze()
-    unique_elements = np.unique(nda)
-    unique_elements = list(unique_elements)
-    # print(f"nda: {nda.shape} {unique_elements}.")
-    overlap_array = np.zeros(len(region_indices), dtype=np.int64)
-    for _j in range(len(region_indices)):
-        overlap = any(element in region_indices[f"region_{_j}"] for element in unique_elements)
-        overlap_array[_j] = np.int64(overlap)
-    overlap_array_indices = np.nonzero(overlap_array)[0]
-    top_region_index = np.eye(len(region_indices), dtype=np.int64)[np.amin(overlap_array_indices), ...]
-    top_region_index = list(top_region_index)
-    top_region_index = [int(_k) for _k in top_region_index]
-    bottom_region_index = np.eye(len(region_indices), dtype=np.int64)[np.amax(overlap_array_indices), ...]
-    bottom_region_index = list(bottom_region_index)
-    bottom_region_index = [int(_k) for _k in bottom_region_index]
-    # print(f"{top_region_index} {bottom_region_index}")
-    return top_region_index, bottom_region_index
 
 
 def check_input_ct(

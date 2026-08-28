@@ -14,8 +14,9 @@
 
 The perturbation semantics must stay the P1-pinned recipe (augment prob 0.1,
 CT members → 1, MR members → 8, prob-decided zeroing) and numerically match
-the vendored upstream ``augment_modality_label`` the migrated P1 entry used
-(seed-replayed).  ``VaeObjective`` is the single domain definition of the
+the retired vendored ``augment_modality_label`` the migrated P1 entry used
+(deleted with issue #175, ADR-0016 M4; embedded verbatim below as the parity
+reference).  ``VaeObjective`` is the single domain definition of the
 repo-owned VAE KL and generator loss aggregation: its math must reproduce,
 bit for bit, the retired ``ctmr.domain.losses.kl_loss`` (itself extracted from
 the retired ``utils.KL_loss``) and ``ctmr.application.vae_train.loss_weighted_sum``
@@ -34,12 +35,30 @@ import torch.nn.functional as F
 
 from ctmr.domain.generation import objective as objective_module
 from ctmr.domain.generation.objective import ModalityLabelPerturber, TumourWeightedTarget, VaeObjective
-from ctmr.infrastructure.maisi_engine.diff_model_train import augment_modality_label
 
 pytestmark = pytest.mark.torch
 
 # the pinned augmentation probability (recipe code-literal, ADR-0005 kernel)
 PINNED_PROB = 0.1
+
+
+def _legacy_augment_modality_label(modality_tensor, prob=0.1):
+    """Verbatim the retired vendored ``augment_modality_label`` (deleted with issue #175)."""
+    # Randomly set elements that are smaller than 8 with probability `prob`
+    mask_ct = (modality_tensor < 8) & (modality_tensor >= 2)
+    prob_ct = torch.rand(modality_tensor.size(), device=modality_tensor.device) < prob
+    modality_tensor[mask_ct & prob_ct] = 1
+
+    # Randomly set elements larger than 9 with probability `prob`
+    mask_mri = modality_tensor >= 9
+    prob_mri = torch.rand(modality_tensor.size(), device=modality_tensor.device) < prob
+    modality_tensor[mask_mri & prob_mri] = 8
+
+    # Randomly set a proportion (prob) of the elements to 0
+    mask_zero = torch.rand(modality_tensor.size(), device=modality_tensor.device) > prob
+    modality_tensor = modality_tensor * mask_zero.long()
+
+    return modality_tensor
 
 
 def test_pinned_augmentation_probability():
@@ -63,10 +82,10 @@ def test_one_prob_zeroes_every_element_via_the_final_mask():
     assert torch.all(out == 0.0)
 
 
-def test_matches_the_vendored_legacy_augmentation_seed_replayed():
+def test_matches_the_retired_legacy_augmentation_seed_replayed():
     base = torch.tensor([[[[0.0]], [[1.0]], [[2.0]], [[3.0]], [[5.0]], [[7.0]], [[8.0]], [[9.0]], [[12.0]], [[13.0]], [[20.0]]]])
     torch.manual_seed(11)
-    legacy = augment_modality_label(base.clone(), prob=PINNED_PROB)
+    legacy = _legacy_augment_modality_label(base.clone(), prob=PINNED_PROB)
     torch.manual_seed(11)
     migrated = ModalityLabelPerturber()(base.clone())
     assert torch.equal(migrated, legacy)

@@ -78,8 +78,9 @@ from ctmr.application.shell import (
 )
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
+from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
-from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, dynamic_infer
+from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
 
 
 class CohortSpacingSource:

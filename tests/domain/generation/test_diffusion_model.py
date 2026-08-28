@@ -18,9 +18,10 @@ reproduce the legacy live-path math -- ``TrainKernel.train_batch`` forward +
 the PhaseHarness plain update sequence -- including the perturbation, RF
 noise/scheduler draw order and the Adam/PolynomialLR evolution.  Compared
 values: per-step loss, model parameter state and optimizer state after two
-closed updates.  The legacy reference drives the same vendored
-``augment_modality_label`` the migrated entry used, so any drift in the domain
-re-implementation surfaces as a mismatch.
+closed updates.  The legacy reference drives the same retired vendored
+``augment_modality_label`` the migrated entry used (deleted with issue #175;
+embedded verbatim below), so any drift in the domain re-implementation
+surfaces as a mismatch.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ from monai.networks.schedulers import RFlowScheduler
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.generation.objective import ModalityLabelPerturber
 from ctmr.infrastructure.gradient_executors import PlainGradientExecutor
-from ctmr.infrastructure.maisi_engine.diff_model_train import augment_modality_label
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 
 pytestmark = pytest.mark.torch
@@ -46,6 +46,25 @@ LR = 2e-06
 
 TRAIN_RECIPE = {"lr": LR, "batch_size": 1, "n_epochs": 2}
 TOTAL_STEPS = 10
+
+
+def _legacy_augment_modality_label(modality_tensor, prob=0.1):
+    """Verbatim the retired vendored ``augment_modality_label`` (deleted with issue #175)."""
+    # Randomly set elements that are smaller than 8 with probability `prob`
+    mask_ct = (modality_tensor < 8) & (modality_tensor >= 2)
+    prob_ct = torch.rand(modality_tensor.size(), device=modality_tensor.device) < prob
+    modality_tensor[mask_ct & prob_ct] = 1
+
+    # Randomly set elements larger than 9 with probability `prob`
+    mask_mri = modality_tensor >= 9
+    prob_mri = torch.rand(modality_tensor.size(), device=modality_tensor.device) < prob
+    modality_tensor[mask_mri & prob_mri] = 8
+
+    # Randomly set a proportion (prob) of the elements to 0
+    mask_zero = torch.rand(modality_tensor.size(), device=modality_tensor.device) > prob
+    modality_tensor = modality_tensor * mask_zero.long()
+
+    return modality_tensor
 
 
 def _toy_unet_def():
@@ -96,7 +115,7 @@ def _legacy_training_step(unet, scale_factor, rflow, images, spacing, modality, 
     scheduler step the shell drove per batch.
     """
     scaled = images * scale_factor
-    perturbed = augment_modality_label(modality.clone()).to(CPU)
+    perturbed = _legacy_augment_modality_label(modality.clone()).to(CPU)
     noise = torch.randn_like(scaled)
     timesteps = rflow.sample_timesteps(scaled)
     noisy_latent = rflow.add_noise(original_samples=scaled, noise=noise, timesteps=timesteps)

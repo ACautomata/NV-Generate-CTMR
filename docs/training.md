@@ -55,36 +55,10 @@ Each `--train-list` / `--val-list` file is a JSON array of `{"image": <path>, "c
 
 ## 3D Latent Diffusion Training
 
-> **reference-only**：以下是 vendored 上游引擎快照
-> （`ctmr.infrastructure.maisi_engine.diff_model_train`，ADR-0015 §2）的命令形状，
-> 仅作上游数学参照；它不再是 P1 live 训练入口。P1 的 live 入口是
-> `ctmr generate modality-label train`（§P1 续训配方），并已按 ADR-0016 收编
-> 领域实体 `DiffusionModel.train_step`。
-
-```bash
-export NUM_GPUS_PER_NODE=8
-network="rflow"
-generate_version="rflow-ct"
-torchrun \
-    --nproc_per_node=${NUM_GPUS_PER_NODE} \
-    --nnodes=1 \
-    --master_addr=localhost --master_port=1234 \
-    -m ctmr.infrastructure.maisi_engine.diff_model_train -t ./configs/config_network_${network}.json -c ./configs/config_maisi_diff_model_${generate_version}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -g ${NUM_GPUS_PER_NODE}
-```
-
-To run the diffusion model training script with MAISI Rectified flow for MRI, please run the code above with:
-
-```bash
-network="rflow"
-generate_version="rflow-mr"
-```
-
-To run the diffusion model training script with MAISI DDPM for CT, please run the code above with:
-
-```bash
-network="ddpm"
-generate_version="ddpm-ct"
-```
+> **已退役**：vendored 上游引擎训练驱动（`diff_model_train`）随 ADR-0016 M4
+> 删除（issue #175）——git 历史是上游数学与命令形状的复现锚。P1 的 live
+> 训练入口是 `ctmr generate modality-label train`（§P1 续训配方），并已按
+> ADR-0016 收编领域实体 `DiffusionModel.train_step`。
 
 ## 3D ControlNet Training
 

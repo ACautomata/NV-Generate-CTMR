@@ -328,10 +328,11 @@ class CandidateSampler:
     def render(self, recon, latent):
         """The denoised latent → decoded volume: production sliding-window decode + MR intensity rescale.
 
-        Matches the migrated ``run_controlnet_conditioned_image_dm`` tail verbatim
-        (sliding-window decode with the aggregation on CPU, MR → [0,1000]; the
-        dev sidecar keeps the wrapper's default overlap 0.6667); the autocast
-        context flows in from the caller.
+        Matches the retired ControlNet-conditioned core's decode tail verbatim
+        (git history; deleted with issue #175) — sliding-window decode with the
+        aggregation on CPU, MR → [0,1000]; the dev sidecar keeps the retired
+        wrapper's default overlap 0.6667; the autocast context flows in from
+        the caller.
         """
         inferer = SlidingWindowInferer(
             roi_size=[96, 96, 96],
