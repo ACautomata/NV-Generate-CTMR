@@ -40,6 +40,7 @@ from ctmr.application.generation.modality_label.train import (
     ScaleFactorPolicy,
     TrainKernel,
 )
+from ctmr.infrastructure.gradient_executors import PlainGradientExecutor
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 
 pytestmark = pytest.mark.torch
@@ -166,7 +167,7 @@ def test_load_models_reuses_the_checkpoint_scale_factor(tmp_path):
     # the convention under test: scale_factor comes from the base checkpoint,
     # never recomputed (issue #10 §7) -- and the full-param load is real.
     assert float(ctx.scale) == pytest.approx(CKPT_SCALE_FACTOR)
-    assert float(kernel._scale_factor) == pytest.approx(CKPT_SCALE_FACTOR)
+    assert float(kernel._model.scale_factor) == pytest.approx(CKPT_SCALE_FACTOR)
     assert isinstance(ctx.trainable, torch.nn.Module)
     assert all(p.requires_grad for p in ctx.trainable.parameters())
     assert ctx.optimizer.param_groups[0]["lr"] == 2e-06
@@ -199,13 +200,15 @@ def test_train_batch_executes_a_closed_training_step_with_the_production_rflow_s
         "spacing": torch.ones(1, 3),
         "modality": torch.tensor([29]),
     }
-    loss = kernel.train_batch(batch)
+    loss = kernel.train_step(batch, PlainGradientExecutor())
 
     assert loss.dim() == 0  # a scalar loss
     assert torch.isfinite(loss)
-    loss.backward()  # the full-param training closure: gradients reach the trainable DM
+    # the full-param training closure: gradients reach the trainable DM and the
+    # closed update already applied one optimizer step (ADR-0016 train_step)
     grads = [p.grad for p in ctx.trainable.parameters() if p.grad is not None]
     assert grads and all(torch.isfinite(g).all() for g in grads)
+    assert ctx.optimizer.param_groups[0]["lr"] < 2e-06  # PolynomialLR stepped already
 
 
 def test_rflow_sampling_step_closes_on_cpu():

@@ -55,6 +55,12 @@ Each `--train-list` / `--val-list` file is a JSON array of `{"image": <path>, "c
 
 ## 3D Latent Diffusion Training
 
+> **reference-only**：以下是 vendored 上游引擎快照
+> （`ctmr.infrastructure.maisi_engine.diff_model_train`，ADR-0015 §2）的命令形状，
+> 仅作上游数学参照；它不再是 P1 live 训练入口。P1 的 live 入口是
+> `ctmr generate modality-label train`（§P1 续训配方），并已按 ADR-0016 收编
+> 领域实体 `DiffusionModel.train_step`。
+
 ```bash
 export NUM_GPUS_PER_NODE=8
 network="rflow"

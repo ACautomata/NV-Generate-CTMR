@@ -31,8 +31,11 @@ Deltas against the upstream ``diff_model_train.py`` loop, all pinned:
 - bf16 autocast is the default (DCU), fp32 fallback via --no_amp.
 
 Migrated from the retired modality-label finetune script entry (ticket 10,
-ADR-0015 §2): the domain kernel (``TrainKernel``, four-method injection) rides
-the shared ``PhaseHarness`` shell; the CLI face is unchanged.
+ADR-0015 §2): the domain kernel (``TrainKernel``) rides the shared
+``PhaseHarness`` shell; per ADR-0016 the single-batch training math is the
+domain ``DiffusionModel.train_step`` and the runtime precision strategy is
+injected by the application as a ``GradientExecutor``. The CLI face is
+unchanged.
 
 Usage (CLI, torchrun spawn is derived by the ctmr launcher):
     ctmr generate modality-label train -e run/environment.json -c configs/config_brats_p1_train.json \
@@ -56,9 +59,11 @@ from torch.nn.parallel import DistributedDataParallel
 
 from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWriter
 from ctmr.application.train_cli import TrainCli
+from ctmr.domain.generation.model import DiffusionModel
+from ctmr.domain.generation.objective import ModalityLabelPerturber
 from ctmr.domain.recipe import P1RecipeSpec
+from ctmr.infrastructure.gradient_executors import Bf16GradientExecutor, Fp16GradientExecutor, PlainGradientExecutor
 from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
-from ctmr.infrastructure.maisi_engine.diff_model_train import augment_modality_label
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 
 SCALE_FACTOR_RELATIVE_TOLERANCE = 0.5  # issue #10 §7: sanity assert, not a re-pin
@@ -128,10 +133,14 @@ class ScaleFactorPolicy:
 
 
 class TrainKernel:
-    """Modality-label kernel: data composition, full-param DM hook-up, bare L1, payload keys.
+    """Modality-label kernel: data composition, DiffusionModel hook-up, payload keys.
 
-    The four-method ``PhaseTrainKernel`` boundary. Recipe values live here, not
-    in the shell: Adam + lr + PolynomialLR power 2.0 (ADR-0005).
+    The four-method (``train_step``) ``PhaseTrainKernel`` boundary. Recipe values
+    live here, not in the shell: Adam + lr + PolynomialLR power 2.0 (ADR-0005).
+    The single-batch training math (modality perturbation, RF timesteps, noise,
+    L1 against the velocity target, one parameter update) is the domain
+    ``DiffusionModel.train_step``; the shell injects the runtime precision
+    strategy via ``GradientExecutor`` (ADR-0016).
     """
 
     def __init__(self, args, device, logger, local_rank):
@@ -140,8 +149,7 @@ class TrainKernel:
         self._logger = logger
         self._local_rank = local_rank
         self._unet = None
-        self._scale_factor = None
-        self._noise_scheduler = None
+        self._model = None
 
     def build_loader(self):
         args = self._args
@@ -195,7 +203,7 @@ class TrainKernel:
     def load_models(self, loader):
         args = self._args
         unet, scale_policy = self.load_unet()
-        self._noise_scheduler = define_instance(args, "noise_scheduler")
+        noise_scheduler = define_instance(args, "noise_scheduler")
 
         with open(args.modality_mapping_path) as handle:
             args.modality_mapping = json.load(handle)
@@ -212,23 +220,25 @@ class TrainKernel:
         lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(optimizer, total_iters=total_steps, power=2.0)
 
         self._unet = unet
-        self._scale_factor = scale_factor
+        # The domain entity carries the training recipe: the modality perturber,
+        # the RF scheduler shape and the Adam + PolynomialLR session members.
+        # The shell's TrainContext keeps the same handles for checkpoint scale
+        # payloads and the shared (single) optimizer/scheduler instances.
+        self._model = DiffusionModel(
+            unet=unet,
+            scale_factor=scale_factor,
+            noise_scheduler=noise_scheduler,
+            perturber=ModalityLabelPerturber(),
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+        )
         return TrainContext(trainable=unet, optimizer=optimizer, scheduler=lr_scheduler, scale=scale_factor, device=self._device)
 
-    def train_batch(self, batch):
-        images = batch["image"].to(self._device) * self._scale_factor
-        modality_tensor = augment_modality_label(batch["modality"].to(self._device)).to(self._device)
-        spacing_tensor = batch["spacing"].to(self._device)
-        noise = torch.randn_like(images)
-        timesteps = self._noise_scheduler.sample_timesteps(images)
-        noisy_latent = self._noise_scheduler.add_noise(original_samples=images, noise=noise, timesteps=timesteps)
-        model_output = self._unet(
-            x=noisy_latent,
-            timesteps=timesteps,
-            spacing_tensor=spacing_tensor,
-            class_labels=modality_tensor,
-        )
-        return torch.nn.functional.l1_loss(model_output.float(), (images - noise).float())
+    def train_step(self, batch, gradient_executor):
+        images = batch["image"].to(self._device)
+        spacing = batch["spacing"].to(self._device)
+        modality = batch["modality"].to(self._device)
+        return self._model.train_step(images, spacing, modality, gradient_executor)
 
     def checkpoint_payload(self, epoch, avg_loss, scale):
         unet_module = self._unet.module if isinstance(self._unet, DistributedDataParallel) else self._unet
@@ -255,6 +265,14 @@ def main(argv=None):
     local_rank, _world, device = initialize_distributed(args.num_gpus)
     logger = setup_logging("modality-label-finetune")
     kernel = TrainKernel(merged, device, logger, local_rank)
+    # The application injects the runtime precision strategy (ADR-0016): fp16
+    # (scaler), bf16 (DCU default) or non-AMP plain execution.
+    if args.amp and args.amp_dtype == "fp16":
+        gradient_executor = Fp16GradientExecutor()
+    elif args.amp:
+        gradient_executor = Bf16GradientExecutor()
+    else:
+        gradient_executor = PlainGradientExecutor()
     return PhaseHarness(
         kernel=kernel,
         model_dir=merged.model_dir,
@@ -275,6 +293,7 @@ def main(argv=None):
             },
             script_path=Path(__file__),
         ),
+        gradient_executor=gradient_executor,
     ).run()
 
 
