@@ -32,7 +32,7 @@ network="rflow"                       # or "ddpm" for ddpm-ct
 generate_version="rflow-ct"           # or "ddpm-ct"
 
 python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
-python -m ctmr.infrastructure.maiisi_engine.diff_model_infer \
+python -m ctmr.infrastructure.maisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \
     -c ./configs/config_maisi_diff_model_${generate_version}.json
@@ -45,7 +45,7 @@ network="rflow"
 generate_version="rflow-mr"
 
 python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
-python -m ctmr.infrastructure.maiisi_engine.diff_model_infer \
+python -m ctmr.infrastructure.maisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \
     -c ./configs/config_maisi_diff_model_${generate_version}.json
@@ -60,7 +60,7 @@ network="rflow"
 generate_version="rflow-mr-brain"
 
 python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
-python -m ctmr.infrastructure.maiisi_engine.diff_model_infer \
+python -m ctmr.infrastructure.maisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \
     -c ./configs/config_maisi_diff_model_${generate_version}.json

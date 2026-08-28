@@ -137,11 +137,11 @@ Pick FOV from the anatomy-recommended table (step 1), pick `output_size` from th
 
 ### 4. Modality-CFG → not used in this pipeline
 
-This pipeline is CT-only and modality is fixed at `CT=1`, so modality-CFG has nothing to amplify. The modality-CFG version of `cfg_guidance_scale` lives in `config_maisi_diff_model_*.json` and is read by the image-only entry `ctmr.infrastructure.maiisi_engine.diff_model_infer` ([`infer_image-only`](../infer_image-only/SKILL.md)), where it is required for MR — see that skill.
+This pipeline is CT-only and modality is fixed at `CT=1`, so modality-CFG has nothing to amplify. The modality-CFG version of `cfg_guidance_scale` lives in `config_maisi_diff_model_*.json` and is read by the image-only entry `ctmr.infrastructure.maisi_engine.diff_model_infer` ([`infer_image-only`](../infer_image-only/SKILL.md)), where it is required for MR — see that skill.
 
 ### 5. `cfg_guidance_scale` (tumor-CFG in this pipeline)
 
-Classifier-free guidance (CFG) scale on tumor presence. CFG runs the model twice per step (mask as-is vs mask with `remove_tumors()`) and amplifies the difference, strengthening tumor signal in the synthesized image. CT-only. `0` (default) = off. `1..5` = stronger tumor enforcement, growing artifact risk above 5. Doubles per-step compute when `> 0`. Same key name as the modality-CFG (step 4) — semantics depend on which entry reads the config: tumor here, modality in the image-only `ctmr.infrastructure.maiisi_engine.diff_model_infer`.
+Classifier-free guidance (CFG) scale on tumor presence. CFG runs the model twice per step (mask as-is vs mask with `remove_tumors()`) and amplifies the difference, strengthening tumor signal in the synthesized image. CT-only. `0` (default) = off. `1..5` = stronger tumor enforcement, growing artifact risk above 5. Doubles per-step compute when `> 0`. Same key name as the modality-CFG (step 4) — semantics depend on which entry reads the config: tumor here, modality in the image-only `ctmr.infrastructure.maisi_engine.diff_model_infer`.
 
 ### 6. `num_inference_steps`
 

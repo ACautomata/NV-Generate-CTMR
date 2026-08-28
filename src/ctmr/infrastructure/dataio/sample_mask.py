@@ -20,8 +20,8 @@ Also hosts the shared helper ``filter_mask_with_organs``.
 
 Engine-side primitives are imported from their canonical homes (issue #134)
 rather than duplicated: ``ReconModel`` / ``initialize_noise_latents`` from
-``maiisi_engine.utils_infer``, ``dynamic_infer`` / ``check_input_ct`` /
-``check_input_mr`` from ``maiisi_engine.inference_primitives``. They stay
+``maisi_engine.utils_infer``, ``dynamic_infer`` / ``check_input_ct`` /
+``check_input_mr`` from ``maisi_engine.inference_primitives``. They stay
 bound to this module's namespace so ``from ctmr.infrastructure.dataio.sample_mask
 import ...`` keeps resolving.
 """
@@ -37,8 +37,8 @@ from ctmr.infrastructure.dataio.mask_postprocess import (
     general_mask_generation_post_process,
     remap_labels,
 )
-from ctmr.infrastructure.maiisi_engine.inference_primitives import check_input_ct, check_input_mr, dynamic_infer  # noqa: F401
-from ctmr.infrastructure.maiisi_engine.utils_infer import ReconModel, initialize_noise_latents  # noqa: F401
+from ctmr.infrastructure.maisi_engine.inference_primitives import check_input_ct, check_input_mr, dynamic_infer  # noqa: F401
+from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, initialize_noise_latents  # noqa: F401
 
 
 def ldm_conditional_sample_one_mask(

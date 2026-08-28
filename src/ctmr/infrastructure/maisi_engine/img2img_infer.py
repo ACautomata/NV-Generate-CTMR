@@ -10,10 +10,10 @@
 # limitations under the License.
 
 # ---------------------------------------------------------------------------
-# Vendored snapshot (issued #134 style, ticked 08 / ADR-0015 §2 maiisi_engine):
+# Vendored snapshot (issued #134 style, ticked 08 / ADR-0015 §2 maisi_engine):
 # byte-for-byte copy of ``img2img_infer.py`` (retired scripts layer, git history) with import lines rewritten
 # to this package home. Behavior must stay stable -- machine-guarded by
-# tests/infrastructure/maiisi_engine/test_vendored_parity.py (AST equality).
+# tests/infrastructure/maisi_engine/test_vendored_parity.py (AST equality).
 # ---------------------------------------------------------------------------
 """Rectified-flow img2img 推理（Issue #38 P3 式零训练基线）。
 
@@ -22,7 +22,7 @@
 timestep 序列去噪到 0 → decode → ·1000 → int16。
 
 用法（与 diff_model_infer 相同的配置体系，另加 -i 锚图像与 --strength）：
-  python3 -m ctmr.infrastructure.maiisi_engine.img2img_infer -e <env> -c <model_cfg> -t <net_def> \
+  python3 -m ctmr.infrastructure.maisi_engine.img2img_infer -e <env> -c <model_cfg> -t <net_def> \
       -i <anchor.nii.gz> --strength 0.9 -g 1
 模型配置中 diffusion_unet_inference.modality 为目标模态标签。
 """
@@ -42,11 +42,11 @@ from monai.networks.schedulers import RFlowScheduler
 from monai.utils import set_determinism
 from tqdm import tqdm
 
-from ctmr.infrastructure.maiisi_engine.diff_model_infer import load_models, prepare_tensors, save_image
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
-from ctmr.infrastructure.maiisi_engine.inference_primitives import dynamic_infer
-from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
-from ctmr.infrastructure.maiisi_engine.utils_infer import ReconModel
+from ctmr.infrastructure.maisi_engine.diff_model_infer import load_models, prepare_tensors, save_image
+from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
+from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
+from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
+from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
 
 
 def set_random_seed(seed: int) -> int:

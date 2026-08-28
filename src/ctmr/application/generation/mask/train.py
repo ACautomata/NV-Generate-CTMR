@@ -67,8 +67,8 @@ from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWr
 from ctmr.application.train_cli import TrainCli
 from ctmr.domain.recipe import MaskRecipeSpec
 from ctmr.infrastructure.dataio.list_assembly import add_data_dir2path
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
-from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
+from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
+from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 
 
 def prepare_maisi_controlnet_json_dataloader(

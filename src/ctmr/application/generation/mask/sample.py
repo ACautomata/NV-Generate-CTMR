@@ -67,8 +67,8 @@ import torch
 
 from ctmr.application.generation.mask.inference import ldm_conditional_sample_one_image_from_mask
 from ctmr.application.shell import MODALITY_TOKENS, TARGET_MODALITIES
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import load_config
-from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
+from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
+from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
 
 GRID = (256, 256, 128)
 IDENTITY_AFFINE = np.diag([1.0, 1.0, 1.0, 1.0])

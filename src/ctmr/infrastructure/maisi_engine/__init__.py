@@ -26,7 +26,7 @@ supported by two freeze-side primitive modules:
 - ``inference_primitives``    stateless inference helpers and input constraint guards
 
 Behavior stays byte-stable versus the retired originals; that is
-machine-guarded by ``tests/infrastructure/maiisi_engine/test_vendored_parity.py``:
+machine-guarded by ``tests/infrastructure/maisi_engine/test_vendored_parity.py``:
 whole-file AST equality (import statements stripped) for the five engine files,
 and function-level AST equality for the seven symbols extracted into the two
 support modules. All former legacy-layer consumers switched over with their

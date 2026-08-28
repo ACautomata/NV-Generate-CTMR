@@ -93,7 +93,7 @@ def stray_shell_scripts(root):
 def package_name_violations(root):
     """Name-level violations in a package tree: hyphens, codenames, jargon names.
 
-    ``maiisi_engine/`` is exempt: it is the vendored upstream engine kept as
+    ``maisi_engine/`` is exempt: it is the vendored upstream engine kept as
     frozen copies (ADR-0015 §2), where even file names are pinned by the
     vendored-parity gate -- the §7 naming rules govern names we chose, not
     upstream's.
@@ -101,7 +101,7 @@ def package_name_violations(root):
     violations = []
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root)
-        if "maiisi_engine" in rel.parts:
+        if "maisi_engine" in rel.parts:
             continue
         if "__pycache__" in rel.parts:
             continue
@@ -159,11 +159,11 @@ def test_package_tree_carries_no_codename_jargon_or_hyphen_names():
 
 def test_name_gate_detects_seeded_violations(tmp_path):
     pkg = tmp_path / "pkg"
-    (pkg / "maiisi_engine").mkdir(parents=True)
+    (pkg / "maisi_engine").mkdir(parents=True)
     (pkg / "p1_utils-foo.py").write_text("", encoding="utf-8")
     (pkg / "l2_measurement.py").write_text("", encoding="utf-8")
     (pkg / "utils.py").write_text("", encoding="utf-8")
     (pkg / "clean_name.py").write_text("", encoding="utf-8")
-    (pkg / "maiisi_engine" / "utils_frozen.py").write_text("", encoding="utf-8")
+    (pkg / "maisi_engine" / "utils_frozen.py").write_text("", encoding="utf-8")
     flagged = {part for _rel, part, _why in package_name_violations(pkg)}
     assert flagged == {"p1_utils-foo.py", "l2_measurement.py", "utils.py"}

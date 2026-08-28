@@ -96,7 +96,7 @@ Quick reminder of the CT-specific knob most relevant to this skill:
 
 ### Hard constraints on `output_size` + `spacing`
 
-Validated by `check_input_ct` / `check_input_mr` (in `ctmr.infrastructure.maiisi_engine.inference_primitives`):
+Validated by `check_input_ct` / `check_input_mr` (in `ctmr.infrastructure.maisi_engine.inference_primitives`):
 
 - `output_size[0] == output_size[1]`
 - `output_size[0] ∈ {256, 384, 512}`

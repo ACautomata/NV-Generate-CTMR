@@ -69,9 +69,9 @@ import torch
 from monai.utils import set_determinism
 
 from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
-from ctmr.infrastructure.maiisi_engine.diff_model_infer import load_models, prepare_tensors
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import load_config, setup_logging
-from ctmr.infrastructure.maiisi_engine.img2img_infer import load_anchor_latent, run_img2img
+from ctmr.infrastructure.maisi_engine.diff_model_infer import load_models, prepare_tensors
+from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config, setup_logging
+from ctmr.infrastructure.maisi_engine.img2img_infer import load_anchor_latent, run_img2img
 
 INFER_SCHEMA = "brats-p3-stage0-infer/1"
 PAIRS_SCHEMA = "brats-p3-stage0-pairs/1"

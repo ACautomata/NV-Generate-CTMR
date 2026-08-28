@@ -18,7 +18,7 @@ drive: ``binarize_labels`` converts the 1-channel integer mask into the 8-channe
 binary ControlNet conditioning tensor, the CFG branch builds the tumor-free
 unconditional counterpart via ``remove_tumors``, and ``crop_img_body_mask``
 regularizes background voxels after decoding. The inner timestep loop is
-delegated to ``ctmr.infrastructure.maiisi_engine.utils_infer``. Relocated
+delegated to ``ctmr.infrastructure.maisi_engine.utils_infer``. Relocated
 verbatim from ``infer_image_from_mask.py`` (retired scripts layer, git history) / ``utils.py`` (retired scripts layer, git history)
 (git history is the provenance anchor).
 """
@@ -28,7 +28,7 @@ import logging
 import torch
 
 from ctmr.infrastructure.dataio.augmentation import remove_tumors
-from ctmr.infrastructure.maiisi_engine.utils_infer import run_controlnet_conditioned_image_dm
+from ctmr.infrastructure.maisi_engine.utils_infer import run_controlnet_conditioned_image_dm
 
 
 def binarize_labels(x: torch.Tensor, bits: int = 8) -> torch.Tensor:

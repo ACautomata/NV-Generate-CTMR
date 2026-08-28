@@ -10,10 +10,10 @@
 # limitations under the License.
 
 # ---------------------------------------------------------------------------
-# Vendored snapshot (issue #134, ADR-0015 §2 maiisi_engine): byte-for-byte
+# Vendored snapshot (issue #134, ADR-0015 §2 maisi_engine): byte-for-byte
 # copy of ``diff_model_infer.py`` (retired scripts layer, git history) with import lines rewritten to this package home.
 # Behavior must stay stable — machine-guarded by
-# tests/infrastructure/maiisi_engine/test_vendored_parity.py (AST equality).
+# tests/infrastructure/maisi_engine/test_vendored_parity.py (AST equality).
 # ---------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -32,10 +32,10 @@ from monai.networks.schedulers import RFlowScheduler
 from monai.utils import set_determinism
 from tqdm import tqdm
 
-from ctmr.infrastructure.maiisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
-from ctmr.infrastructure.maiisi_engine.inference_primitives import check_input_ct, dynamic_infer
-from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
-from ctmr.infrastructure.maiisi_engine.utils_infer import ReconModel
+from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
+from ctmr.infrastructure.maisi_engine.inference_primitives import check_input_ct, dynamic_infer
+from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
+from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
 
 
 def set_random_seed(seed: int) -> int:

@@ -48,7 +48,7 @@ import torch  # noqa: E402  (importorskip must precede the torch-dependent impor
 from monai.networks.schedulers import RFlowScheduler  # noqa: E402
 
 from ctmr.application.generation.cross_modal.train import TrainKernel  # noqa: E402
-from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance  # noqa: E402
+from ctmr.infrastructure.maisi_engine.instance_definition import define_instance  # noqa: E402
 
 pytestmark = [pytest.mark.torch, pytest.mark.gpu]
 

@@ -1,4 +1,4 @@
-"""Execution smoke for the vendored maiisi_engine (issue #134; standalone as of #143).
+"""Execution smoke for the vendored maisi_engine (issue #134; standalone as of #143).
 
 Same synthetic config/argv in, expected observable out — CPU-only real execution
 (torch-marked; the CI torch job runs this on plain CPU per ADR-0015 §6, which
@@ -28,25 +28,25 @@ import torch
 from monai.inferers.inferer import SlidingWindowInferer
 from monai.networks.schedulers import DDPMScheduler
 
-import ctmr.infrastructure.maiisi_engine  # noqa: F401  (import = new-home resolution smoke)
-from ctmr.infrastructure.maiisi_engine import diff_model_infer as engine_infer
-from ctmr.infrastructure.maiisi_engine import diff_model_setting as engine_setting
-from ctmr.infrastructure.maiisi_engine import diff_model_train as engine_train
-from ctmr.infrastructure.maiisi_engine.create_training_data import create_transforms as engine_create_transforms
-from ctmr.infrastructure.maiisi_engine.create_training_data import round_number as engine_round_number
-from ctmr.infrastructure.maiisi_engine.diff_model_train import load_filenames as engine_load_filenames
-from ctmr.infrastructure.maiisi_engine.inference_primitives import check_input_ct, check_input_mr, dynamic_infer, get_body_region_index_from_mask
-from ctmr.infrastructure.maiisi_engine.instance_definition import define_instance
-from ctmr.infrastructure.maiisi_engine.utils_infer import initialize_noise_latents
+import ctmr.infrastructure.maisi_engine  # noqa: F401  (import = new-home resolution smoke)
+from ctmr.infrastructure.maisi_engine import diff_model_infer as engine_infer
+from ctmr.infrastructure.maisi_engine import diff_model_setting as engine_setting
+from ctmr.infrastructure.maisi_engine import diff_model_train as engine_train
+from ctmr.infrastructure.maisi_engine.create_training_data import create_transforms as engine_create_transforms
+from ctmr.infrastructure.maisi_engine.create_training_data import round_number as engine_round_number
+from ctmr.infrastructure.maisi_engine.diff_model_train import load_filenames as engine_load_filenames
+from ctmr.infrastructure.maisi_engine.inference_primitives import check_input_ct, check_input_mr, dynamic_infer, get_body_region_index_from_mask
+from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
+from ctmr.infrastructure.maisi_engine.utils_infer import initialize_noise_latents
 
 pytestmark = pytest.mark.torch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 VENDORED_ENTRY_MODULES = [
-    "ctmr.infrastructure.maiisi_engine.diff_model_train",
-    "ctmr.infrastructure.maiisi_engine.diff_model_infer",
-    "ctmr.infrastructure.maiisi_engine.create_training_data",
+    "ctmr.infrastructure.maisi_engine.diff_model_train",
+    "ctmr.infrastructure.maisi_engine.diff_model_infer",
+    "ctmr.infrastructure.maisi_engine.create_training_data",
 ]
 
 
