@@ -185,6 +185,35 @@ def test_paired_compensation_compensates_against_the_in_memory_masks():
     assert case_a["centroid_wt_z_comp"] == pytest.approx(0.0)  # the -9 mm coordinate artefact is gone
 
 
+def test_paired_compensation_of_a_real_tumour_crossing_below_the_window():
+    """A real tumour extending below physical z=9 mm loses its out-of-window mass in the
+    compensated re-measurement, so the paired diff moves by MORE than the +9 mm
+    coordinate shift (sugon evidence: 10 such cases, worst MEN BraTS-MEN-00770-000 at
+    -15.77 mm extra). Designed window semantics, pinned here: the generated array has
+    no physical space below 9 mm for that real-side mass to be matched against."""
+    window = ZCropCompensation.overlap_window(GEN_RESAMPLED_Z, INSTRUMENT_Z)
+    paired = PairedCompensation(window, bootstrap_b=200)
+    rows = [
+        {"case": "CASE-X", "challenge": "GLI", "side": "real", "vol_wt_ml": "4.0", "cz_wt_mm": "9.5"},
+        {"case": "CASE-X", "challenge": "GLI", "side": "gen", "vol_wt_ml": "4.0", "cz_wt_mm": "16.5"},
+    ]
+    repo = InMemoryMaskRepository(
+        {
+            "CASE-X__real": _tumour_mask([(5, 15)]),  # physical [5, 15) mm: slices [5, 9) fall out of the window
+            "CASE-X__gen": _tumour_mask([(12, 22)]),  # array [12, 22) = physical [21, 31) mm, fully in-window
+        }
+    )
+    reading = paired.read_cases(rows, repo)[0]
+    assert reading["excluded"] is None
+    assert reading["vol_wt_rel_uncomp"] == pytest.approx(0.0)  # (4 - 4) / 4
+    assert reading["vol_wt_ml_real_comp"] == pytest.approx(2.4)  # 6 in-window layers x 400 voxels x 0.001
+    assert reading["vol_wt_rel_comp"] == pytest.approx(4.0 / 2.4 - 1.0)  # full gen slab vs truncated real
+    assert reading["centroid_wt_z_uncomp"] == pytest.approx(7.0)  # 16.5 - 9.5, raw index diff
+    assert reading["centroid_wt_z_comp"] == pytest.approx(14.0)  # gen physical 25.5 - in-window real 11.5
+    # the -2.0 extra shift is exactly the in-window rise of the real centroid (11.5 vs full 9.5)
+    assert reading["centroid_wt_z_comp"] == pytest.approx(reading["centroid_wt_z_uncomp"] + 9.0 - 2.0)
+
+
 def test_paired_compensation_keeps_empty_generation_in_volumes_but_excludes_centroid():
     """The judge's rule: a generated-side empty prediction stays in the volume distributions
     at rel diff -1.0; centroid axes need a non-empty mask on both sides."""
