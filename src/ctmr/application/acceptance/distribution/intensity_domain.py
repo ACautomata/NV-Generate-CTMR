@@ -449,12 +449,15 @@ class VaeReconstructor:
         env_config, model_config, model_def = self._paths
         args = load_config(env_config, model_config, model_def)
         autoencoder = define_instance(args, "autoencoder_def").to(self._device)
-        checkpoint = torch.load(args.trained_autoencoder_path, map_location=self._device, weights_only=True)
+        # weights_only=False on purpose: the published checkpoints carry monai
+        # metadata (TraceKeys) that the PyTorch 2.6+ allowlist rejects; these are
+        # controlled local artifacts the whole training/inference chain loads.
+        checkpoint = torch.load(args.trained_autoencoder_path, map_location=self._device, weights_only=False)
         if "unet_state_dict" in checkpoint:
             checkpoint = checkpoint["unet_state_dict"]
         autoencoder.load_state_dict(checkpoint)
         autoencoder.eval()
-        base = torch.load(self._scale_factor_path, map_location="cpu", weights_only=True)
+        base = torch.load(self._scale_factor_path, map_location="cpu", weights_only=False)
         self._scale = float(base["scale_factor"])
         self._autoencoder = autoencoder
 
@@ -509,11 +512,32 @@ class NiftiGenCaseRepository:
     """Reads the gen-pool cases: the retained generated int16 artifact, the
     frozen-instrument prediction (``<pred_root>/<CH>/<case>__gen.nii.gz``) and
     the real companion in the L2 holdout layout
-    (``<real_root>/<CH>/<case>/<case>-{t1c,seg}.nii.gz``)."""
+    (``<real_root>/<CH>/<case>/<case>-{t1c,seg}.nii.gz``). The prediction is
+    delivered in the instrument's zyx array convention: nibabel exposes the
+    written xyz layout, so a (240, 240, 155) array is transposed to
+    (155, 240, 240) before the grid mapping."""
 
     def __init__(self, real_root, pred_root):
         self._real_root = Path(real_root)
         self._pred_root = Path(pred_root)
+        self._challenge_dirs = {}
+
+    def _challenge_dir(self, challenge):
+        """The real-tree challenge directory: the L2 layout (<real-root>/<CH>)
+        first, then the official BraTS tree naming
+        (<real-root>/ASNR-MICCAI-BraTS2023-<CH>-Challenge-TrainingData)."""
+        if challenge not in self._challenge_dirs:
+            direct = self._real_root / challenge
+            if direct.is_dir():
+                self._challenge_dirs[challenge] = direct
+            else:
+                match = None
+                for child in sorted(self._real_root.iterdir()):
+                    if child.is_dir() and f"-{challenge}-" in child.name:
+                        match = child
+                        break
+                self._challenge_dirs[challenge] = match
+        return self._challenge_dirs[challenge]
 
     def gen_case(self, entry):
         import nibabel as nib
@@ -527,14 +551,23 @@ class NiftiGenCaseRepository:
                 return None
 
         pred = read(self._pred_root / challenge / f"{case}__gen.nii.gz")
-        real_dir = self._real_root / challenge / case
+        if pred is not None and pred.shape == (240, 240, 155):  # written xyz -> instrument zyx
+            pred = pred.transpose(2, 1, 0)
+        if pred is not None and pred.shape != INSTRUMENT_SHAPE_ZYX:
+            pred = None
+        challenge_dir = self._challenge_dir(challenge)
+        real = seg = None
+        if challenge_dir is not None:
+            real_dir = challenge_dir / case
+            real = read(real_dir / f"{case}-t1c.nii.gz")
+            seg = read(real_dir / f"{case}-seg.nii.gz")
         return {
             "case": case,
             "challenge": challenge,
             "gen": read(entry["samples"]["t1c"]["path"]),
-            "pred": pred if pred is None or pred.shape == INSTRUMENT_SHAPE_ZYX else None,
-            "real": read(real_dir / f"{case}-t1c.nii.gz"),
-            "seg": read(real_dir / f"{case}-seg.nii.gz"),
+            "pred": pred,
+            "real": real,
+            "seg": seg,
         }
 
 
