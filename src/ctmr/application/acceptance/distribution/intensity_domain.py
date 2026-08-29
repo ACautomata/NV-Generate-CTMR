@@ -57,8 +57,9 @@ C occupying slots 300..303). The sugon host recipe lives at
 area (controlled storage), never in git.
 
 Heavy dependencies (torch / monai / nibabel) are imported lazily inside the
-adapters on purpose: the statistics core must stay importable in the light test
-tier (ADR-0015 §6 two-tier surface), like the rest of the diagnostic family.
+adapters on purpose: unlike the sibling diagnostic jobs (which top-import
+SimpleITK or stay stdlib), this module's statistics core must stay importable
+without a deep-learning stack so the numpy-only unit tests carry no torch weight.
 
 P3 candidate reuse (#205 series-③ merge point): the emb-pool surface is the
 MONAI training list plus the shared fp32 embeddings -- phase-agnostic, so a P3
@@ -449,10 +450,11 @@ class VaeReconstructor:
         env_config, model_config, model_def = self._paths
         args = load_config(env_config, model_config, model_def)
         autoencoder = define_instance(args, "autoencoder_def").to(self._device)
-        # weights_only=False on purpose: the published checkpoints carry monai
-        # metadata (TraceKeys) that the PyTorch 2.6+ allowlist rejects; these are
-        # controlled local artifacts the whole training/inference chain loads.
-        checkpoint = torch.load(args.trained_autoencoder_path, map_location=self._device, weights_only=False)
+        checkpoint = torch.load(args.trained_autoencoder_path, map_location=self._device, weights_only=True)  # monitor.py precedent
+        # The base DM checkpoint is the one file that needs weights_only=False:
+        # the published release carries monai metadata (TraceKeys) that the
+        # PyTorch 2.6+ allowlist rejects (observed on sugon, torch 2.9).
+
         if "unet_state_dict" in checkpoint:
             checkpoint = checkpoint["unet_state_dict"]
         autoencoder.load_state_dict(checkpoint)
