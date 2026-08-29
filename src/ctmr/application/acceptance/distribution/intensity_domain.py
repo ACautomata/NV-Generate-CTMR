@@ -690,7 +690,9 @@ class IntensityDomainReport:
     @staticmethod
     def _aggregate_tiers(rows, side):
         """Cross-case distribution of every tier metric of one side; also returns the
-        pooled histogram (per-case counts summed over cases, shared edges)."""
+        pooled histogram (per-case counts summed over cases, shared edges). Cases
+        whose tier came up empty (e.g. no WT voxels: top_stats returned the all-None
+        n=0 block) contribute no per-metric value -- an absent reading, never a zero."""
         out, hist = {}, {}
         for tier in TIERS:
             per_metric = {"p99": [], "p99_9": [], "top05_mean": []}
@@ -699,7 +701,7 @@ class IntensityDomainReport:
             n_cases = 0
             for row in rows:
                 block = row[side][tier]
-                if block is None:
+                if block is None or block["p99"] is None:
                     continue
                 n_cases += 1
                 for metric in per_metric:
@@ -925,6 +927,12 @@ def main(argv=None, *, reconstructor_factory=None, grid=TRAINING_GRID, align=Non
     parser.add_argument("--scale-factor-path", default=None, help="base DM checkpoint carrying the reused scale_factor")
     parser.add_argument("--device", default="cpu", help="torch device for the VAE arms (cpu / cuda:0)")
     parser.add_argument("--limit", type=int, default=None, help="uniform stride subsample per pool (diagnostic scale)")
+    parser.add_argument(
+        "--gen-limit",
+        type=int,
+        default=None,
+        help="overrides --limit for the gen pool alone (its readings are the per-challenge k/n denominators, so full scope is cheap: pure CPU)",
+    )
     parser.add_argument("--bootstrap-b", type=int, default=10000, help="bootstrap resamples for the MAE CI90")
     parser.add_argument("--output-dir", required=True, help="sugon artifact area for the diagnostic report (never git)")
     parser.add_argument("--run-id", default=None, help="the candidate's run id, recorded into the report")
@@ -937,11 +945,10 @@ def main(argv=None, *, reconstructor_factory=None, grid=TRAINING_GRID, align=Non
 
     def stride(entries, limit):
         """Uniform stride subsample: keep the pool's position spread at diagnostic
-        scale instead of taking a head slice."""
-        if limit is None or limit >= len(entries):
+        scale instead of taking a head slice. ``None`` or 0 or less = no cap (full
+        scope; the gen pool passes 0 when --gen-limit is set empty)."""
+        if limit is None or limit <= 0 or limit >= len(entries):
             return entries
-        if limit <= 0:
-            return []
         indices = np.round(np.linspace(0, len(entries) - 1, limit)).astype(int)
         return [entries[i] for i in dict.fromkeys(indices)]
 
@@ -966,7 +973,7 @@ def main(argv=None, *, reconstructor_factory=None, grid=TRAINING_GRID, align=Non
 
     gen_rows = []
     if args.samples is not None:
-        entries = stride(json.loads(Path(args.samples).read_text()), args.limit)
+        entries = stride(json.loads(Path(args.samples).read_text()), args.gen_limit if args.gen_limit is not None else args.limit)
         repo = NiftiGenCaseRepository(args.real_root, args.pred_root)
         gen_rows = GenPool().read_cases(entries, repo, align=align)
         print(f"[OK] gen pool: {len(gen_rows)} cases -> aggregating")

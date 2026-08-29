@@ -281,6 +281,25 @@ def test_emb_pool_reads_both_arms_and_splits_mae_by_input_domain():
     assert missing["mae"] is None
 
 
+def test_aggregation_treats_an_empty_tumour_tier_as_absent_not_zero(tmp_path):
+    """A tumour-free case carries an all-None n=0 tumour block: the aggregate
+    must treat it as an absent reading (sugon round 3 crashed sorting None)."""
+    t1c = np.array([[[0.0, 0.5], [1.0, 2.0]]], dtype=float)
+    seg = np.zeros((1, 2, 2), dtype=np.uint8)  # no tumour labels at all
+    cases = {"c1": {"t1c": t1c, "seg": seg, "emb": np.full((1, 2, 2, 4), 0.5)}}
+    repo = _FakeRepo(train_cases=cases)
+    rows = EmbPool().read_cases([{"case": "c1", "sub": "GLI"}], repo, _FakeRecon(), _identity_resize)
+    report = IntensityDomainReport("t.json", "s.json")
+    aggregate = report._aggregate_emb_pool(rows)
+    assert aggregate["n_cases"] == 1
+    assert aggregate["real_native"]["brain"]["p99"]["n_cases"] == 1
+    assert aggregate["real_native"]["tumour"]["p99"]["n_cases"] == 0
+    assert aggregate["real_native"]["tumour"]["p99"]["median"] is None
+    json_path, _md_path = report.write(rows, [], tmp_path)  # the report must not trip over the empty tier
+    payload = json.loads(Path(json_path).read_text())
+    assert payload["emb_pool"]["aggregate"]["recon"]["tumour"]["top05_mean"]["n_cases"] == 0
+
+
 def test_gen_pool_counts_over_1000_and_tiers_generation_statistics():
     gen = np.array([[[0, 1500], [500, 1200]]], dtype=np.int16)
     pred = np.array([[[0, 3], [0, 0]]], dtype=np.uint8)  # ET on the 1500 voxel (already aligned)

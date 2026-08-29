@@ -13,6 +13,7 @@
 # 用法:
 #   bash deploy/jobs/run_intensity_domain_c.sh            # 两池全量(CPU 慢,DCU 快)
 #   LIMIT=200 bash deploy/jobs/run_intensity_domain_c.sh  # 每池均匀抽样 200 例
+#   LIMIT=200 GEN_LIMIT= bash deploy/jobs/run_intensity_domain_c.sh  # emb 抽样 200,gen 全量
 #   SKIP_EMB_POOL=1 bash deploy/jobs/run_intensity_domain_c.sh   # 只跑 gen 池(零推理)
 #
 # 环境变量(均可覆写,默认为 P1 台账路径):
@@ -31,6 +32,7 @@
 #                     默认 /root/private_data/nv-dcu-smoke/NV-Generate-CTMR/models/diff_unet_3d_rflow-mr-brain_v1.pt)
 #   DEVICE            VAE 臂设备(cpu 或 cuda:0;DCU 上用 cuda:0)
 #   LIMIT             每池均匀抽样例数(空=全量)
+#   GEN_LIMIT         覆盖 gen 池抽样例数(空=跟随 LIMIT;gen 池纯 CPU,建议全量)
 #   BOOTSTRAP_B       bootstrap 重采样数(默认 10000)
 #   OUTPUT_DIR        报告工件输出目录(默认 $P1_ROOT/l2_acceptance/diagnostics/intensity_domain;
 #                     sugon 工件区,不入 git)
@@ -89,6 +91,14 @@ fi
 
 LIMIT_ARGS=()
 [ -n "${LIMIT:-}" ] && LIMIT_ARGS=(--limit "$LIMIT")
+# GEN_LIMIT 非空=按例数抽样;置空串=显式全量(传 0,模块把 <=0 视为不设限)。
+if [ -n "${GEN_LIMIT+x}" ]; then
+    if [ -n "$GEN_LIMIT" ]; then
+        LIMIT_ARGS+=(--gen-limit "$GEN_LIMIT")
+    else
+        LIMIT_ARGS+=(--gen-limit 0)
+    fi
+fi
 
 echo "============================================"
 echo "诊断作业 C:t1c 强度域甄别(#208)"
