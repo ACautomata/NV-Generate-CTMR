@@ -424,12 +424,13 @@ class GenPool:
 class VaeReconstructor:
     """The frozen autoencoder_v1 encode/decode adapter (both arms share it).
 
-    Encoding mirrors ``create_training_data`` (fp32, single sliding window --
-    the 320x320x160 roi covers the whole training grid, so the windowed call
-    degenerates to one forward); decoding mirrors the ReconModel semantics
+    Encoding mirrors ``create_training_data`` (single sliding window -- the
+    320x320x160 roi covers the whole training grid, so the windowed call
+    degenerates to one forward -- under the chain's own autocast context, see
+    ``_autocast``); decoding mirrors the ReconModel semantics
     (``z / scale_factor -> decode_stage_2_outputs``). Latents keep the training
-    artifacts' channels-last layout. The scale factor is read from the base DM
-    checkpoint -- training reused it and never recomputed it.
+    artifacts' channels-last fp32 layout. The scale factor is read from the
+    base DM checkpoint -- training reused it and never recomputed it.
     """
 
     def __init__(self, env_config, model_config, model_def, scale_factor_path, device="cpu"):
@@ -454,7 +455,6 @@ class VaeReconstructor:
         # The base DM checkpoint is the one file that needs weights_only=False:
         # the published release carries monai metadata (TraceKeys) that the
         # PyTorch 2.6+ allowlist rejects (observed on sugon, torch 2.9).
-
         if "unet_state_dict" in checkpoint:
             checkpoint = checkpoint["unet_state_dict"]
         autoencoder.load_state_dict(checkpoint)
@@ -463,23 +463,39 @@ class VaeReconstructor:
         self._scale = float(base["scale_factor"])
         self._autoencoder = autoencoder
 
+    def _autocast(self):
+        """The training encode chain's own mixed-precision execution context.
+
+        ``create_training_data`` encodes under ``torch.amp.autocast("cuda")``:
+        the pinned ``norm_float16`` config hands the group-norm output to the
+        next conv as fp16, which only lands on a matching-precision conv inside
+        autocast -- a bare fp32 forward crashes there, DCU and CPU alike. CPU
+        fallbacks mirror the same regime with bf16 (the CPU autocast dtype).
+        """
+        import torch
+
+        if self._device.startswith("cuda"):
+            return torch.amp.autocast("cuda")
+        return torch.amp.autocast("cpu", dtype=torch.bfloat16)
+
     def encode(self, image):
         import torch
 
         self._ensure_loaded()
         x = torch.from_numpy(np.ascontiguousarray(image, dtype=np.float32))[None, None].to(self._device)
-        with torch.inference_mode():
+        with torch.inference_mode(), self._autocast():
             z = self._autoencoder.encode_stage_2_inputs(x)
-        return z.squeeze(0).permute(1, 2, 3, 0).cpu().numpy()  # channels-last, like the stored embeddings
+        # channels-last, like the stored embeddings, and fp32 like their dtype
+        return z.squeeze(0).permute(1, 2, 3, 0).cpu().numpy().astype(np.float32)
 
     def decode(self, latent):
         import torch
 
         self._ensure_loaded()
         z = torch.from_numpy(np.ascontiguousarray(latent, dtype=np.float32)).permute(3, 0, 1, 2)[None].to(self._device)
-        with torch.inference_mode():
+        with torch.inference_mode(), self._autocast():
             recon = self._autoencoder.decode_stage_2_outputs(z / self._scale)
-        return recon.squeeze().cpu().numpy()
+        return recon.squeeze().cpu().numpy().astype(np.float32)
 
 
 class NiftiTrainCaseRepository:
