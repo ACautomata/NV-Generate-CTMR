@@ -573,6 +573,9 @@ class NiftiGenCaseRepository:
             pred = pred.transpose(2, 1, 0)
         if pred is not None and pred.shape != INSTRUMENT_SHAPE_ZYX:
             pred = None
+        gen = read(entry["samples"]["t1c"]["path"])
+        if gen is not None and gen.shape == (256, 256, 128):  # written xyz -> zyx, same as the prediction
+            gen = gen.transpose(2, 1, 0)
         challenge_dir = self._challenge_dir(challenge)
         real = seg = None
         if challenge_dir is not None:
@@ -582,7 +585,7 @@ class NiftiGenCaseRepository:
         return {
             "case": case,
             "challenge": challenge,
-            "gen": read(entry["samples"]["t1c"]["path"]),
+            "gen": gen,
             "pred": pred,
             "real": real,
             "seg": seg,
