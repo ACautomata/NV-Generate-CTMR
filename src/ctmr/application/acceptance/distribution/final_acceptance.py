@@ -89,9 +89,10 @@ from ctmr.application.acceptance.distribution.measurement_table import (
     AcceptanceError,
     MeasurementTable,
 )
-from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap, RelativeDifference
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
 from ctmr.domain.vocabulary import REGION_NAMES as REGIONS
+from ctmr.domain.vocabulary import WilsonUpper
 
 PLAN_SCHEMA = "l2-final-acceptance-plan/1"
 REPORT_SCHEMA = "l2-final-acceptance-report/1"
@@ -460,10 +461,11 @@ class PredictScriptWriter:
 
 # ── measurement table & statistics ──────────────────────────────────────
 # The measurement-table CSV protocol (MEASUREMENT_FIELDS / MeasurementTable)
-# and the statistics primitives (ClusterBootstrap) are shared vocabulary:
-# they live in measurement_table / statistics (ADR-0017 decision 1) and are
-# imported above; the judgement chain below is their only in-package judge-side
-# consumer.
+# and the statistics primitives (RelativeDifference / ClusterBootstrap) are
+# shared vocabulary: they live in measurement_table / statistics (ADR-0017
+# decision 1) and are imported above; the Wilson bound draws on the vocabulary
+# leaf's WilsonUpper (decision 4). The judgement chain below is their only
+# in-package judge-side consumer.
 
 
 class QuantityFamily:
@@ -495,9 +497,10 @@ class QuantityFamily:
         if real is None or gen is None:
             return None, "undefined_measurement"
         if self.relative:
-            if real == 0:
+            diff = RelativeDifference.of(gen, real)
+            if diff is None:  # real denominator zero: exclusion policy stays judge-side
                 return None, "real_denominator_zero"
-            return (gen - real) / real, None
+            return diff, None
         return gen - real, None
 
 
@@ -586,20 +589,12 @@ class FailureGate:
             "n_failed": n_failed,
             "breakdown": breakdown,
             "n_failed_by_side": by_side,
-            # Observed-side Wilson 95% upper, same formula as calibration (ADR-0002):
-            # diagnostic only -- any single failure already forces undecided.
-            "wilson_95_upper": FailureGate.wilson_upper(n_failed, n_obs) if n_obs else None,
+            # Observed-side Wilson 95% upper (the vocabulary leaf's single
+            # definition, ADR-0017 decision 4): diagnostic only -- any single
+            # failure already forces undecided. The call site keeps its own
+            # None sentinel (the registered division of labour).
+            "wilson_95_upper": WilsonUpper.of(n_failed, n_obs) if n_obs else None,
         }
-
-    Z95 = 1.959963984540054
-
-    @staticmethod
-    def wilson_upper(k, n):
-        p = k / n
-        denom = 1 + FailureGate.Z95**2 / n
-        center = (p + FailureGate.Z95**2 / (2 * n)) / denom
-        half = (FailureGate.Z95 / denom) * math.sqrt(p * (1 - p) / n + FailureGate.Z95**2 / (4 * n**2))
-        return min(1.0, center + half)
 
 
 class ChallengeJudge:

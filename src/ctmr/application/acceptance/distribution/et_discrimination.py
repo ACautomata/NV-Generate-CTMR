@@ -57,7 +57,7 @@ from ctmr.application.acceptance.distribution.challenge_registry import (
     HOLDOUT_QUOTAS,
 )
 from ctmr.application.acceptance.distribution.measurement_table import AcceptanceError, MeasurementTable
-from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap, RelativeDifference
 from ctmr.domain.measurement import WilsonUpper
 
 # Diagnostic bootstrap seeds share job A's namespace discipline (zcrop_
@@ -95,15 +95,10 @@ class EtDiscrimination:
 
     @staticmethod
     def rel_diff(gen_vol, real_vol):
-        """(gen - real) / real; the real denominator must exist and be positive.
-
-        A generated-side empty ET stays in the distribution at -1.0 (protocol
-        §4); a real-side zero leaves the quantity undefined -- the pairing
-        classes capture that shape instead (gen_only / neither).
-        """
-        if gen_vol is None or real_vol is None or real_vol <= 0:
-            return None
-        return (gen_vol - real_vol) / real_vol
+        """(gen - real) / real -- ``statistics.RelativeDifference.of``, the shared
+        definition; this name stays for the reading conventions (see ``rel_diff``
+        in the report payload) and the tests pinned on it."""
+        return RelativeDifference.of(gen_vol, real_vol)
 
     @staticmethod
     def pair_class(gen_vol, real_vol):

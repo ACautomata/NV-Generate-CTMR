@@ -555,6 +555,70 @@ def test_failure_gate_counts_by_side_and_carries_a_diagnostic_wilson_bound():
     assert 0 < audit["wilson_95_upper"] <= 1.0
 
 
+# ── frozen-fixture replay (#231 convergence gate) ───────────────────────
+
+
+def _replay_scenarios():
+    """The fifteen frozen synthetic fixtures of the replay record: pass/fail/exclusion
+    TOST paths, P2 round trip (pass / collapsed / vacuous), P3 case clusters, the
+    failure-gate audits and every challenge's nominal P1 verdict."""
+
+    def six(ch):
+        return [f"FIX{ch}-0200-{i:03d}" for i in range(6)]
+
+    return {
+        "p1_gli_pass": _judge(
+            "P1",
+            "GLI",
+            _challenge_rows("GLI", six("GLI"), "P1", mutate=lambda i, c, a, r, g: g.update(vol_wt_ml="51.0", vol_tc_ml="30.5", vol_et_ml="10.2")),
+        ),
+        "p1_gli_zero_real_et": _judge(
+            "P1", "GLI", _challenge_rows("GLI", six("GLI"), "P1", mutate=lambda i, c, a, r, g: r.update(vol_et_ml="0.0", et_wt="") if i < 3 else None)
+        ),
+        "p1_gli_bias_fail": _judge("P1", "GLI", _challenge_rows("GLI", six("GLI"), "P1", mutate=lambda i, c, a, r, g: g.update(vol_wt_ml="80.0"))),
+        "p1_mets_bias_pass": _judge(
+            "P1", "METS", _challenge_rows("METS", six("METS"), "P1", mutate=lambda i, c, a, r, g: g.update(vol_wt_ml="80.0"))
+        ),
+        "p2_gli_pass": _judge("P2", "GLI", _challenge_rows("GLI", six("GLI"), "P2")),
+        "p2_gli_collapsed_fail": _judge(
+            "P2", "GLI", _challenge_rows("GLI", six("GLI"), "P2", mutate=lambda i, c, a, r, g: g.update(cond_dice_et="0.10"))
+        ),
+        "p2_mets_vacuous": _judge(
+            "P2", "METS", _challenge_rows("METS", six("METS"), "P2", mutate=lambda i, c, a, r, g: g.update(cond_dice_wt="0.0"))
+        ),
+        "p3_ssa_pass": _judge(
+            "P3",
+            "SSA",
+            _challenge_rows("SSA", [f"FIXSSA-0200-{i:03d}" for i in range(5)], "P3", mutate=lambda i, c, a, r, g: g.update(vol_wt_ml="52.0")),
+        ),
+        "gate_two_fail": FailureGate.audit(
+            [
+                {"side": "gen", "input_fail": "1", "run_fail": "", "hier_viol": ""},
+                {"side": "real", "input_fail": "", "run_fail": "1", "hier_viol": ""},
+                {"side": "gen", "input_fail": "", "run_fail": "", "hier_viol": ""},
+            ]
+        ),
+        "gate_one_of_three": FailureGate.audit(
+            [
+                {"side": "gen", "input_fail": "1", "run_fail": "", "hier_viol": ""},
+                {"side": "gen", "input_fail": "", "run_fail": "", "hier_viol": ""},
+                {"side": "gen", "input_fail": "", "run_fail": "", "hier_viol": ""},
+            ]
+        ),
+        **{f"p1_{ch.lower()}_nominal": _judge("P1", ch, _challenge_rows(ch, six(ch), "P1")) for ch in CHALLENGES},
+    }
+
+
+def test_frozen_fixture_replay_matches_the_pre_convergence_record():
+    """Replaying the frozen synthetic fixtures must reproduce the recorded
+    pre-convergence verdict numbers exactly: the rel-diff / Wilson shared-primitive
+    convergence (#231) may not move any number the judge emits. The byte-level
+    rerun of the frozen aggregates themselves lives with the sugon integration
+    window (#233); this fixture is the local replay of the judgement inputs."""
+    record = json.loads((Path(__file__).parent / "judge_replay_231.json").read_text())
+    assert _replay_scenarios() == record
+
+
 def test_measurement_table_roundtrip_preserves_the_column_contract(tmp_path):
     rows = [_measurement_row("FIXTC-0000-000__gen", "GLI", "FIXTC-0000-000", "gen")]
     path = MeasurementTable.write(rows, tmp_path / "table.csv")

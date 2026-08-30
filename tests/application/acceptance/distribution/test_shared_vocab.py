@@ -10,16 +10,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Convergence-gate tests for the L2 shared vocabulary (ADR-0017 decisions 1/2, #229).
+"""Convergence-gate tests for the L2 shared vocabulary (ADR-0017 decisions 1/2/4, #229 + #231).
 
 The judge's shared vocabulary lives in three stdlib-only modules inside the
 distribution package -- ``measurement_table`` (measurement-face vocabulary +
-the wide 27-column CSV protocol), ``statistics`` (quantile read-out + cluster
-bootstrap) and ``challenge_registry`` (challenges / holdout quotas / unified
-seed band / ADR-0002 envelope literals) -- and ``final_acceptance`` imports
-them instead of hosting them. Gates: each module's dependency closure stays
-third-party-free (the #222 meta-path probe, with its negative control), the
-judge's names are the shared modules' objects (imports, not copies), the
+the wide 27-column CSV protocol), ``statistics`` (the rel-diff primitive,
+quantile read-out + cluster bootstrap) and ``challenge_registry`` (challenges /
+holdout quotas / unified seed band / ADR-0002 envelope literals) -- and
+``final_acceptance`` imports them instead of hosting them. Gates: each module's
+dependency closure stays third-party-free (the #222 meta-path probe, with its
+negative control) -- the judge's own closure included (ADR-0017 decision 2:
+any machine can render the verdict) --, the judge's names are the shared
+modules' objects (imports, not copies), the judge hosts no private statistics
+primitive any more (the Wilson formula copy and the inlined rel-diff branch
+converged onto the shared definitions, #231), the judge's ctmr import face
+stays registered (the judgement chain draws only on the vocabulary leaf and
+the shared modules; the stdlib-only assembly/CLI pieces are enumerated), the
 frozen values stay pinned at their new home, the judge's region tuple derives
 from the vocabulary leaf, and no module outside the judge and the shared
 vocabulary imports the judge any more (an AST-based package-wide guard: the
@@ -85,6 +91,7 @@ def test_shared_vocabulary_dependency_closures_are_third_party_free():
         "ctmr.application.acceptance.distribution.measurement_table",
         "ctmr.application.acceptance.distribution.statistics",
         "ctmr.application.acceptance.distribution.challenge_registry",
+        "ctmr.application.acceptance.distribution.final_acceptance",  # the judge itself (ADR-0017 decision 2)
     ):
         probe = run_closure_probe(module_name)
         assert probe.returncode == 0, probe.stderr
@@ -107,6 +114,8 @@ def test_judge_names_are_the_shared_modules_objects_not_copies():
     assert final_acceptance.CHANNEL_SUFFIXES is measurement_table.CHANNEL_SUFFIXES
     assert not hasattr(final_acceptance, "MEASUREMENT_FIELDS")
     assert final_acceptance.ClusterBootstrap is statistics.ClusterBootstrap
+    assert final_acceptance.RelativeDifference is statistics.RelativeDifference
+    assert final_acceptance.WilsonUpper is vocabulary.WilsonUpper
     assert final_acceptance.CHALLENGES is challenge_registry.CHALLENGES
     assert final_acceptance.HOLDOUT_QUOTAS is challenge_registry.HOLDOUT_QUOTAS
     assert final_acceptance.BOOTSTRAP_B is challenge_registry.BOOTSTRAP_B
@@ -131,6 +140,94 @@ def test_shared_registry_pins_the_frozen_values():
 def test_judge_region_tuple_derives_from_the_vocabulary_leaf():
     assert final_acceptance.REGIONS is vocabulary.REGION_NAMES
     assert not hasattr(final_acceptance, "REGION_LABELS")  # the mirror literal lost its reason to exist
+
+
+# ── the judge hosts no private statistics primitive (#231, ADR-0017 decision 4) ──
+
+# The ctmr modules the judge may import: the judgement chain draws ONLY on the
+# vocabulary leaf and the shared modules; the stdlib-only assembly/CLI pieces it
+# binds to (instrument spec, contract artifacts/binding) are registered here --
+# anything else in ctmr must stay out of the judge's import face until a guard
+# change registers it deliberately.
+JUDGE_IMPORT_FACE = frozenset(
+    {
+        "ctmr.domain.vocabulary",
+        "ctmr.domain.instrument_spec",
+        "ctmr.application.acceptance.contract.artifacts",
+        "ctmr.application.acceptance.contract.binding",
+        "ctmr.application.acceptance.distribution.measurement_table",
+        "ctmr.application.acceptance.distribution.statistics",
+        "ctmr.application.acceptance.distribution.challenge_registry",
+    }
+)
+
+
+# AST-level markers of the judge's former private statistics primitives: the
+# Wilson formula copy (its frozen z-value and its function) and the inlined
+# rel-diff branch. Their single homes are the vocabulary leaf's ``WilsonUpper``
+# and ``statistics.RelativeDifference``. Parsing (not text matching) keeps
+# docstring or comment mentions of the names from tripping the guard.
+def private_statistics_copies(source):
+    """AST markers of private statistics-primitive copies present in one source text."""
+    markers = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "Z95" for target in node.targets):
+            markers.append("assignment to Z95 (the frozen Wilson z-value lives only in the vocabulary leaf)")
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "wilson_upper":
+            markers.append("def wilson_upper (the Wilson formula copy lives only in the vocabulary leaf's WilsonUpper.of)")
+        if (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Div)
+            and isinstance(node.left, ast.BinOp)
+            and isinstance(node.left.op, ast.Sub)
+            and isinstance(node.right, ast.Name)
+            and node.right.id == "real"
+        ):
+            markers.append("inlined (gen - real) / real (the rel-diff primitive lives in statistics.RelativeDifference.of)")
+    return markers
+
+
+def test_judge_hosts_no_private_statistics_primitive_copies():
+    source = Path(final_acceptance.__file__).read_text(encoding="utf-8")
+    assert private_statistics_copies(source) == []
+
+
+def test_no_private_primitives_guard_detects_a_seeded_copy():
+    seeded = "class FailureGate:\n    Z95 = 1.959963984540054\n\n    def wilson_upper(k, n):\n        return (gen - real) / real\n"
+    markers = private_statistics_copies(seeded)
+    assert len(markers) == 3 and all("vocabulary leaf" in marker or "RelativeDifference" in marker for marker in markers)
+
+
+def judge_ctmr_import_roots(source):
+    """Every ``ctmr``-rooted module path the source imports (absolute import shapes)."""
+    roots = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and not node.level:
+            module = node.module or ""
+            if module == "ctmr" or module.startswith("ctmr."):
+                roots.add(module)
+        elif isinstance(node, ast.Import):
+            roots.update(alias.name for alias in node.names if alias.name == "ctmr" or alias.name.startswith("ctmr."))
+    return roots
+
+
+def test_judge_import_face_stays_registered():
+    source = Path(final_acceptance.__file__).read_text(encoding="utf-8")
+    unregistered = judge_ctmr_import_roots(source) - JUDGE_IMPORT_FACE
+    assert not unregistered, f"the judge imports ctmr modules outside its registered face: {sorted(unregistered)}"
+
+
+def test_judge_import_face_guard_detects_a_seeded_violation():
+    seeded = "from ctmr.application.acceptance.distribution.html_report import HtmlReport\n"
+    assert judge_ctmr_import_roots(seeded) - JUDGE_IMPORT_FACE == {"ctmr.application.acceptance.distribution.html_report"}
+
+
+def test_relative_difference_primitive_is_the_single_rel_diff_definition():
+    of = statistics.RelativeDifference.of
+    assert of(2.0, 4.0) == -0.5
+    assert of(0.0, 4.0) == -1.0  # a generated-side empty prediction stays in the distribution (protocol §4)
+    assert of(2.0, 0.0) is None  # a non-positive real denominator leaves the quantity undefined
+    assert of(None, 4.0) is None and of(2.0, None) is None  # undefined sides never reach the arithmetic
 
 
 def imports_the_judge(node):

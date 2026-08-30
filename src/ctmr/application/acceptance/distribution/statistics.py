@@ -11,14 +11,18 @@
 # limitations under the License.
 
 """L2 shared vocabulary: pure statistics primitives and the cluster bootstrap
-(ADR-0017 decision 1, issue #229).
+(ADR-0017 decision 1, issues #229 + #231).
 
 Moved verbatim out of the terminal-acceptance judge (``final_acceptance``),
-which now imports this module. ``ClusterBootstrap.quantile`` is the shared
-quantile read-out (linear interpolation, ``index = q*(n-1)`` -- the same rule
-as the calibration side's ``numpy.quantile`` defaults); the bootstrap itself
-resamples cases as clusters. RNG / bit-stream discipline is registered on the
-class below.
+which now imports this module. ``RelativeDifference.of`` is the shared
+``(gen - real) / real`` read-out -- the judge's relative TOST quantity families
+and the ET-discrimination job draw it from here, while the exclusion/pairing
+policies stay with the callers (the judge's ``real_denominator_zero``
+exclusion, the diagnostic job's pairing classes). ``ClusterBootstrap.quantile``
+is the shared quantile read-out (linear interpolation, ``index = q*(n-1)`` --
+the same rule as the calibration side's ``numpy.quantile`` defaults); the
+bootstrap itself resamples cases as clusters. RNG / bit-stream discipline is
+registered on the class below.
 
 The dependency closure is third-party-free -- stdlib only, numpy/scipy/torch
 unreachable -- registered by the import-face probe in
@@ -27,6 +31,24 @@ unreachable -- registered by the import-face probe in
 
 import math
 import random
+
+
+class RelativeDifference:
+    """Relative difference ``(gen - real) / real``, the one definition (ADR-0017 decision 1).
+
+    The real-side denominator must exist and be positive: a generated-side
+    empty prediction stays in the distributions at -1.0 (protocol §4), while a
+    non-positive (or undefined) real side leaves the quantity undefined --
+    ``None``. The callers own what an undefined difference means: the judge's
+    quantity families exclude it as ``real_denominator_zero``, the ET
+    discrimination job captures the shape in its pairing classes.
+    """
+
+    @classmethod
+    def of(cls, gen_vol, real_vol):
+        if gen_vol is None or real_vol is None or real_vol <= 0:
+            return None
+        return (gen_vol - real_vol) / real_vol
 
 
 class ClusterBootstrap:
