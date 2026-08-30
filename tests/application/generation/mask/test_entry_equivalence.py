@@ -206,7 +206,12 @@ def _reference_sample_parser():
 
 TRAIN_MIGRATED = TrainCli("description", stage="p2").parse
 ENTRY_TABLE = {
-    "train": (FINETUNE_ARGV + ["--no_amp", "--amp_dtype", "fp16"], _reference_finetune_parser, TRAIN_MIGRATED, "ctmr.application.generation.mask.train"),
+    "train": (
+        FINETUNE_ARGV + ["--no_amp", "--amp_dtype", "fp16"],
+        _reference_finetune_parser,
+        TRAIN_MIGRATED,
+        "ctmr.application.generation.mask.train",
+    ),
     "dev-eval reference": (DEV_EVAL_REFERENCE_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
     "dev-eval watch": (DEV_EVAL_WATCH_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
     "dev-eval select": (DEV_EVAL_SELECT_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),

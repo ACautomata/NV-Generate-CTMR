@@ -239,7 +239,12 @@ def _add_generation_flags(parser, with_stage0_pairs):
 
 TRAIN_MIGRATED = TrainCli("description", stage="p3").parse
 ENTRY_TABLE = {
-    "train": (FINETUNE_ARGV + ["--no_amp", "--amp_dtype", "fp16"], _reference_finetune_parser, TRAIN_MIGRATED, "ctmr.application.generation.cross_modal.train"),
+    "train": (
+        FINETUNE_ARGV + ["--no_amp", "--amp_dtype", "fp16"],
+        _reference_finetune_parser,
+        TRAIN_MIGRATED,
+        "ctmr.application.generation.cross_modal.train",
+    ),
     "dev-eval reference": (DEV_EVAL_REFERENCE_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
     "dev-eval watch": (DEV_EVAL_WATCH_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
     "dev-eval select": (DEV_EVAL_SELECT_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
