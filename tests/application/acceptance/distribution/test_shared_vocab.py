@@ -173,7 +173,7 @@ def private_statistics_copies(source):
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "Z95" for target in node.targets):
             markers.append("assignment to Z95 (the frozen Wilson z-value lives only in the vocabulary leaf)")
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "wilson_upper":
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "wilson_upper":
             markers.append("def wilson_upper (the Wilson formula copy lives only in the vocabulary leaf's WilsonUpper.of)")
         if (
             isinstance(node, ast.BinOp)
