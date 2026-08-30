@@ -47,6 +47,7 @@ from ctmr.domain.grid import (
     InstrumentGridAdapter,
 )
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
+from ctmr.domain.measurement import HierarchyChecker
 
 pytestmark = pytest.mark.torch
 
@@ -157,6 +158,39 @@ def test_predict_uses_the_canonical_instrument_argv(tmp_path, monkeypatch):
         # the child process gets the module's src tree on PYTHONPATH (process-local
         # sys.path entries do not reach a fresh child process)
         assert str(SRC_ROOT) in captured["env"]["PYTHONPATH"]
+
+
+def test_l2_trend_hierarchy_count_matches_the_canonical_checker(tmp_path):
+    """#223 convergence: the P1 dev monitor's per-case ``hier_viol`` equals
+    ``HierarchyChecker.violates`` on crafted inputs (the canonical containment
+    single expression, ADR-0010 decision 3) -- the dev chain and the terminal-
+    acceptance chain share one measurement semantics. run_fail rows keep their
+    placeholder shape."""
+    well_formed = np.zeros((4, 4, 4), dtype=np.uint8)
+    well_formed[0, 0, 0] = 3
+    well_formed[0, 0, 1] = 1
+    escaped = well_formed.copy()
+    escaped[2, 2, 2] = 4
+    preds = {"well_formed": well_formed, "domain_escape": escaped}
+    pred_dir = tmp_path / "preds"
+    pred_dir.mkdir()
+    for name, array in preds.items():
+        sitk.WriteImage(sitk.GetImageFromArray(array), str(pred_dir / f"CASE-{name}.nii.gz"))
+
+    cohort = [{"sub": "GLI", "case": "CASE-well_formed"}, {"sub": "GLI", "case": "CASE-domain_escape"}]
+    runner = L2TrendRunner(None, None, None)
+    rows = runner.measure(cohort, tmp_path, pred_dir)
+
+    by_case = {row["case"]: row for row in rows}
+    for name, array in preds.items():
+        row = by_case[f"CASE-{name}"]
+        assert row["run_fail"] is False, name
+        assert row["hier_viol"] == HierarchyChecker.violates(array), name
+    assert by_case["CASE-domain_escape"]["hier_viol"] is True  # the equivalence is not vacuous
+    assert not by_case["CASE-well_formed"]["hier_viol"]
+    # the run_fail placeholder row keeps its shape (call-site concern, not measurement)
+    fail_rows = runner.measure([{"sub": "GLI", "case": "MISSING"}], tmp_path, pred_dir)
+    assert fail_rows == [{"sub": "GLI", "case": "MISSING", "run_fail": True}]
 
 
 def test_trend_preprocess_lands_on_the_pinned_engine_composition(tmp_path):

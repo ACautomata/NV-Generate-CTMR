@@ -64,6 +64,7 @@ import SimpleITK as sitk
 
 from ctmr.domain.grid import InstrumentGridAdapter
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
+from ctmr.domain.measurement import REGIONS, DiceScore, HierarchyChecker, RegionMasks, WilsonUpper
 
 # ── 常量 ──────────────────────────────────────────────────────────────────
 
@@ -469,10 +470,12 @@ class MetricsCalculator:
     - R_fail_synth：合成样本上的输入失败率 + 层级违反率
     - R_fail_real：真实校准 R_fail（从 ADR-0002 载入）
     - 适用性判定：R_fail_synth > R_fail_real + margin → undecided
-    """
 
-    REGIONS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
-    Z95 = 1.959963984540054
+    测量原语（区域词汇、Wilson、Dice、层级违反判定）全部改接 canonical
+    测量模块 ``ctmr.domain.measurement``（#223，ADR-0010 决定 5/6）——
+    合成域链与终验链共用同一测量语义；input_fail/run_fail 判定链与文件
+    IO 属调用方职责，留原地。
+    """
 
     def evaluate_case(
         self,
@@ -513,41 +516,23 @@ class MetricsCalculator:
             result["run_fail"] = True
             return result
 
-        # 3. 层级违反检查（ET⊆TC⊆WT）
-        wt_pred = np.isin(pred_arr, (1, 2, 3))
-        tc_pred = np.isin(pred_arr, (1, 3))
-        et_pred = pred_arr == 3
-
-        # 层级约束：ET ⊆ TC ⊆ WT
-        if et_pred.sum() > 0 and not np.all(et_pred[tc_pred] if tc_pred.sum() > 0 else True):
-            # ET 中有像素不在 TC 中
-            et_outside_tc = et_pred & ~tc_pred
-            if et_outside_tc.sum() > 0:
-                result["hier_viol"] = True
-        if tc_pred.sum() > 0 and not np.all(tc_pred[wt_pred]):
-            # TC 中有像素不在 WT 中
-            tc_outside_wt = tc_pred & ~wt_pred
-            if tc_outside_wt.sum() > 0:
-                result["hier_viol"] = True
-
-        # 值域检查
-        if not np.isin(pred_arr, (0, 1, 2, 3)).all():
-            result["hier_viol"] = True
+        # 3. 层级违反检查（ET⊆TC⊆WT；canonical 单表达式，无前置守卫——#223 改接）
+        result["hier_viol"] = HierarchyChecker.violates(pred_arr)
 
         # 4. 逐区域测量（如果有 GT）
         if gt_dir is not None:
             gt_path = gt_dir / f"{case_id}.nii.gz"
             if gt_path.exists():
                 gt_arr = sitk.GetArrayFromImage(sitk.ReadImage(str(gt_path))).astype(np.uint8)
-                for region, labels in self.REGIONS.items():
-                    gt_mask = np.isin(gt_arr, labels)
-                    pred_mask = np.isin(pred_arr, labels)
+                gt_masks = RegionMasks(gt_arr)
+                pred_masks = RegionMasks(pred_arr)
+                for region in REGIONS:
+                    gt_mask = gt_masks.of(region)
+                    pred_mask = pred_masks.of(region)
                     vol_gt = float(gt_mask.sum()) * 0.001
                     vol_pred = float(pred_mask.sum()) * 0.001
-                    denom = int(gt_mask.sum()) + int(pred_mask.sum())
-                    dice = 2 * np.logical_and(gt_mask, pred_mask).sum() / denom if denom > 0 else math.nan
                     result["per_region"][region] = {
-                        "dice": dice,
+                        "dice": DiceScore.of(gt_mask, pred_mask),
                         "vol_gt_ml": vol_gt,
                         "vol_pred_ml": vol_pred,
                         "detected": bool(pred_mask.sum() > 0),
@@ -567,22 +552,13 @@ class MetricsCalculator:
             "k": k_fail,
             "n": n_obs,
             "point": k_fail / n_obs if n_obs else math.nan,
-            "wilson_95_upper": self._wilson_upper(k_fail, n_obs),
+            "wilson_95_upper": WilsonUpper.of(k_fail, n_obs),
             "breakdown": {
                 "input_fail": k_input,
                 "run_fail": k_run,
                 "hier_viol": k_hier,
             },
         }
-
-    def _wilson_upper(self, k: int, n: int) -> float:
-        if n == 0:
-            return math.nan
-        p = k / n
-        denom = 1 + self.Z95**2 / n
-        center = (p + self.Z95**2 / (2 * n)) / denom
-        half = (self.Z95 / denom) * math.sqrt(p * (1 - p) / n + self.Z95**2 / (4 * n**2))
-        return min(1.0, center + half)
 
     def load_real_r_fail(self, calibration_metrics_dir: Path, challenge: str) -> dict:
         """从 ADR-0002 校准结果载入真实 R_fail。"""
