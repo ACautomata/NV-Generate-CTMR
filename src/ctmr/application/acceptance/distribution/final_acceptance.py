@@ -50,7 +50,7 @@ loaded envelope value drifting from the ADR-0002 literals rejects the run.
 
 Usage:
     python -m ctmr.application.acceptance.distribution.final_acceptance assemble --phase P2 \
-        --samples samples.json --real-root /root/private_data/raw \
+        --samples samples.json --real-root /root/private_data/ctmr/data/raw \
         --holdout-manifest phase_manifest.json --run-id p2-... --output-dir DIR
     python -m ctmr.application.acceptance.distribution.final_acceptance predict --plan DIR/plan.json \
         --output-dir DIR

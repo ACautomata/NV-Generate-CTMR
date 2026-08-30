@@ -9,7 +9,7 @@
 #   bash deploy/jobs/run_zcrop_compensation_a.sh
 #
 # 环境变量(均可覆写,默认自动探测):
-#   L2_RUN_TREE       L2 终验运行树根(默认 /root/private_data/brats2023_rflow_p1/l2_acceptance)
+#   L2_RUN_TREE       L2 终验运行树根(默认 /root/private_data/ctmr/runs/p1/l2_acceptance)
 #   MEASUREMENTS_CSV  逐观测测量 CSV(受控存储;缺省在运行树下 find measurements*.csv)
 #   PREDICT_DIR       逐观测分割 mask 目录(缺省 find -type d -name predictions)
 #   OUTPUT_DIR        报告工件输出目录(默认 $L2_RUN_TREE/diagnostics/zcrop_compensation;
@@ -29,7 +29,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 export PYTHONPATH="$PROJECT_ROOT/src:$PROJECT_ROOT:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 [ -d "$PROJECT_ROOT/src" ] || { echo "[FATAL] $PROJECT_ROOT/src missing — run from the repo checkout" >&2; exit 1; }
 
-L2_RUN_TREE="${L2_RUN_TREE:-/root/private_data/brats2023_rflow_p1/l2_acceptance}"
+L2_RUN_TREE="${L2_RUN_TREE:-/root/private_data/ctmr/runs/p1/l2_acceptance}"
 OUTPUT_DIR="${OUTPUT_DIR:-$L2_RUN_TREE/diagnostics/zcrop_compensation}"
 
 # ── 探测测量 CSV(逐观测工件,受控存储)──

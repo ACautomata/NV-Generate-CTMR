@@ -16,36 +16,36 @@ R_fail 给出合成域适用性判定。
   # Step 1: 生成 P1 式独立采样样本
   python -m ctmr.application.acceptance.distribution.synthetic_domain generate \\
       --mode p1 \\
-      --case-list /root/private_data/l2-synth-eval/case_lists/p1_cases.json \\
-      --v1-model-dir /root/private_data/models \\
-      --output-dir /root/private_data/l2-synth-eval/p1_samples
+      --case-list /root/private_data/ctmr/eval/l2_synth/case_lists/p1_cases.json \\
+      --v1-model-dir /root/private_data/ctmr/instruments/v1_models \\
+      --output-dir /root/private_data/ctmr/eval/l2_synth/p1_samples
 
   # Step 2: 生成 P3 式 img2img 样本
   python -m ctmr.application.acceptance.distribution.synthetic_domain generate \\
       --mode p3 \\
-      --case-list /root/private_data/l2-synth-eval/case_lists/p3_cases.json \\
-      --v1-model-dir /root/private_data/models \\
-      --output-dir /root/private_data/l2-synth-eval/p3_samples
+      --case-list /root/private_data/ctmr/eval/l2_synth/case_lists/p3_cases.json \\
+      --v1-model-dir /root/private_data/ctmr/instruments/v1_models \\
+      --output-dir /root/private_data/ctmr/eval/l2_synth/p3_samples
 
   # Step 3: 组装 nnU-Net 输入（把 DM 输出重采样并格式化为仪器输入契约）
   python -m ctmr.application.acceptance.distribution.synthetic_domain prep-inputs \\
-      --sample-dir /root/private_data/l2-synth-eval/p1_samples \\
-      --nnunet-root /root/private_data/brats2023_nnunet \\
-      --output-dir /root/private_data/l2-synth-eval/p1_nnunet_inputs
+      --sample-dir /root/private_data/ctmr/eval/l2_synth/p1_samples \\
+      --nnunet-root /root/private_data/ctmr/data/nnunet_raw \\
+      --output-dir /root/private_data/ctmr/eval/l2_synth/p1_nnunet_inputs
 
   # Step 4: 跑冻结仪器推理
   python -m ctmr.application.acceptance.distribution.synthetic_domain predict \\
-      --input-dir /root/private_data/l2-synth-eval/p1_nnunet_inputs \\
-      --results-root /root/private_data/nnUNet_results \\
-      --output-dir /root/private_data/l2-synth-eval/p1_predictions
+      --input-dir /root/private_data/ctmr/eval/l2_synth/p1_nnunet_inputs \\
+      --results-root /root/private_data/ctmr/instruments/nnunet_results \\
+      --output-dir /root/private_data/ctmr/eval/l2_synth/p1_predictions
 
   # Step 5: 计算指标 + 与真实 R_fail 对照
   python -m ctmr.application.acceptance.distribution.synthetic_domain evaluate \\
-      --sample-dir /root/private_data/l2-synth-eval/p1_samples \\
-      --input-dir /root/private_data/l2-synth-eval/p1_nnunet_inputs \\
-      --pred-dir /root/private_data/l2-synth-eval/p1_predictions \\
-      --calibration-summary /root/private_data/l2-instrument-calibration/.../metrics \\
-      --output-dir /root/private_data/l2-synth-eval/report_p1
+      --sample-dir /root/private_data/ctmr/eval/l2_synth/p1_samples \\
+      --input-dir /root/private_data/ctmr/eval/l2_synth/p1_nnunet_inputs \\
+      --pred-dir /root/private_data/ctmr/eval/l2_synth/p1_predictions \\
+      --calibration-summary /root/private_data/ctmr/instruments/l2_instrument_calibration/.../metrics \\
+      --output-dir /root/private_data/ctmr/eval/l2_synth/report_p1
 
 冻结语义沿用 ADR-0002/ADR-0003：仪器权重与推理配置不可动。
 """
