@@ -5,11 +5,11 @@
 #   bash deploy/jobs/run_l2_synth_domain_eval.sh [p1|p3|all]
 #
 # 前置条件：
-#   1. v1 DM 权重已部署到 /root/private_data/ctmr/models/
+#   1. v1 DM 权重已部署到 /root/private_data/ctmr/instruments/v1_models/
 #      - diff_unet_3d_rflow-mr-brain_v1.pt
 #      - autoencoder_v1.pt
-#   2. nnU-Net 仪器已部署到 /root/private_data/ctmr/nnUNet_results/
-#   3. BraTS nnU-Net 数据集在 /root/private_data/ctmr/brats2023_nnunet/
+#   2. nnU-Net 仪器已部署到 /root/private_data/ctmr/instruments/nnunet_results/
+#   3. BraTS nnU-Net 数据集在 /root/private_data/ctmr/data/nnunet_raw/
 #   4. 环境已激活（torch-dcu, monai, nnunetv2, SimpleITK 等）
 #
 set -euo pipefail
@@ -22,11 +22,11 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 export PYTHONPATH="$PROJECT_ROOT/src:$PROJECT_ROOT:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 [ -d "$PROJECT_ROOT/src" ] || { echo "[FATAL] $PROJECT_ROOT/src missing — run from the repo checkout" >&2; exit 1; }
 
-EVAL_ROOT="/root/private_data/ctmr/l2-synth-eval"
-NNUNET_ROOT="/root/private_data/ctmr/brats2023_nnunet"
-V1_MODEL_DIR="/root/private_data/ctmr/models"
-RESULTS_ROOT="/root/private_data/ctmr/nnUNet_results"
-CAL_METRICS_DIR="/root/private_data/ctmr/l2-instrument-calibration"
+EVAL_ROOT="/root/private_data/ctmr/eval/l2_synth"
+NNUNET_ROOT="/root/private_data/ctmr/data/nnunet_raw"
+V1_MODEL_DIR="/root/private_data/ctmr/instruments/v1_models"
+RESULTS_ROOT="/root/private_data/ctmr/instruments/nnunet_results"
+CAL_METRICS_DIR="/root/private_data/ctmr/instruments/l2_instrument_calibration"
 MODE="${1:-all}"
 
 echo "============================================"

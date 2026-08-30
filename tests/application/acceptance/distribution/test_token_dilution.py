@@ -291,7 +291,7 @@ def test_cli_end_to_end_writes_json_and_markdown(tmp_path):
             "--run-id",
             "p1-20260822T131947Z",
             "--checkpoint",
-            "/root/private_data/ctmr/brats2023_rflow_p1/ckpt/epoch_20.pt",
+            "/root/private_data/ctmr/runs/p1/ckpt/epoch_20.pt",
         ]
     )
     assert rc == 0

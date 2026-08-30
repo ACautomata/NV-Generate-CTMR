@@ -7,15 +7,15 @@
 set -u
 
 MODE="${1:-p1}"
-BASE=/root/private_data/ctmr/l2-synth-eval
+BASE=/root/private_data/ctmr/eval/l2_synth
 INPUT=$BASE/${MODE}_nnunet_inputs
 PRED=$BASE/${MODE}_predictions
 LOGS=$BASE/logs
 export PYTHONPATH="$BASE/src${PYTHONPATH:+:$PYTHONPATH}"
 
-export nnUNet_raw=/root/private_data/ctmr/brats2023_nnunet
-export nnUNet_preprocessed=/root/private_data/ctmr/nnUNet_preprocessed
-export nnUNet_results=/root/private_data/ctmr/nnUNet_results
+export nnUNet_raw=/root/private_data/ctmr/data/nnunet_raw
+export nnUNet_preprocessed=/root/private_data/ctmr/data/nnunet_preprocessed
+export nnUNet_results=/root/private_data/ctmr/instruments/nnunet_results
 export nnUNet_compile=f
 mkdir -p "$PRED" "$LOGS"
 

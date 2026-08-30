@@ -14,7 +14,7 @@
 #   bash deploy/jobs/run_token_dilution_d.sh
 #
 # 环境变量(均可覆写;EMB_ROOT 无合理默认,必填):
-#   P1_ROOT      P1 候选产物基目录(默认 /root/private_data/ctmr/brats2023_rflow_p1)
+#   P1_ROOT      P1 候选产物基目录(默认 /root/private_data/ctmr/runs/p1)
 #   CKPT         冻结候选 checkpoint(默认 $P1_ROOT/ckpt/epoch_20.pt,当选候选)
 #   DEV_LIST     dev list(默认 $P1_ROOT/lists/p1_image_only_dev.json)
 #   EMB_ROOT     embedding companion 根(含 <case>_t1n_emb.nii.gz.json 的 spacing;
@@ -41,7 +41,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 export PYTHONPATH="$PROJECT_ROOT/src:$PROJECT_ROOT:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 [ -d "$PROJECT_ROOT/src" ] || { echo "[FATAL] $PROJECT_ROOT/src missing — run from the repo checkout" >&2; exit 1; }
 
-P1_ROOT="${P1_ROOT:-/root/private_data/ctmr/brats2023_rflow_p1}"
+P1_ROOT="${P1_ROOT:-/root/private_data/ctmr/runs/p1}"
 CKPT="${CKPT:-$P1_ROOT/ckpt/epoch_20.pt}"
 DEV_LIST="${DEV_LIST:-$P1_ROOT/lists/p1_image_only_dev.json}"
 [ -n "${EMB_ROOT:-}" ] || { echo "[FATAL] EMB_ROOT 必填——embedding companion 根(含 <case>_t1n_emb.nii.gz.json)" >&2; exit 1; }

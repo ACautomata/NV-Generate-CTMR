@@ -18,8 +18,8 @@
 #   SKIP_EMB_POOL=1 bash deploy/jobs/run_intensity_domain_c.sh   # 只跑 gen 池(零推理)
 #
 # 环境变量(均可覆写,默认为 P1 台账路径):
-#   PHASE_ROOT        阶段数据根(默认 /root/private_data/ctmr/brats2023_rflow_phase)
-#   P1_ROOT           P1 运行根(默认 /root/private_data/ctmr/brats2023_rflow_p1)
+#   PHASE_ROOT        阶段数据根(默认 /root/private_data/ctmr/data/phase)
+#   P1_ROOT           P1 运行根(默认 /root/private_data/ctmr/runs/p1)
 #   TRAIN_LIST        训练 list(默认 $PHASE_ROOT/lists/p1_image_only.json)
 #   DATA_ROOT         训练 raw 根(默认 $PHASE_ROOT/raw)
 #   EMB_ROOT          训练 embedding 根(默认 $PHASE_ROOT/embeddings)
@@ -50,8 +50,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 export PYTHONPATH="$PROJECT_ROOT/src:$PROJECT_ROOT:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 [ -d "$PROJECT_ROOT/src" ] || { echo "[FATAL] $PROJECT_ROOT/src missing — run from the repo checkout" >&2; exit 1; }
 
-PHASE_ROOT="${PHASE_ROOT:-/root/private_data/ctmr/brats2023_rflow_phase}"
-P1_ROOT="${P1_ROOT:-/root/private_data/ctmr/brats2023_rflow_p1}"
+PHASE_ROOT="${PHASE_ROOT:-/root/private_data/ctmr/data/phase}"
+P1_ROOT="${P1_ROOT:-/root/private_data/ctmr/runs/p1}"
 TRAIN_LIST="${TRAIN_LIST:-$PHASE_ROOT/lists/p1_image_only.json}"
 DATA_ROOT="${DATA_ROOT:-$PHASE_ROOT/raw}"
 EMB_ROOT="${EMB_ROOT:-$PHASE_ROOT/embeddings}"

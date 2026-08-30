@@ -7,12 +7,12 @@
 set -u
 CALIB_BASE=${CALIB_BASE:?set CALIB_BASE}
 REPO_COMMIT=${REPO_COMMIT:?set REPO_COMMIT}
-TRAIN_BASE_DEFAULT=/root/private_data/ctmr/l2-instrument/52667a345ec9e1885a983bb2b8f063aa0827e997
-TRAIN_BASE_SSA=/root/private_data/ctmr/l2-instrument/be683eefb071022b2b62646234e4f7e469ae8dbc
+TRAIN_BASE_DEFAULT=/root/private_data/ctmr/instruments/l2_instrument/52667a345ec9e1885a983bb2b8f063aa0827e997
+TRAIN_BASE_SSA=/root/private_data/ctmr/instruments/l2_instrument/be683eefb071022b2b62646234e4f7e469ae8dbc
 export PYTHONPATH="$CALIB_BASE/src${PYTHONPATH:+:$PYTHONPATH}"
 export nnUNet_compile=f
-export nnUNet_raw=/root/private_data/ctmr/brats2023_nnunet
-export nnUNet_preprocessed=/root/private_data/ctmr/nnUNet_preprocessed
+export nnUNet_raw=/root/private_data/ctmr/data/nnunet_raw
+export nnUNet_preprocessed=/root/private_data/ctmr/data/nnunet_preprocessed
 LOGS="$CALIB_BASE/logs"; mkdir -p "$LOGS"
 STATUS="$LOGS/predict-status.txt"; touch "$STATUS"
 
