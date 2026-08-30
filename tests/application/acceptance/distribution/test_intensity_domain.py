@@ -485,15 +485,16 @@ def test_normalize_and_resize_match_the_training_monai_transforms():
 
 
 def test_mets_real_companion_resolves_through_the_official_met_dir_suffix(tmp_path):
-    """METS ships as "...-MET-..." in the official BraTS tree (dataset_prep
-    DIR_SUFFIX is the canonical mapping); the real companion must resolve
-    through it, not the literal challenge code. The committed run read 482
-    real cases for 530 generated -- exactly the 48 METS companions missing."""
+    """METS ships as "...-MET-..." in the official BraTS tree (the module's
+    OFFICIAL_TREE_SUFFIX is the canonical mapping); the real companion must
+    resolve through it, not the literal challenge code. The committed run read
+    482 real cases for 530 generated -- exactly the 48 METS companions
+    missing."""
     import nibabel as nib
 
-    from ctmr.infrastructure.provisioning.dataset_prep import DIR_SUFFIX
+    from ctmr.application.acceptance.distribution.intensity_domain import OFFICIAL_TREE_SUFFIX
 
-    assert DIR_SUFFIX["METS"] == "MET"  # canonical source of the mapping
+    assert OFFICIAL_TREE_SUFFIX["METS"] == "MET"  # canonical source of the mapping
     root = tmp_path / "official"
     case_dir = root / "ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData" / "BraTS-MET-00001-000"
     case_dir.mkdir(parents=True)

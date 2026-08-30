@@ -20,7 +20,6 @@ import torch
 
 from ctmr.application.acceptance.distribution import closing as closing_module
 from ctmr.application.acceptance.distribution.instrument_training import TRAINER_CLASS, TRAINER_MODULE
-from ctmr.infrastructure.provisioning.trainer_250_epochs import nnUNetTrainer250Epochs as TrainerClass
 
 pytestmark = pytest.mark.torch
 
@@ -70,11 +69,21 @@ def tree(tmp_path, monkeypatch):
     log = fold_dir / "training_log_0.txt"
     log.write_text("epoch 248\nEpoch 249 done\n")
 
-    # the audited installed trainer is discovered through its module path; inject a
-    # shadow module whose source lives on disk so inspect.getsourcefile() resolves
+    # the trainer contract is verified through an injected shadow module whose
+    # source lives on disk (inspect.getsourcefile() must resolve); the source
+    # is self-contained -- the retired provisioning installer's real install
+    # (ADR-0018 frozen audit) lives on cluster storage, not in local venvs
     trainer_source_path = tmp_path / "shadow" / "nnUNetTrainer250Epochs.py"
     trainer_source_path.parent.mkdir(parents=True)
-    trainer_source_path.write_text(Path(sys.modules[TrainerClass.__module__].__file__).read_text())
+    trainer_source_path.write_text(
+        "from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer\n"
+        "\n"
+        "\n"
+        "class nnUNetTrainer250Epochs(nnUNetTrainer):\n"
+        "    def __init__(self, *args, **kwargs):\n"
+        "        super().__init__(*args, **kwargs)\n"
+        "        self.num_epochs = 250\n"
+    )
     shadow = types.ModuleType(TRAINER_MODULE)
     code = compile(trainer_source_path.read_text(), str(trainer_source_path), "exec")
     shadow.__file__ = str(trainer_source_path)

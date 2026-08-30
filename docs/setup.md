@@ -51,17 +51,26 @@ See [docs/inference.md](inference.md) for detailed GPU memory usage tables by ou
 
 ## Downloading Model Weights
 
-Model weights are automatically downloaded from HuggingFace when running inference. You can also download them manually:
+Model weights are automatically downloaded from HuggingFace when running inference. You can also download them manually with `hf download <repo> <file> --local-dir .` (the former `download_model_data` assembly retired to git history, ADR-0018):
 
 ```bash
 # Download CT models (rflow-ct)
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('rflow-ct', './', model_only=True)"
+hf download nvidia/NV-Generate-CT models/autoencoder_v1.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/mask_generation_autoencoder.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/mask_generation_diffusion_unet.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/diff_unet_3d_rflow-ct.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/controlnet_3d_rflow-ct.pt --local-dir .
 
 # Download MR models (rflow-mr)
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('rflow-mr', './', model_only=True)"
+hf download nvidia/NV-Generate-MR models/autoencoder_v2.pt --local-dir .
+hf download nvidia/NV-Generate-MR models/diff_unet_3d_rflow-mr.pt --local-dir .
 
 # Download legacy CT models (ddpm-ct)
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('ddpm-ct', './', model_only=True)"
+hf download nvidia/NV-Generate-CT models/autoencoder_v1.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/mask_generation_autoencoder.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/mask_generation_diffusion_unet.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/diff_unet_3d_ddpm-ct.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/controlnet_3d_ddpm-ct.pt --local-dir .
 ```
 
 Model weights are hosted on HuggingFace:

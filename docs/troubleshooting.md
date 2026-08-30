@@ -39,7 +39,7 @@ pip install --upgrade monai>=1.5.0
 
 - Ensure you have a working internet connection.
 - Try setting the `MONAI_DATA_DIRECTORY` environment variable to a writable directory.
-- Download manually using `python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('<version>', './', model_only=True)"`.
+- Download manually using `hf download nvidia/NV-Generate-CT <file> --local-dir .` (see [setup.md](setup.md) for the per-variant file list).
 - Check the [HuggingFace model pages](https://huggingface.co/nvidia/NV-Generate-CT) for any access requirements.
 
 ### Incorrect HU Values in Generated CT

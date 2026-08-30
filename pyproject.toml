@@ -41,7 +41,6 @@ ignore = ["E501", "N812", "N813"]  # E501: line length handled by formatter; N81
 
 [tool.ruff.lint.per-file-ignores]
 "src/ctmr/infrastructure/nnunet_runner.py" = ["N801"]  # ADR-0009-pinned interface name; class-shaped context manager like torch.serialization.safe_globals
-"src/ctmr/infrastructure/provisioning/trainer_250_epochs.py" = ["N801"]  # nnunetv2 registry-pinned class name (ADR-0015 §7 exemption)
 
 [tool.ruff.format]
 quote-style = "double"

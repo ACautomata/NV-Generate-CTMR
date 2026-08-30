@@ -11,7 +11,11 @@
 
 """Unified ``ctmr`` console entry point (issues #130/#137/#138/#139/#140 / ADR-0015 §3; registry issue #228).
 
-The five command families are pinned as the terminal CLI face. Every live verb
+The four command families are pinned as the terminal CLI face -- the ``data``
+family's verb face never landed and its provisioning/dataio services retired
+with issue #230 / ADR-0018 (git history is the reproduction anchor), so its
+door came off the table; ``experiment`` stays pinned not-migrated (ADR-0015
+decision 11 defers the ExperimentRecord interface). Every live verb
 is one row of the single ``(family, case, verb)``→handler registry (``VERBS``):
 the argparse spelling tree and the dispatch router both read that one table, so
 adding a verb is adding one entry -- spelling, help text, and routing arrive
@@ -129,19 +133,24 @@ CASE_BLURBS = {
 class CtmrCli:
     """The unified command-line application (ADR-0015 §3)."""
 
-    # Command families in ADR order; generate rides its ``gen`` alias.
+    # Command families in ADR order; generate rides its ``gen`` alias. The
+    # ``migrating`` flag marks a family whose verbs have not landed: it
+    # advertises the migration banner and answers concrete calls with the
+    # not-migrated pointer instead of routing. The ``data`` family retired
+    # with its provisioning/dataio services (issue #230 / ADR-0018
+    # decision 4) and is absent from the table; adding one back (e.g. a
+    # future VAE door) is one row here.
     FAMILIES = (
-        ("generate", ("gen",), "use-case chains modality-label|mask|cross-modal (train/dev-eval/generate/manifest)"),
-        ("measure", (), "instrument-side prediction/calibration/FID"),
-        ("accept", (), "quantitative/distribution/expert-review chains plus contract orchestration"),
-        ("data", (), "data preparation/encoding/download tooling"),
-        ("experiment", (), "experiment-record repository"),
+        ("generate", ("gen",), "use-case chains modality-label|mask|cross-modal (train/dev-eval/generate/manifest)", False),
+        ("measure", (), "instrument-side prediction/calibration/FID", False),
+        ("accept", (), "quantitative/distribution/expert-review chains plus contract orchestration", False),
+        ("experiment", (), "experiment-record repository", True),
     )
 
     def __init__(self):
         # argparse stores the invoked spelling ("gen" or "generate") in dest;
         # this map restores the canonical family name for messages and routing.
-        self._alias_to_family = {alias: family for family, aliases, _ in self.FAMILIES for alias in aliases}
+        self._alias_to_family = {alias: family for family, aliases, _, _ in self.FAMILIES for alias in aliases}
         self._parser = self._build_parser()
 
     def _build_parser(self):
@@ -150,7 +159,7 @@ class CtmrCli:
             description="Unified CLI for NV-Generate-CTMR (ADR-0015); verb families migrate in batch under issue #129.",
         )
         subparsers = parser.add_subparsers(dest="family", metavar="<family>", required=True)
-        for family, aliases, blurb in self.FAMILIES:
+        for family, aliases, blurb, migrating in self.FAMILIES:
             if family == "generate":
                 self._add_generate(subparsers, aliases, blurb)
                 continue
@@ -158,7 +167,7 @@ class CtmrCli:
                 family,
                 aliases=list(aliases),
                 # only the not-yet-migrated families advertise the migration banner
-                help=blurb if family in ("generate", "measure", "accept") else f"{blurb} -- not migrated yet",
+                help=f"{blurb} -- not migrated yet" if migrating else blurb,
             )
             fam_parser.add_argument("rest", nargs="*", metavar="verb", help="verbs/flags of this family")
             fam_parser.set_defaults(run=self._not_migrated)

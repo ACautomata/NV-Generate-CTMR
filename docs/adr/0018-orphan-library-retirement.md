@@ -22,3 +22,13 @@
 
 - 撤销 ADR-0015 §3 所钉 `ctmr data` 动词面的未兑现部分(不再规划该动词面);ADR-0015 其余全部内容(installable package、统一 CLI、CheckpointRepository、deploy 运维面、测试面)不动。
 - 不触 ADR-0013(测试范式)、ADR-0016(生成实体)。
+
+## 实现附记(#230,2026-08-31)
+
+决定 1 清单内的十二个文件(决定 1 列名口径;标题「11 件」以 shim 样本不单独计件)全部退役删除,随件测试同撤。退役 PR 落盘的孤儿判定事实:
+
+- **零调用方 grep**:决定 1 清单内各件在 src 全树(import 语句与 VERBS 注册表、console/`python -m` 入口、deploy shell 配方)零生产引用;`mask_postprocess` 仅被同清单的 `sample_mask` shim 引用,随件消亡。唯一跨清单引用是两个 L2 测试借道 provisioning 件取常量/安装源(`DIR_SUFFIX`、trainer shadow 源),分别改接活代码 `OFFICIAL_TREE_SUFFIX` 与自持合成 shadow 源。
+- **docstring 承诺链**:清单内各件 docstring 所指「a later CLI slice takes over」动词面随 M0–M7 收官从未落地,与背景节判定一致。
+- **仪器供给冻结状态**:维持(已安装入 nnunetv2、受控审计 verdict `all_passed`);`install_trainer` 等安装器退役后,重训需求按决定 3 从 git 历史复活。
+
+守卫首扫偏离申报:正探针同时发现三个 ADR 未列名的既有零调用方模块——`distribution/calibration_prep`(#36 校准集组装,协议已冻结)、`distribution/freeze_audit`(#37 冻结工件审计,verdict 已入受控存储)、`quantitative/fid_2d5`(一次性 2.5D FID 计算器,dev-trend 实际引用 `quantitative.fid`)。三者同为历史运行件,但不在决定 1 的封闭清单内,本票无权扩大退役范围;按决定 5「孤儿状态从静默变声明」显式登记白名单并逐件注明身份,处置(退役或复活挂门)留待独立裁决。验收标准「清账后为空」据此修订为:**清单内件清账后,白名单仅余显式声明的既有历史运行件**;白名单设反向断言(条目必须是当前孤儿),清单内账清空后白名单不得再增长,只可随裁决清偿。

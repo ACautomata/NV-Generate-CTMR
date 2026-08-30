@@ -43,7 +43,14 @@ Each variant follows the same two-step pattern: download weights, then run infer
 network="rflow"   # or "ddpm" for ddpm-ct
 generate_version="rflow-mr-brain"   # or rflow-ct / rflow-mr / ddpm-ct
 
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+# image-stack weights per variant (see the download-models skill for the
+# per-variant file list; the download_model_data assembly retired, ADR-0018)
+hf download nvidia/NV-Generate-CT models/autoencoder_v1.pt --local-dir .                              # rflow-mr-brain / rflow-ct / ddpm-ct
+hf download nvidia/NV-Generate-MR models/autoencoder_v2.pt --local-dir .                              # rflow-mr
+hf download nvidia/NV-Generate-MR-Brain models/diff_unet_3d_rflow-mr-brain_v1.pt --local-dir .        # rflow-mr-brain image DM
+hf download nvidia/NV-Generate-MR models/diff_unet_3d_rflow-mr.pt --local-dir .                       # rflow-mr image DM
+hf download nvidia/NV-Generate-CT models/diff_unet_3d_rflow-ct.pt --local-dir .                       # rflow-ct image DM
+hf download nvidia/NV-Generate-CT models/diff_unet_3d_ddpm-ct.pt --local-dir .                        # ddpm-ct image DM
 
 python -m ctmr.infrastructure.maisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
@@ -61,7 +68,8 @@ Most-supported combination in the MR-RATE training set (98,769 axial T1 images i
 
 ```bash
 # 1. Download weights (one-time, ~3 GB).
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('rflow-mr-brain', './', model_only=True)"
+hf download nvidia/NV-Generate-CT models/autoencoder_v1.pt --local-dir .
+hf download nvidia/NV-Generate-MR-Brain models/diff_unet_3d_rflow-mr-brain_v1.pt --local-dir .
 
 # 2. Edit configs/config_maisi_diff_model_rflow-mr-brain.json so the
 #    `diffusion_unet_inference` block contains:
@@ -199,7 +207,7 @@ One file per sample is saved into `output_dir` (set in the environment config), 
 | Entry | Role |
 |---|---|
 | `ctmr.infrastructure.maisi_engine.diff_model_infer` | Entry for this skill. Runs the image DM in isolation (no mask, no ControlNet). |
-| `ctmr.infrastructure.dataio.downloads` (`download_model_data`) | Downloads image-DM + AE weights for the chosen variant. |
+| `hf download` (CLI) | Downloads image-DM + AE weights for the chosen variant (the retired `download_model_data` assembly, git history per ADR-0018; see the download-models skill). |
 | `ctmr.infrastructure.maisi_engine.diff_model_setting` | Helper: distributed-init / config-loading / logger setup. |
 
 ## Related skills
