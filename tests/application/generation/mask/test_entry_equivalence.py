@@ -206,11 +206,11 @@ def _reference_sample_parser():
 
 TRAIN_MIGRATED = TrainCli("description", stage="p2").parse
 ENTRY_TABLE = {
-    "train": (FINETUNE_ARGV + ["--no_amp", "--amp_dtype", "fp16"], _reference_finetune_parser, TRAIN_MIGRATED),
-    "dev-eval reference": (DEV_EVAL_REFERENCE_ARGV, _reference_dev_eval_parser, monitor.parse_args),
-    "dev-eval watch": (DEV_EVAL_WATCH_ARGV, _reference_dev_eval_parser, monitor.parse_args),
-    "dev-eval select": (DEV_EVAL_SELECT_ARGV, _reference_dev_eval_parser, monitor.parse_args),
-    "generate": (SAMPLE_ARGV, _reference_sample_parser, sample.parse_args),
+    "train": (FINETUNE_ARGV + ["--no_amp", "--amp_dtype", "fp16"], _reference_finetune_parser, TRAIN_MIGRATED, "ctmr.application.generation.mask.train"),
+    "dev-eval reference": (DEV_EVAL_REFERENCE_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
+    "dev-eval watch": (DEV_EVAL_WATCH_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
+    "dev-eval select": (DEV_EVAL_SELECT_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
+    "generate": (SAMPLE_ARGV, _reference_sample_parser, sample.parse_args, sample.__name__),
 }
 
 CLI_PREFIXES = {
@@ -224,16 +224,15 @@ CLI_PREFIXES = {
 
 @pytest.mark.parametrize("name", ENTRY_TABLE)
 def test_cli_forwards_the_entry_argv_verbatim(name):
-    argv, _, _ = ENTRY_TABLE[name]
-    peeled = cli.CtmrCli._peel_generate([*CLI_PREFIXES[name], *argv])
-    assert peeled is not None
-    rest = peeled[-1]
+    argv, _, _, module = ENTRY_TABLE[name]
+    route, rest = cli.CtmrCli().route([*CLI_PREFIXES[name], *argv])
+    assert route.module == module
     assert list(rest) == argv
 
 
 @pytest.mark.parametrize("name", ENTRY_TABLE)
 def test_entry_namespace_is_unchanged_against_the_retired_parsers(name):
-    argv, reference_builder, migrated = ENTRY_TABLE[name]
+    argv, reference_builder, migrated, _ = ENTRY_TABLE[name]
     reference = reference_builder().parse_args(argv)
     assert vars(migrated(argv)) == vars(reference), f"{name}: migrated namespace drifted"
 
@@ -245,4 +244,4 @@ def test_train_cli_derives_num_gpus_from_the_entry_argv():
 
 def test_mask_train_module_is_pinned_for_the_launcher():
     """The torchrun child module path stays the mask family train entry."""
-    assert cli.TRAIN_MODULES["mask"] == "ctmr.application.generation.mask.train"
+    assert cli.VERBS[("generate", "mask", "train")].module == "ctmr.application.generation.mask.train"

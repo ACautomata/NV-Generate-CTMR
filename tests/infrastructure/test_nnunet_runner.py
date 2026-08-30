@@ -69,13 +69,12 @@ def test_scope_covers_the_whole_native_call(monkeypatch):
 def test_cli_route_dispatches_lazily_to_the_runner(monkeypatch):
     dispatched = {}
 
-    class FakeVerb:
-        def run(self, pass_through):
-            dispatched["pass_through"] = pass_through
-            return 5
+    def fake_main(pass_through):
+        dispatched["pass_through"] = list(pass_through)
+        return 5
 
     fake_module = type(sys)("fake-runner")
-    fake_module.MeasurePredictVerb = FakeVerb
+    fake_module.main = fake_main
     monkeypatch.setitem(sys.modules, "ctmr.infrastructure.nnunet_runner", fake_module)
     code = CtmrCli().run(["measure", "predict", "-i", "/raw/in", "-o", "/out"])
     assert code == 5

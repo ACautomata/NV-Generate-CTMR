@@ -108,7 +108,7 @@ def test_cli_spawns_torchrun_when_world_size_is_absent(monkeypatch, _fake_train)
 
     monkeypatch.setattr(launcher_mod.subprocess, "run", _fake_run)
     monkeypatch.delenv("WORLD_SIZE", raising=False)
-    rc = cli.CtmrCli()._run_family_train("cross-modal", ["-e", "env.json", "-g", "4"])
+    rc = cli.CtmrCli().run(["generate", "cross-modal", "train", "-e", "env.json", "-g", "4"])
     assert rc == 0
     assert captured["cmd"][:2] == ["torchrun", "--nproc_per_node"]  # the spawn derivation fired
     assert captured["cmd"][2] == "4"
@@ -121,6 +121,6 @@ def test_cli_dispatches_in_process_when_already_a_torchrun_worker(monkeypatch, _
 
     monkeypatch.setattr(launcher_mod.subprocess, "run", _no_spawn)
     monkeypatch.setenv("WORLD_SIZE", "4")
-    rc = cli.CtmrCli()._run_family_train("cross-modal", ["-e", "env.json"])
+    rc = cli.CtmrCli().run(["generate", "cross-modal", "train", "-e", "env.json"])
     assert rc == 0
     assert _fake_train == [["-e", "env.json"]]  # the train entry ran in-process with argv verbatim
