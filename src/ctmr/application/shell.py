@@ -28,8 +28,10 @@ deleted with issue #175):
   the common finetune argparse surface lives in the stdlib-only sibling
   ``ctmr.application.train_cli`` (``TrainCli``);
 - the **dev-eval engine**: ``CheckpointWatcher`` / ``EarlyStopRule`` /
-  ``TrendLedger`` plus the shared cohort constants, the watch/select machinery
-  every family's dev light-acceptance sidecar builds on.
+  ``TrendLedger`` plus the shared cohort constants, and the ``WatchEngine`` /
+  ``SelectionEmitter`` watch/select skeletons every family's dev
+  light-acceptance sidecar builds on (the stage sampler factory, scorer and
+  optional post-score extension ride in as collaborators).
 
 The shell holds no recipe value and no domain decision; the stage kernel and
 the recipe guard ride in as collaborators. Torch-level: import only where
@@ -40,6 +42,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -356,21 +360,165 @@ class EarlyStopRule:
 
 
 class TrendLedger:
-    """Appends eval records to dev_trend.jsonl and keeps the cohort + rule on disk."""
+    """Appends eval records to dev_trend.jsonl and keeps the cohort + rule on disk.
+
+    ``read`` is incremental under the append-only protocol: it parses only the
+    bytes appended since the last call (the watch loop re-reads the ledger
+    after every eval point, so a full re-parse per poll would be quadratic in
+    the run length).  The accumulated view equals a full re-read -- pinned by
+    test.
+    """
 
     def __init__(self, eval_root):
         self._root = Path(eval_root)
+        self._offset = 0
+        self._records = []
 
     def path(self):
         return self._root / "dev_trend.jsonl"
 
     def read(self):
         path = self.path()
-        if not path.is_file():
-            return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        if path.is_file():
+            size = path.stat().st_size
+            if size > self._offset:
+                with open(path) as handle:
+                    handle.seek(self._offset)
+                    new_text = handle.read()
+                self._offset = size
+                self._records.extend(json.loads(line) for line in new_text.splitlines() if line.strip())
+        return list(self._records)
 
     def append(self, record):
         self._root.mkdir(parents=True, exist_ok=True)
         with open(self.path(), "a") as handle:
             handle.write(json.dumps(record) + "\n")
+
+
+class WatchEngine:
+    """The dev watch polling engine (ADR-0011): dedup, idle-exit, ledger, record, early-stop.
+
+    The mechanical loop only -- the stage domain rides in through three
+    collaborators: the ``sampler_factory`` (``(checkpoint_path, out_dir) ->
+    samples``, the per-candidate sampling run), the ``scorer`` (``(samples) ->
+    (record_fields, log_line)``, the stage trend metric) and the optional
+    ``post_score`` extension (``(epoch, samples, epoch_dir) -> extra record
+    fields``, e.g. the mask family's instrument + round-trip trends; it owns
+    its own failure tolerance).  The engine holds no recipe value and no
+    domain decision.
+    """
+
+    def __init__(
+        self,
+        ckpt_dir,
+        eval_root,
+        eval_every: int,
+        max_epoch: int,
+        rule: EarlyStopRule,
+        sampler_factory: Callable,
+        scorer: Callable,
+        poll_seconds: float = 60.0,
+        idle_exit_seconds: float = 0.0,
+        post_score: Callable | None = None,
+    ):
+        self._ckpt_dir = Path(ckpt_dir)
+        self._eval_root = Path(eval_root)
+        self._eval_every = eval_every
+        self._max_epoch = max_epoch
+        self._rule = rule
+        self._sampler_factory = sampler_factory
+        self._scorer = scorer
+        self._poll_seconds = poll_seconds
+        self._idle_exit_seconds = idle_exit_seconds
+        self._post_score = post_score
+
+    def run(self, cohort_file=None):
+        """Poll, dedup, score, append and early-stop; returns the process exit code."""
+        ledger = TrendLedger(self._eval_root)
+        watcher = CheckpointWatcher(self._ckpt_dir, self._eval_every, self._max_epoch, {record["epoch"] for record in ledger.read()})
+        idle_since = None
+        while True:
+            pending = watcher.pending()
+            if not pending:
+                if self._idle_exit_seconds and idle_since is not None and time.time() - idle_since > self._idle_exit_seconds:
+                    break
+                if self._idle_exit_seconds and idle_since is None:
+                    idle_since = time.time()
+                time.sleep(self._poll_seconds)
+                continue
+            idle_since = None
+            for epoch, path in pending:
+                if any(record["epoch"] == epoch for record in ledger.read()):
+                    watcher.mark_done(epoch)
+                    continue
+                epoch_dir = self._eval_root / f"epoch_{epoch}"
+                try:
+                    samples = self._sampler_factory(path, epoch_dir / "samples")
+                    fields, log_line = self._scorer(samples)
+                except Exception as error:
+                    # A broken checkpoint, a transient network/model failure, or any
+                    # single-epoch hiccup must not kill the sidecar: without it
+                    # nobody writes .early_stop. Skip and retry on the next poll.
+                    print(f"[eval] epoch {epoch} skipped: {error}", file=sys.stderr, flush=True)
+                    continue
+                record = {
+                    "eval_utc": datetime.now(UTC).isoformat(),
+                    "epoch": epoch,
+                    "checkpoint": str(path),
+                    **fields,
+                }
+                if self._post_score is not None:
+                    record.update(self._post_score(epoch, samples, epoch_dir))
+                record["cohort_file"] = cohort_file
+                epoch_dir.mkdir(parents=True, exist_ok=True)
+                ledger.append(record)
+                (epoch_dir / "trend.json").write_text(json.dumps(record, indent=2) + "\n")
+                watcher.mark_done(epoch)
+                stop, reason = self._rule.should_stop(ledger.read())
+                print(f"[eval] epoch {epoch}: {log_line} stop={stop} ({reason})", flush=True)
+                if stop:
+                    (self._ckpt_dir / STOP_FILE).write_text(json.dumps({"reason": reason, "epoch": epoch}) + "\n")
+                    print(f"early-stop fired ({reason}); wrote {self._ckpt_dir / STOP_FILE}", flush=True)
+                    return 0
+        return 0
+
+
+class SelectionEmitter:
+    """Emits the final dev-side checkpoint selection for the phase-run contract (argmin/argmax)."""
+
+    def __init__(self, eval_root):
+        self._eval_root = Path(eval_root)
+
+    def emit(
+        self,
+        out,
+        rule_text: str,
+        direction: str = "min",
+        metric_name: str = "mean_fid",
+        extra_fields: Callable | None = None,
+        summary_extra: Callable | None = None,
+    ) -> int:
+        """Writes the selection contract JSON; returns the process exit code.
+
+        ``extra_fields(trend, selection) -> dict`` merges stage-specific trail
+        fields after the base selection (the cross-modal PSNR trail); they land
+        before the ``rule``/``trend``/``recorded_utc`` envelope keys.
+        """
+        trend = TrendLedger(self._eval_root).read()
+        selection = EarlyStopRule.selection(trend, direction=direction, metric_name=metric_name)
+        if selection is None:
+            print("no eval points; nothing to select", file=sys.stderr)
+            return 1
+        if extra_fields is not None:
+            selection.update(extra_fields(trend, selection))
+        selection["rule"] = rule_text
+        selection["trend"] = trend
+        selection["recorded_utc"] = datetime.now(UTC).isoformat()
+        out = Path(out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(selection, indent=2) + "\n")
+        summary = f"selection -> {out} (epoch {selection['epoch']}, {metric_name} {selection[metric_name]:.4f})"
+        if summary_extra is not None:
+            summary += summary_extra(selection)
+        print(summary)
+        return 0

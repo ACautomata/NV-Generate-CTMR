@@ -41,6 +41,7 @@ from ctmr.application.generation.mask.monitor import (
     CohortSpacingSource,
     ConditionMaskSource,
     DevList,
+    L2PostScore,
     RoundTripDice,
 )
 from ctmr.application.generation.trend import DevCohortBuilder
@@ -210,6 +211,33 @@ def test_watcher_restart_does_not_re_evaluate_scored_epochs(tmp_path):
 
     watcher = CheckpointWatcher(tmp_path / "ckpt", 5, 100, {r["epoch"] for r in ledger.read()})
     assert [epoch for epoch, _ in watcher.pending()] == [15]  # 5/10 already scored
+
+
+# --------------------------------------------------- watch engine post-score extension (issue #225)
+
+
+class _ScriptedL2:
+    def run(self, samples, cohort, work_dir):
+        return {"ok": True}
+
+
+class _FailingRoundTrip:
+    def run(self, predictions_root, cohort):
+        raise RuntimeError("pred missing")
+
+
+def test_l2_post_score_skip_degrades_to_none_fields(tmp_path):
+    assert L2PostScore(_ScriptedL2(), RoundTripDice(None), [], skip=True)(5, [], tmp_path) == {
+        "l2_trend": None,
+        "round_trip_dice": None,
+    }
+
+
+def test_l2_post_score_keeps_the_l2_trend_when_only_the_round_trip_fails(tmp_path):
+    # the pre-#225 loop shared one try across both trends: a round-trip hiccup
+    # records None for the dice but keeps the already-measured instrument trend
+    extension = L2PostScore(_ScriptedL2(), _FailingRoundTrip(), [], skip=False)
+    assert extension(5, [], tmp_path) == {"l2_trend": {"ok": True}, "round_trip_dice": None}
 
 
 def test_select_is_stable_under_a_ledger_reload(tmp_path):

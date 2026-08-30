@@ -36,7 +36,9 @@ The early-stop rule (recorded verbatim in the run dir before training starts):
 
 The shared trend machinery (cohort/FID bank/plane features/instrument runner)
 lives in ``ctmr.application.generation.trend``; the watch/select polling
-skeleton in ``ctmr.application.shell``.
+skeleton (``WatchEngine`` / ``SelectionEmitter``) in ``ctmr.application.shell``
+-- this module only assembles the stage sampler/scorer/post-score collaborators
+and dispatches the reference/watch/select verbs.
 
 Migrated from the retired modality-label dev-eval script entry (ticket 10,
 ADR-0015 §2); its ``selftest`` subcommand retired with it — its assertions
@@ -58,8 +60,7 @@ import argparse
 import hashlib
 import json
 import sys
-import time
-from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import nibabel as nib
@@ -70,11 +71,10 @@ from monai.networks.schedulers import RFlowScheduler
 from ctmr.application.generation.trend import DevCohortBuilder, L2TrendRunner, MrTrendFeatures, RealReferenceBank, TrendFid
 from ctmr.application.shell import (
     MODALITY_TOKENS,
-    STOP_FILE,
     TARGET_MODALITIES,
-    CheckpointWatcher,
     EarlyStopRule,
-    TrendLedger,
+    SelectionEmitter,
+    WatchEngine,
 )
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
@@ -180,6 +180,49 @@ class CandidateSampler:
         return samples
 
 
+class FidTrendScorer:
+    """The watch scorer seam: plane-mean 2.5D RadImageNet FID per target modality."""
+
+    def __init__(self, features, fid):
+        self._features = features
+        self._fid = fid
+
+    def __call__(self, samples):
+        plane_cache = {sample["path"]: self._features.volume_features(sample["path"]) for sample in samples}
+        generated = {modality: {plane: [] for plane in ("xy", "yz", "zx")} for modality in TARGET_MODALITIES}
+        for sample in samples:
+            for plane in ("xy", "yz", "zx"):
+                matrix = plane_cache[sample["path"]][plane]
+                if matrix is not None:
+                    generated[sample["modality"]][plane].append(matrix.mean(axis=0))
+        report, mean_fid = self._fid.score(generated)
+        return {"fid": report, "m": mean_fid}, f"mean_fid={mean_fid}"
+
+
+class L2PostScore:
+    """The optional post-score extension: the frozen L2 instruments trend (``--skip-l2`` degrades to None).
+
+    The extension owns its failure tolerance: a single-epoch instrument hiccup
+    records the None field and must not kill the sidecar -- the engine's skip
+    path is reserved for the score itself.
+    """
+
+    def __init__(self, l2, cohort, skip):
+        self._l2 = l2
+        self._cohort = cohort
+        self._skip = skip
+
+    def __call__(self, epoch, samples, epoch_dir):
+        fields = {"l2_trend": None}
+        if self._skip:
+            return fields
+        try:
+            fields["l2_trend"] = self._l2.run(samples, self._cohort, epoch_dir)
+        except Exception as error:
+            print(f"[eval] epoch {epoch} l2 skipped: {error}", file=sys.stderr, flush=True)
+        return fields
+
+
 def parse_args(argv=None):
     """The sidecar entry argparse surface (verbatim from the retired dev-eval script entry).
 
@@ -226,7 +269,6 @@ def main(argv=None):
     args = parse_args(argv)
 
     eval_root = Path(args.eval_root)
-    ledger = TrendLedger(eval_root)
 
     if args.command == "reference":
         features = MrTrendFeatures(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
@@ -235,21 +277,9 @@ def main(argv=None):
         return 0
 
     if args.command == "select":
-        trend = ledger.read()
-        selection = EarlyStopRule.selection(trend)
-        if selection is None:
-            print("no eval points; nothing to select", file=sys.stderr)
-            return 1
-        selection["rule"] = "argmin mean dev FID over eval points (pre-recorded)"
-        selection["trend"] = trend
-        selection["recorded_utc"] = datetime.now(UTC).isoformat()
-        out = Path(args.out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(selection, indent=2) + "\n")
-        print(f"selection -> {out} (epoch {selection['epoch']}, mean_fid {selection['mean_fid']:.4f})")
-        return 0
+        return SelectionEmitter(eval_root).emit(args.out, rule_text="argmin mean dev FID over eval points (pre-recorded)")
 
-    # watch mode
+    # watch mode: assemble the stage collaborators, the shell engine drives the loop
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cohort_path = eval_root / "dev_cohort.json"
     cohort = DevCohortBuilder(args.dev_list).write(cohort_path) if not cohort_path.is_file() else json.loads(cohort_path.read_text())["cohort"]
@@ -263,69 +293,21 @@ def main(argv=None):
     merged.cfg_guidance_scale = 10.0
     features = MrTrendFeatures(device)
     bank = RealReferenceBank(args.dev_list, args.raw_root, features, eval_root / "reference").build()
-    fid = TrendFid(bank)
     sampler = CandidateSampler(merged, device, None)
     instrument_results = dict(item.split("=", 1) for item in args.instrument_results)
     l2 = L2TrendRunner(instrument_results, args.nnunet_raw, args.nnunet_preprocessed)
-    watcher = CheckpointWatcher(args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()})
-    idle_since = None
-
-    while True:
-        pending = watcher.pending()
-        if not pending:
-            if args.idle_exit_seconds and idle_since is not None and time.time() - idle_since > args.idle_exit_seconds:
-                break
-            if args.idle_exit_seconds and idle_since is None:
-                idle_since = time.time()
-            time.sleep(args.poll_seconds)
-            continue
-        idle_since = None
-        for epoch, path in pending:
-            if any(r["epoch"] == epoch for r in ledger.read()):
-                watcher.mark_done(epoch)
-                continue
-            epoch_dir = eval_root / f"epoch_{epoch}"
-            try:
-                samples = sampler.generate_cohort(path, cohort, spacings, epoch_dir / "samples")
-                plane_cache = {sample["path"]: features.volume_features(sample["path"]) for sample in samples}
-                generated = {modality: {plane: [] for plane in ("xy", "yz", "zx")} for modality in TARGET_MODALITIES}
-                for sample in samples:
-                    for plane in ("xy", "yz", "zx"):
-                        matrix = plane_cache[sample["path"]][plane]
-                        if matrix is not None:
-                            generated[sample["modality"]][plane].append(matrix.mean(axis=0))
-                report, mean_fid = fid.score(generated)
-            except Exception as error:
-                # A broken checkpoint, a transient network/model failure, or any
-                # single-epoch hiccup must not kill the sidecar: without it
-                # nobody writes .early_stop. Skip and retry on the next poll.
-                print(f"[eval] epoch {epoch} skipped: {error}", file=sys.stderr, flush=True)
-                continue
-            l2_trend = None
-            if not args.skip_l2:
-                try:
-                    l2_trend = l2.run(samples, cohort, epoch_dir)
-                except Exception as error:
-                    print(f"[eval] epoch {epoch} l2 skipped: {error}", file=sys.stderr, flush=True)
-            record = {
-                "eval_utc": datetime.now(UTC).isoformat(),
-                "epoch": epoch,
-                "checkpoint": str(path),
-                "fid": report,
-                "m": mean_fid,
-                "l2_trend": l2_trend,
-                "cohort_file": str(cohort_path),
-            }
-            ledger.append(record)
-            (epoch_dir / "trend.json").write_text(json.dumps(record, indent=2) + "\n")
-            watcher.mark_done(epoch)
-            stop, reason = rule.should_stop(ledger.read())
-            print(f"[eval] epoch {epoch}: mean_fid={mean_fid} stop={stop} ({reason})", flush=True)
-            if stop:
-                (Path(args.ckpt_dir) / STOP_FILE).write_text(json.dumps({"reason": reason, "epoch": epoch}) + "\n")
-                print(f"early-stop fired ({reason}); wrote {Path(args.ckpt_dir) / STOP_FILE}", flush=True)
-                return 0
-    return 0
+    return WatchEngine(
+        ckpt_dir=args.ckpt_dir,
+        eval_root=eval_root,
+        eval_every=args.eval_every,
+        max_epoch=args.max_epoch,
+        rule=rule,
+        sampler_factory=partial(sampler.generate_cohort, cohort=cohort, spacings=spacings),
+        scorer=FidTrendScorer(features, TrendFid(bank)),
+        poll_seconds=args.poll_seconds,
+        idle_exit_seconds=args.idle_exit_seconds,
+        post_score=L2PostScore(l2, cohort, args.skip_l2),
+    ).run(cohort_file=str(cohort_path))
 
 
 if __name__ == "__main__":
