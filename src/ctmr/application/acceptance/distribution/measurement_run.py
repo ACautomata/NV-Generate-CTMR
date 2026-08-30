@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 import SimpleITK as sitk
 
-from ctmr.application.acceptance.distribution.final_acceptance import CHANNEL_SUFFIXES, MeasurementTable
+from ctmr.application.acceptance.distribution.measurement_table import CHANNEL_SUFFIXES, MeasurementTable
 from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter  # noqa: E402
 from ctmr.domain.measurement import InstrumentMeasurer
 

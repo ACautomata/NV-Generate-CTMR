@@ -25,11 +25,11 @@ import numpy as np
 import pytest
 import SimpleITK as sitk
 
+from ctmr.application.acceptance.distribution.challenge_registry import GLOBAL_SEED
 from ctmr.application.acceptance.distribution.et_discrimination import (
     DIAGNOSTIC_SEED_BASE as JOB_A_B_SEED_BASE,
 )
 from ctmr.application.acceptance.distribution.et_discrimination import JOB_B_SEED_SLOT
-from ctmr.application.acceptance.distribution.final_acceptance import GLOBAL_SEED
 from ctmr.application.acceptance.distribution.token_dilution import (
     ANCHOR_MODALITY,
     ARM_CI_SLOT_BASE,

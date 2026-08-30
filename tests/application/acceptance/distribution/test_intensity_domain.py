@@ -36,8 +36,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from ctmr.application.acceptance.distribution.challenge_registry import CHALLENGE_SEED_OFFSET, GLOBAL_SEED
 from ctmr.application.acceptance.distribution.et_discrimination import DIAGNOSTIC_SEED_BASE as SIBLING_SEED_BASE
-from ctmr.application.acceptance.distribution.final_acceptance import CHALLENGE_SEED_OFFSET, GLOBAL_SEED, ClusterBootstrap
 from ctmr.application.acceptance.distribution.intensity_domain import (
     DIAGNOSTIC_SEED_BASE,
     GEN_SHAPE_ZYX,
@@ -50,6 +50,7 @@ from ctmr.application.acceptance.distribution.intensity_domain import (
     TrainingPreprocessing,
     VaeReconstructor,
 )
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
 
 # ------------------------------------------------------------------ normalisation arms
 

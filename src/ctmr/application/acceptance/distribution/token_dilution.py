@@ -62,10 +62,8 @@ from pathlib import Path
 import numpy as np
 import SimpleITK as sitk
 
-from ctmr.application.acceptance.distribution.final_acceptance import (
-    BOOTSTRAP_B,
-    ClusterBootstrap,
-)
+from ctmr.application.acceptance.distribution.challenge_registry import BOOTSTRAP_B
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
 
 # Diagnostic bootstrap seeds share jobs A/B's namespace discipline (zcrop_
 # compensation.py DIAGNOSTIC_SEED_BASE): far away from the formal judge chain's

@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from ctmr.application.acceptance.distribution.final_acceptance import FROZEN_ENVELOPES
+from ctmr.application.acceptance.distribution.challenge_registry import FROZEN_ENVELOPES
 from ctmr.application.acceptance.distribution.zcrop_compensation import (
     AttributionJudge,
     DiagnosticReport,

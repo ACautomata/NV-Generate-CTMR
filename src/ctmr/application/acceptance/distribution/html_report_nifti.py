@@ -29,8 +29,8 @@ from pathlib import Path
 import numpy as np
 import SimpleITK as sitk  # noqa: N813  (standard medical-imaging alias)
 
-from ctmr.application.acceptance.distribution.final_acceptance import MODALITIES
 from ctmr.application.acceptance.distribution.html_report import CaseSampler, IndexSummarizer, L2HtmlReport
+from ctmr.application.acceptance.distribution.measurement_table import MODALITIES
 from ctmr.domain.grid import GridResampler, TargetGrid
 
 REAL_CANDIDATE_ROOTS = ("raw/ASNR-MICCAI-BraTS2023", "ASNR-MICCAI-BraTS2023", ".")

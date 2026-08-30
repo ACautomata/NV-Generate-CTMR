@@ -40,12 +40,12 @@ import SimpleITK as sitk
 
 from ctmr.application.acceptance.distribution.calibration_metrics import main as calibration_main
 from ctmr.application.acceptance.distribution.calibration_metrics import measure_case
-from ctmr.application.acceptance.distribution.final_acceptance import MEASUREMENT_FIELDS
 from ctmr.application.acceptance.distribution.measurement_run import (
     COMBINED_TO_INSTRUMENT,
     GeneratedVolumeResampler,
     MeasurementRunner,
 )
+from ctmr.application.acceptance.distribution.measurement_table import MEASUREMENT_FIELDS
 from ctmr.domain.measurement import (
     CALIBRATION_FIELDS,
     FINAL_ACCEPTANCE_FIELDS,

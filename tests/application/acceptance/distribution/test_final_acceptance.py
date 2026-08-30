@@ -27,7 +27,6 @@ from ctmr.application.acceptance.distribution.final_acceptance import (
     FROZEN_ENVELOPES,
     GLOBAL_SEED,
     HOLDOUT_QUOTAS,
-    MEASUREMENT_FIELDS,
     MODALITIES,
     REGIONS,
     AcceptanceError,
@@ -45,6 +44,7 @@ from ctmr.application.acceptance.distribution.final_acceptance import (
     QuantityRegistry,
     RealReferenceResolver,
 )
+from ctmr.application.acceptance.distribution.measurement_table import MEASUREMENT_FIELDS
 
 pytestmark = pytest.mark.torch
 
