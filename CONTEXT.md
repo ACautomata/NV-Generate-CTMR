@@ -153,7 +153,7 @@ _Avoid_: 生产侧重写五键提取、frozen 门禁留在各调用点、以共�
 以 label 构造的图像体素损失加权(作用于肿瘤亚区),与条件模态无关——label 进 loss 与验收,不进 P3 条件。
 
 **L2 共享词汇(L2 shared vocabulary)**:
-distribution 包内判官与执行/诊断侧共用的非判定件——测量表 CSV 协议(wide 27 列/long 24 列)、五挑战/名额/统一种子注册表、纯统计原语(rel_diff、分位/分布读出)与 cluster bootstrap。stdlib-only 是其注册性质:判官与共享词汇零三方依赖、任意机器可裁,以 import 面测试守护。区域/标签词汇与冻结常数(REGIONS/LABEL_DOMAIN/WilsonUpper/Z95)唯一定义于 stdlib 词汇叶,`ctmr.domain.measurement` 再导出。诊断作业可消费共享词汇;判官不 import 任何诊断件,gate 常量镜像不并入(ADR-0006)。
+distribution 包内判官与执行/诊断侧共用的非判定件——测量表 CSV 协议(wide 27 列/long 24 列)、五挑战/名额/统一种子注册表、纯统计原语(rel_diff、分位/分布读出)与 cluster bootstrap。stdlib-only 是其注册性质:判官与共享词汇零三方依赖、任意机器可裁,以 import 面测试守护。区域/标签词汇与冻结常数(REGIONS/LABEL_DOMAIN/WilsonUpper/Z95)唯一定义于 stdlib 词汇叶,`ctmr.domain.measurement` 再导出。`challenge_registry` 同时承载 ADR-0002 包络字面量表——诊断侧 orientation 引用的只读注册数据(#229);包络的载入校验 gate(`FrozenEnvelopes` ±5e-5 漂移拒绝)留判官。诊断作业可消费共享词汇;判官不 import 任何诊断件,gate 常量镜像不并入(ADR-0006)。
 落地名:`ctmr.application.acceptance.distribution.{measurement_table,statistics,challenge_registry}` + 词汇叶 `ctmr.domain.vocabulary`;经 [ADR-0017](docs/adr/0017-l2-shared-vocab-diagnostic-support.md) 钉板。
 _Avoid_: 往判官 final_acceptance 继续添共享件、判官 import 诊断件、把 gate 常量并进共享词汇、以 numpy 依赖破坏 stdlib-only
 

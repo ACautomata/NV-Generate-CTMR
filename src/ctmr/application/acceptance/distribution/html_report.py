@@ -40,11 +40,9 @@ import io
 
 from PIL import Image
 
-from ctmr.application.acceptance.distribution.final_acceptance import (
-    CHALLENGES,
-    MODALITIES,
-    REGIONS,
-)
+from ctmr.application.acceptance.distribution.challenge_registry import CHALLENGES
+from ctmr.application.acceptance.distribution.measurement_table import MODALITIES
+from ctmr.domain.vocabulary import REGION_NAMES as REGIONS
 
 # ── display window & overlay tuning ────────────────────────────────────────
 WINDOW_LOW_PERCENTILE = 1.0

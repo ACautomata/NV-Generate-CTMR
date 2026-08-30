@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from ctmr.application.acceptance.distribution.challenge_registry import CHALLENGE_SEED_OFFSET, GLOBAL_SEED, HOLDOUT_QUOTAS
 from ctmr.application.acceptance.distribution.et_discrimination import (
     DIAGNOSTIC_SEED_BASE,
     JOB_B_SEED_SLOT,
@@ -29,13 +30,7 @@ from ctmr.application.acceptance.distribution.et_discrimination import (
     EtDiscriminationReport,
     main,
 )
-from ctmr.application.acceptance.distribution.final_acceptance import (
-    CHALLENGE_SEED_OFFSET,
-    GLOBAL_SEED,
-    HOLDOUT_QUOTAS,
-    MEASUREMENT_FIELDS,
-    MeasurementTable,
-)
+from ctmr.application.acceptance.distribution.measurement_table import MEASUREMENT_FIELDS, MeasurementTable
 
 
 def _row(challenge, case, side, vol_et=None, *, pred_empty=0, input_fail=0, run_fail=0, hier_viol=0):

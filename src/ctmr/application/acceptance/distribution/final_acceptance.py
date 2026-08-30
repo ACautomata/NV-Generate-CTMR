@@ -18,8 +18,10 @@ artifact. Pass lines are pre-registered in docs/adr/0004 and
 docs/calibration/l2-final-acceptance-protocol.md; every number comes from
 ADR-0002 (calibration envelopes) and ADR-0003 (frozen-artifact audit).
 
-Pipeline (judgement chain in this file is stdlib-only; NIfTI execution side
-lives in ``measurement_run``, the NIfTI execution side of this package):
+Pipeline (the judgement chain in this file plus the package's shared
+vocabulary is stdlib-only -- measurement_table/statistics/challenge_registry,
+ADR-0017; NIfTI execution side lives in ``measurement_run``, the NIfTI
+execution side of this package):
 
   assemble    samples manifest + holdout phase manifest -> assembly plan JSON
               (unique obs_id per observation: <case>__real / <case>__gen[__a<anchor>];
@@ -65,83 +67,38 @@ contract; the bound report then passes ``ctmr accept contract attach
 """
 
 import argparse
-import csv
 import json
 import math
-import random
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ctmr.application.acceptance.contract.artifacts import ArtifactFingerprinter, ManifestSides
 from ctmr.application.acceptance.contract.binding import FrozenRunBinding, FrozenRunBindingError
+from ctmr.application.acceptance.distribution.challenge_registry import (
+    BOOTSTRAP_B,
+    CHALLENGE_SEED_OFFSET,
+    CHALLENGES,
+    FROZEN_ENVELOPES,
+    GLOBAL_SEED,
+    HOLDOUT_QUOTAS,
+)
+from ctmr.application.acceptance.distribution.measurement_table import (
+    CHANNEL_SUFFIXES,
+    MODALITIES,
+    AcceptanceError,
+    MeasurementTable,
+)
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
+from ctmr.domain.vocabulary import REGION_NAMES as REGIONS
 
 PLAN_SCHEMA = "l2-final-acceptance-plan/1"
 REPORT_SCHEMA = "l2-final-acceptance-report/1"
 PHASES = ("P1", "P2", "P3")
-CHALLENGES = ("GLI", "SSA", "MEN", "METS", "PED")
-REGIONS = ("WT", "TC", "ET")
-REGION_LABELS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
-MODALITIES = ("t1n", "t1c", "t2w", "t2f")
-CHANNEL_SUFFIXES = {"t1n": "0000", "t1c": "0001", "t2w": "0002", "t2f": "0003"}
-
-# Frozen 20% final-holdout quotas (spec #51 decision 3 / split manifest).
-HOLDOUT_QUOTAS = {"GLI": 250, "SSA": 12, "MEN": 200, "METS": 48, "PED": 20}
-
-# Bootstrap registration (protocol §4): B, global seed, per-challenge offsets.
-BOOTSTRAP_B = 10_000
-GLOBAL_SEED = 20260821
-CHALLENGE_SEED_OFFSET = {"GLI": 1, "SSA": 2, "MEN": 3, "METS": 4, "PED": 5}
 
 # ADR-0003 §6: the accepted frozen-artifact audit verdict anchor.
 FROZEN_AUDIT_SHA256 = "9121e8ac73f2bdb3999f83c10666c387ccd4c488b3e71b24cf7ab208353e0f82"
-
-# ADR-0002 frozen envelopes (published 4-dp literals; the authoritative source
-# for every pass line -- equality against a controlled calibration summary is
-# enforced to +-5e-5 so drift AND narrowing both reject).
-FROZEN_ENVELOPES = {
-    #            region: D_r,low   E_r,vol   E_r,centroid(mm)   R_fail Wilson 95% upper
-    "GLI": {"WT": (0.8053, 0.2802, 5.38), "TC": (0.6819, 0.4373, 4.79), "ET": (0.4093, 0.5702, 4.41), "r_fail_upper": 0.0043},
-    "SSA": {"WT": (0.7046, 0.7223, 12.36), "TC": (0.6578, 0.7767, 8.64), "ET": (0.7111, 0.7786, 8.42), "r_fail_upper": 0.0838},
-    "MEN": {"WT": (0.7562, 0.3235, 3.92), "TC": (0.7208, 0.3576, 6.17), "ET": (0.7501, 0.3367, 5.70), "r_fail_upper": 0.0053},
-    "METS": {"WT": (0.0000, 1.6510, 28.58), "TC": (0.0000, 1.0000, 35.08), "ET": (0.0000, 1.0000, 35.08), "r_fail_upper": 0.0220},
-    "PED": {"WT": (0.0093, 0.9946, 17.87), "TC": (0.0105, 0.9939, 18.33), "ET": (0.0000, 1.0000, 22.65), "r_fail_upper": 0.0507},
-}
-
-MEASUREMENT_FIELDS = [
-    "obs_id",
-    "challenge",
-    "case",
-    "side",
-    "anchor",
-    "input_fail",
-    "run_fail",
-    "hier_viol",
-    "pred_empty",
-    "vol_wt_ml",
-    "vol_tc_ml",
-    "vol_et_ml",
-    "brain_ml",
-    "wt_brain",
-    "et_wt",
-    "cx_wt_mm",
-    "cy_wt_mm",
-    "cz_wt_mm",
-    "cx_tc_mm",
-    "cy_tc_mm",
-    "cz_tc_mm",
-    "cx_et_mm",
-    "cy_et_mm",
-    "cz_et_mm",
-    "cond_dice_wt",
-    "cond_dice_tc",
-    "cond_dice_et",
-]
-
-
-class AcceptanceError(Exception):
-    """Raised when acceptance setup, freeze verification or judgement rules break."""
 
 
 # ── frozen envelopes ────────────────────────────────────────────────────
@@ -501,105 +458,12 @@ class PredictScriptWriter:
         return runner
 
 
-# ── measurement table ───────────────────────────────────────────────────
-
-
-class MeasurementTable:
-    """CSV persistence for per-observation measurements (controlled storage, subject IDs)."""
-
-    @classmethod
-    def write(cls, rows, path):
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=MEASUREMENT_FIELDS)
-            writer.writeheader()
-            writer.writerows(rows)
-        return path
-
-    @classmethod
-    def read(cls, path):
-        with open(Path(path), newline="") as handle:
-            rows = list(csv.DictReader(handle))
-        missing = set(MEASUREMENT_FIELDS) - set(rows[0].keys()) if rows else set(MEASUREMENT_FIELDS)
-        if missing:
-            raise AcceptanceError(f"measurement table {path} is missing columns: {sorted(missing)}")
-        return rows
-
-    @staticmethod
-    def number(row, field):
-        """Parses a measurement cell; empty/None -> None (undefined quantity)."""
-        value = row.get(field)
-        if value is None or value == "":
-            return None
-        parsed = float(value)
-        return None if math.isnan(parsed) else parsed
-
-    @staticmethod
-    def flag(row, field):
-        return str(row.get(field, "")).strip().lower() in ("1", "true", "yes")
-
-
-# ── statistics ──────────────────────────────────────────────────────────
-
-
-class ClusterBootstrap:
-    """Case-level cluster bootstrap with linear-interpolated quantiles.
-
-    Percentile CIs use the same index = q*(n-1) linear rule as the calibration
-    side's numpy.quantile defaults. The RNG is random.Random(seed); the
-    calibration bit-stream (PCG64) is deliberately not reproduced -- this is a
-    new computation, not a recomputation of ADR-0002 numbers (protocol §4).
-    """
-
-    def __init__(self, b):
-        self._b = b
-
-    @staticmethod
-    def quantile(values, q):
-        ordered = sorted(values)
-        n = len(ordered)
-        if n == 0:
-            return math.nan
-        if n == 1:
-            return ordered[0]
-        index = q * (n - 1)
-        low = math.floor(index)
-        high = math.ceil(index)
-        if low == high:
-            return ordered[int(index)]
-        return ordered[low] + (index - low) * (ordered[high] - ordered[low])
-
-    def ci90(self, per_case_values, seed):
-        """Two-sided 90% CI of the pooled population, resampling cases (clusters)."""
-        pool = [group for group in per_case_values if group]
-        n = len(pool)
-        if n == 0:
-            return None
-        rng = random.Random(seed)
-        q05_samples, q95_samples = [], []
-        for _ in range(self._b):
-            pooled = []
-            for _ in range(n):
-                pooled += pool[rng.randrange(n)]
-            q05_samples.append(self.quantile(pooled, 0.05))
-            q95_samples.append(self.quantile(pooled, 0.95))
-        return {"low": self.quantile(q05_samples, 0.05), "high": self.quantile(q95_samples, 0.95), "n_cases": n}
-
-    def q5_lower_bound(self, per_case_values, seed):
-        """One-sided bootstrap 95% lower bound of the population 5th percentile (D_r,low statistic)."""
-        pool = [group for group in per_case_values if group]
-        n = len(pool)
-        if n == 0:
-            return None
-        rng = random.Random(seed)
-        q05_samples = []
-        for _ in range(self._b):
-            pooled = []
-            for _ in range(n):
-                pooled += pool[rng.randrange(n)]
-            q05_samples.append(self.quantile(pooled, 0.05))
-        return {"bound": self.quantile(q05_samples, 0.05), "n_cases": n}
+# ── measurement table & statistics ──────────────────────────────────────
+# The measurement-table CSV protocol (MEASUREMENT_FIELDS / MeasurementTable)
+# and the statistics primitives (ClusterBootstrap) are shared vocabulary:
+# they live in measurement_table / statistics (ADR-0017 decision 1) and are
+# imported above; the judgement chain below is their only in-package judge-side
+# consumer.
 
 
 class QuantityFamily:

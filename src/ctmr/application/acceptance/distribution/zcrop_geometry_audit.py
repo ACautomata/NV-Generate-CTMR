@@ -61,19 +61,18 @@ from pathlib import Path
 
 import numpy as np
 
-from ctmr.application.acceptance.distribution.final_acceptance import (
+from ctmr.application.acceptance.distribution.challenge_registry import (
     BOOTSTRAP_B,
     CHALLENGE_SEED_OFFSET,
     CHALLENGES,
     FROZEN_ENVELOPES,
-    MeasurementTable,
 )
+from ctmr.application.acceptance.distribution.measurement_table import MeasurementTable
 from ctmr.application.acceptance.distribution.zcrop_compensation import (
     COMPENSATED_SEED_STRIDE,
     DIAGNOSTIC_SEED_BASE,
     GEN_RESAMPLED_Z,
     INSTRUMENT_Z,
-    REGION_LABELS,
     AttributionJudge,
     DiagnosticError,
     NiftiMaskRepository,
@@ -81,6 +80,7 @@ from ctmr.application.acceptance.distribution.zcrop_compensation import (
     PairedCompensation,
     ZCropCompensation,
 )
+from ctmr.domain.vocabulary import REGIONS as REGION_LABELS
 
 # The holdout generated NIfTI artifacts (sidecar writer convention, modality_label
 # monitor): 256x256x128 voxels declared at unit 1 mm spacing.

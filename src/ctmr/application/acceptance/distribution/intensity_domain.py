@@ -89,7 +89,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ctmr.application.acceptance.distribution.final_acceptance import ClusterBootstrap
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
 from ctmr.domain.measurement import WilsonUpper
 
 # Diagnostic bootstrap seeds share jobs A/B's namespace (zcrop_compensation.py /

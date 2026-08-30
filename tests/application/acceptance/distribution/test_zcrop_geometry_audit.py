@@ -32,7 +32,8 @@ import numpy as np
 import pytest
 import SimpleITK as sitk
 
-from ctmr.application.acceptance.distribution.final_acceptance import MEASUREMENT_FIELDS, ClusterBootstrap, MeasurementTable
+from ctmr.application.acceptance.distribution.measurement_table import MEASUREMENT_FIELDS, MeasurementTable
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
 from ctmr.application.acceptance.distribution.zcrop_compensation import (
     DIAGNOSTIC_SEED_BASE,
     GEN_RESAMPLED_Z,

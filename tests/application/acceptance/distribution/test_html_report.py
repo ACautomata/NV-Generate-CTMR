@@ -13,7 +13,6 @@ import io
 import pytest
 from PIL import Image
 
-from ctmr.application.acceptance.distribution.final_acceptance import MODALITIES
 from ctmr.application.acceptance.distribution.html_report import (
     BraTSRegionPalette,
     CaseSampler,
@@ -23,6 +22,7 @@ from ctmr.application.acceptance.distribution.html_report import (
     MeasurementPresenter,
     SliceRenderer,
 )
+from ctmr.application.acceptance.distribution.measurement_table import MODALITIES
 
 pytestmark = pytest.mark.torch
 

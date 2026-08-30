@@ -57,16 +57,16 @@ import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
 
-from ctmr.application.acceptance.distribution.final_acceptance import (
+from ctmr.application.acceptance.distribution.challenge_registry import (
     BOOTSTRAP_B,
     CHALLENGE_SEED_OFFSET,
     CHALLENGES,
     FROZEN_ENVELOPES,
-    REGION_LABELS,
-    ClusterBootstrap,
-    MeasurementTable,
 )
+from ctmr.application.acceptance.distribution.measurement_table import MeasurementTable
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
 from ctmr.domain.grid import INSTRUMENT_GRID
+from ctmr.domain.vocabulary import REGIONS as REGION_LABELS
 
 # The registered modality-label-stage sampling (256x256x128 @ 0.94/0.94/1.36 mm)
 # resampled to 1 mm: round(128 * 1.36) = 174 z slices before the centre crop.

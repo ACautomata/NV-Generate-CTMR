@@ -32,7 +32,7 @@ sugon host recipe lives at ``deploy/jobs/run_et_discrimination_b.sh``; reports
 land in the sugon artifact area (controlled storage), never in git.
 
 P3 candidate reuse (#205 series-③ merge point): the input surface is the
-per-observation measurement CSV (``final_acceptance.MEASUREMENT_FIELDS``
+per-observation measurement CSV (``measurement_table.MEASUREMENT_FIELDS``
 contract), which is phase-agnostic -- P3's four anchor rounds simply append
 ``__gen__a<anchor>`` observations. Whether the detection denominator then stays
 per-observation or collapses to per-case is a series-③ protocol decision,
@@ -50,15 +50,14 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ctmr.application.acceptance.distribution.final_acceptance import (
+from ctmr.application.acceptance.distribution.challenge_registry import (
     BOOTSTRAP_B,
     CHALLENGE_SEED_OFFSET,
     CHALLENGES,
     HOLDOUT_QUOTAS,
-    AcceptanceError,
-    ClusterBootstrap,
-    MeasurementTable,
 )
+from ctmr.application.acceptance.distribution.measurement_table import AcceptanceError, MeasurementTable
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
 from ctmr.domain.measurement import WilsonUpper
 
 # Diagnostic bootstrap seeds share job A's namespace discipline (zcrop_
@@ -276,7 +275,7 @@ class EtDiscriminationReport:
                 "empty_pred": "空 pred = 仪器 argmax 全 0(整例未检出),测量结果而非失败(#38 口径)",
                 "real_only": "real 侧 ET 检出而 gen 侧未检出——ET 缺失定量读数(本作业的核心甄别量)",
                 "rel_diff": "(gen - real)/real;gen 侧 ET 空保留 -1.0(协议 §4),real 侧空不定义",
-                "p3_reuse_hook": "输入面为逐观测测量 CSV(final_acceptance.MEASUREMENT_FIELDS 契约),phase 无关;"
+                "p3_reuse_hook": "输入面为逐观测测量 CSV(measurement_table.MEASUREMENT_FIELDS 契约),phase 无关;"
                 "P3 四锚轮的分子分母口径(逐观测 vs 逐 case 聚合)由 #205 序列③拍板",
             },
             "per_challenge": {reading["challenge"]: {key: value for key, value in reading.items() if key != "per_case_rows"} for reading in readings},
