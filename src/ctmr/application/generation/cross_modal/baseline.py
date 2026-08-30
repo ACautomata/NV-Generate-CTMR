@@ -62,7 +62,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -78,10 +77,12 @@ from monai.utils import set_determinism
 from ctmr.application.generation.cross_modal.anchor import AnchorLatentEncoder
 from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
 from ctmr.domain.generation.model import DiffusionModel
+from ctmr.domain.identity import WeightsRef
 from ctmr.infrastructure.maisi_engine.diff_model_infer import load_models
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config, setup_logging
 from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
 from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
+from ctmr.infrastructure.weightsref import weights_ref_of_file
 
 INFER_SCHEMA = "brats-p3-stage0-infer/1"
 PAIRS_SCHEMA = "brats-p3-stage0-pairs/1"
@@ -186,7 +187,7 @@ class BaselineRunGuard:
         checkpoint = Path(upstream["checkpoint"]["path"])
         if not checkpoint.is_file():
             raise BaselinePlanError(f"pinned P1-DM checkpoint missing: {checkpoint}")
-        if self.file_sha256(checkpoint) != upstream["checkpoint"]["sha256"]:
+        if weights_ref_of_file(checkpoint) != WeightsRef(sha256=upstream["checkpoint"]["sha256"]):
             raise BaselinePlanError(f"pinned P1-DM checkpoint changed on disk: {checkpoint}")
         inference_entries = [entry for entry in record.get("configs", []) if entry.get("role") == "inference"]
         if len(inference_entries) != 1:
@@ -194,7 +195,7 @@ class BaselineRunGuard:
                 "the baseline run must pin exactly one --config inference=<official baseline inference config> "
                 "(the recorded inference provenance, issue #60 acceptance criterion 1)"
             )
-        if self.file_sha256(self._infer_config_path) != inference_entries[0]["sha256"]:
+        if weights_ref_of_file(self._infer_config_path).sha256 != inference_entries[0]["sha256"]:
             raise BaselinePlanError(
                 f"--infer-config sha256 does not match the config pinned by run {record['run_id']}; "
                 "regenerate with the recorded official inference config"
@@ -203,11 +204,7 @@ class BaselineRunGuard:
 
     @staticmethod
     def file_sha256(path):
-        digest = hashlib.sha256()
-        with open(path, "rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
+        return weights_ref_of_file(path).sha256
 
 
 class BaselineSamplePlanBuilder:

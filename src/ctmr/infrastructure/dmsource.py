@@ -25,12 +25,12 @@ identity inputs of the gates are ``domain.WeightsRef``: the checkpoint byte
 identity the ledger names, never a path.
 """
 
-import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ctmr.domain.identity import WeightsRef
+from ctmr.infrastructure.weightsref import weights_ref_of_file
 
 DM_SOURCE_SCHEMA = "brats-dm-source/1"
 
@@ -50,14 +50,6 @@ class DmSourceLedger:
 
     def _now_utc(self):
         return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    @staticmethod
-    def _file_sha256(path):
-        digest = hashlib.sha256()
-        with open(path, "rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
 
     def current(self):
         ledger_path = self.path()
@@ -79,7 +71,7 @@ class DmSourceLedger:
             "schema": DM_SOURCE_SCHEMA,
             "run_id": record["run_id"],
             "run_record": str(Path(run_record_path).resolve()),
-            "run_record_sha256": self._file_sha256(run_record_path),
+            "run_record_sha256": weights_ref_of_file(run_record_path).sha256,
             "checkpoint": record["selection"]["checkpoint"],
             "configs": record["configs"],
             "manifest": record["manifest"],
