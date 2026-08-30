@@ -239,19 +239,26 @@ def _add_generation_flags(parser, with_stage0_pairs):
 
 TRAIN_MIGRATED = TrainCli("description", stage="p3").parse
 ENTRY_TABLE = {
-    "train": (FINETUNE_ARGV + ["--no_amp", "--amp_dtype", "fp16"], _reference_finetune_parser, TRAIN_MIGRATED),
-    "dev-eval reference": (DEV_EVAL_REFERENCE_ARGV, _reference_dev_eval_parser, monitor.parse_args),
-    "dev-eval watch": (DEV_EVAL_WATCH_ARGV, _reference_dev_eval_parser, monitor.parse_args),
-    "dev-eval select": (DEV_EVAL_SELECT_ARGV, _reference_dev_eval_parser, monitor.parse_args),
+    "train": (
+        FINETUNE_ARGV + ["--no_amp", "--amp_dtype", "fp16"],
+        _reference_finetune_parser,
+        TRAIN_MIGRATED,
+        "ctmr.application.generation.cross_modal.train",
+    ),
+    "dev-eval reference": (DEV_EVAL_REFERENCE_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
+    "dev-eval watch": (DEV_EVAL_WATCH_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
+    "dev-eval select": (DEV_EVAL_SELECT_ARGV, _reference_dev_eval_parser, monitor.parse_args, monitor.__name__),
     "generate baseline": (
         BASELINE_ARGV,
         lambda: _add_generation_flags(argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter), False),
         baseline.parse_args,
+        baseline.__name__,
     ),
     "generate candidate": (
         CANDIDATE_ARGV,
         lambda: _add_generation_flags(argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter), True),
         candidate.parse_args,
+        candidate.__name__,
     ),
 }
 
@@ -267,16 +274,15 @@ CLI_PREFIXES = {
 
 @pytest.mark.parametrize("name", ENTRY_TABLE)
 def test_cli_forwards_the_entry_argv_verbatim(name):
-    argv, _, _ = ENTRY_TABLE[name]
-    peeled = cli.CtmrCli._peel_generate([*CLI_PREFIXES[name], *argv])
-    assert peeled is not None
-    rest = peeled[1] if len(peeled) == 2 else peeled[2]
+    argv, _, _, module = ENTRY_TABLE[name]
+    route, rest = cli.CtmrCli().route([*CLI_PREFIXES[name], *argv])
+    assert route.module == module
     assert list(rest) == argv
 
 
 @pytest.mark.parametrize("name", ENTRY_TABLE)
 def test_entry_namespace_is_unchanged_against_the_retired_parsers(name):
-    argv, reference_builder, migrated = ENTRY_TABLE[name]
+    argv, reference_builder, migrated, _ = ENTRY_TABLE[name]
     reference = reference_builder().parse_args(argv)
     assert vars(migrated(argv)) == vars(reference), f"{name}: migrated namespace drifted"
 
@@ -289,7 +295,6 @@ def test_train_cli_derives_num_gpus_from_the_entry_argv():
 
 def test_cross_modal_generate_variant_is_not_consumed_as_entry_argv():
     """The ``generate baseline|candidate`` variant stays in the CLI namespace."""
-    peeled = cli.CtmrCli._peel_generate(["generate", "cross-modal", "generate", "candidate", *CANDIDATE_ARGV])
-    assert peeled[0] is cli.CtmrCli._run_cross_modal_generate
-    assert peeled[1] == "candidate"
-    assert list(peeled[2]) == CANDIDATE_ARGV
+    route, rest = cli.CtmrCli().route(["generate", "cross-modal", "generate", "candidate", *CANDIDATE_ARGV])
+    assert route.module == candidate.__name__
+    assert list(rest) == CANDIDATE_ARGV
