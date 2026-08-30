@@ -13,7 +13,8 @@ deploy/
 │   ├── p1_predict_all.sh           #   #38 五挑战并行仪器预测（每挑战一卡）
 │   ├── run_zcrop_compensation_a.sh      #   #206 诊断作业 A：z-crop 补偿重算（测量轴归因，只读、不入 git）
 │   ├── run_et_discrimination_b.sh       #   #207 诊断作业 B：冻结仪器 ET 甄别（ET 缺失定量化，只读、不入 git）
-│   └── run_token_dilution_d.sh          #   #209 诊断作业 D：同 seed 换 token 采样亮核甄别（GPU 采样 + CPU 统计，不入 git）
+│   ├── run_token_dilution_d.sh          #   #209 诊断作业 D：同 seed 换 token 采样亮核甄别（GPU 采样 + CPU 统计，不入 git）
+│   └── run_zcrop_geometry_audit_217.sh  #   #217 复核作业 A：工件 affine 几何基座复核（对照读数，只读、不入 git）
 ├── data/
 │   └── synapse_download_wizard.sh  # Synapse 数据集下载交互式向导（曙光 login 节点运行）
 └── experiments/                    # 实验记录住址（书写约定见 experiments/README.md）
@@ -92,6 +93,7 @@ echo $! > /root/private_data/<run_dir>/predict.pid
 | `run_zcrop_compensation_a.sh` | #206 诊断作业 A（父 #205）：L2 终验逐 case z-crop 补偿重算 `vol_wt_rel`/质心 z，产出「测量轴 vs 候选缺陷」归因读数（variant=diagnostic，不产生验收判定） | `bash deploy/jobs/run_zcrop_compensation_a.sh`（路径可用 `L2_RUN_TREE`/`MEASUREMENTS_CSV`/`PREDICT_DIR` 覆写） | 纯 CPU 重算，无需 DCU 卡；报告落运行树 `diagnostics/zcrop_compensation/`（工件区，不入 git），核心统计为带单测的纯函数 |
 | `run_et_discrimination_b.sh` | #207 诊断作业 B（父 #205）：holdout 530 例生成伪四模态体已产出的逐观测仪器读数重算为逐挑战 ET 检出率、ET 体积分布 vs real、空 pred 计数（#38 读数口径同族；variant=diagnostic，不产生验收判定） | `bash deploy/jobs/run_et_discrimination_b.sh`（路径可用 `L2_RUN_TREE`/`MEASUREMENTS_CSV`/`OUTPUT_DIR` 覆写） | 零推理纯 CPU 读数，无需 DCU 卡；报告落运行树 `diagnostics/et_discrimination/`（工件区，不入 git），核心统计为带单测的纯函数 |
 | `run_token_dilution_d.sh` | #209 诊断作业 D（父 #205）：固定 16 例 dev cohort 上冻结候选 checkpoint 同 seed 换 token 五臂采样（t1n/t1c/t2w/t2f + 对照泛 MR 8；每例一 seed 五臂共用），亮核顶部统计 + 34 对 8 增益份额分带，定量模态标签增广稀释（RC-2/L3 甄别；variant=diagnostic，不产生验收判定） | `EMB_ROOT=<...> bash deploy/jobs/run_token_dilution_d.sh`（其余路径可用 `P1_ROOT`/`CKPT`/`DEV_LIST`/`SAMPLES_DIR`/`OUTPUT_DIR` 覆写） | 需一张 DCU 卡（16 例 × 5 臂 = 80 次采样，可重入续采）；亮核统计第二步纯 CPU；报告与采样产物落 `$P1_ROOT/token_dilution/`（工件区，不入 git），核心统计为带单测的纯函数 |
+| `run_zcrop_geometry_audit_217.sh` | #217 复核作业 A（父 #205）：holdout 生成工件携带单位 1mm affine，作业 A 注册的 z-crop 19 层在工件上不发生（实为 pad 13/14）；按两种几何各重算一遍 centroid_wt_z，产出对照读数＋越窗重判＋视场缺口定量（variant=diagnostic，不产生验收判定，不回改已落盘的作业 A） | `bash deploy/jobs/run_zcrop_geometry_audit_217.sh`（路径可用 `L2_RUN_TREE`/`MEASUREMENTS_CSV`/`PREDICT_DIR` 覆写） | 纯 CPU 重算，无需 DCU 卡；报告落运行树 `diagnostics/zcrop_geometry_audit/`（工件区，不入 git），核心统计为带单测的纯函数 |
 
 三个配方的仪器调用全部走 canonical 入口 `ctmr measure predict`（ADR-0009 收编，#140 迁至 `src/ctmr/infrastructure/nnunet_runner.py`），逐挑战 dataset/plans/config 由收编门禁测试钉死与 `INSTRUMENT_SPECS` 逐字一致——改 spec 请改 `src/ctmr/domain/instrument_spec.py`，勿手调配方参数。
 
