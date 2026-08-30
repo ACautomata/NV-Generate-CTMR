@@ -15,15 +15,16 @@
 (calibration ``dice_of``, synthetic-domain eval, terminal-acceptance
 ``condition_dice``, P2 dev eval): the empty-denominator sentinel is *one*
 value -- ``None`` -- aligned with the frozen terminal-acceptance semantics.
-``WilsonUpper`` is the single Wilson-score-95% upper-bound definition behind
-the five copies, with the one ``n == 0`` guard (the terminal-acceptance call
-site guards before calling, so its frozen output is unchanged by this module).
-Both are class-method namespace classes, not free functions (repo python.md).
+``WilsonUpper`` moved to the stdlib-only leaf ``ctmr.domain.vocabulary``
+(ADR-0017 decision 3) and is re-exported here -- this module's import surface
+is unchanged. ``DiceScore`` is a class-method namespace class, not a free
+function (repo python.md); the re-exported ``WilsonUpper`` keeps the same
+shape.
 """
 
-import math
-
 import numpy as np
+
+from ctmr.domain.vocabulary import WilsonUpper  # noqa: F401  (re-export, ADR-0017 decision 3)
 
 
 class DiceScore:
@@ -35,19 +36,3 @@ class DiceScore:
         if denominator == 0:
             return None  # the single empty-denominator sentinel (ADR-0010 decision 4)
         return float(2 * np.logical_and(first, second).sum() / denominator)
-
-
-class WilsonUpper:
-    """Wilson score-interval 95% upper bound of a binomial proportion, ``n == 0`` guarded."""
-
-    Z95 = 1.959963984540054  # the frozen z-value from all five drifted copies
-
-    @classmethod
-    def of(cls, successes: int, trials: int) -> float:
-        if trials == 0:
-            return math.nan  # the single n==0 guard; terminal-acceptance's call site kept its own None
-        probability = successes / trials
-        denom = 1 + cls.Z95**2 / trials
-        center = (probability + cls.Z95**2 / (2 * trials)) / denom
-        half = (cls.Z95 / denom) * math.sqrt(probability * (1 - probability) / trials + cls.Z95**2 / (4 * trials**2))
-        return min(1.0, center + half)

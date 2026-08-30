@@ -11,11 +11,15 @@
 
 """Instrument measurement, the unique module (ADR-0010, issue #109).
 
-``regions`` is the single source of the WT / TC / ET label projection rules
-(``REGIONS`` + the derived ``REGION_NAMES`` tuple form + ``RegionMasks``);
-``metrics`` holds the shared primitives (``DiceScore`` with the single
-empty-denominator ``None`` sentinel, ``WilsonUpper`` with the single ``n == 0``
-guard); ``hierarchy`` separates the canonical containment
+``ctmr.domain.vocabulary`` is the single source of the WT / TC / ET label
+projection rules (``REGIONS`` + the derived ``REGION_NAMES`` tuple form) and
+the frozen Wilson constants (``WilsonUpper`` with ``Z95``) -- stdlib-only,
+shared with the terminal-acceptance judge; this package re-exports them,
+consumer surface unchanged (ADR-0017 decision 3). ``regions`` holds the
+numpy-side collaborators (``RegionMasks`` -- the only mask extraction -- plus
+the instrument-grid constants); ``metrics`` holds the shared primitives
+(``DiceScore`` with the single empty-denominator ``None`` sentinel);
+``hierarchy`` separates the canonical containment
 ``HierarchyChecker.violates`` from the calibration case-usability gate
 ``CalibrationCaseUsability`` (two old ``hier_viol`` meanings, one per class);
 ``measurement`` is the canonical ``CaseMeasurement`` value object with the
@@ -32,8 +36,9 @@ run on any machine.
 from ctmr.domain.measurement.hierarchy import CalibrationCaseUsability, HierarchyChecker
 from ctmr.domain.measurement.measurement import CALIBRATION_FIELDS, FINAL_ACCEPTANCE_FIELDS, CaseMeasurement, GtRegionMetrics
 from ctmr.domain.measurement.measurer import InstrumentMeasurer
-from ctmr.domain.measurement.metrics import DiceScore, WilsonUpper
+from ctmr.domain.measurement.metrics import DiceScore
 from ctmr.domain.measurement.regions import LABEL_DOMAIN, REGION_NAMES, REGIONS, RegionMasks
+from ctmr.domain.vocabulary import WilsonUpper
 
 __all__ = [
     "CALIBRATION_FIELDS",

@@ -18,6 +18,7 @@ modules live here as of the migration batches (#133):
 
 - ``grid``            -- instrument input geometry        (ADR-0008, #105)
 - ``measurement``     -- instrument measurement           (ADR-0010, #109)
+- ``vocabulary``      -- stdlib-only frozen vocabulary leaf (ADR-0017, #222)
 - ``instrument_spec`` -- frozen instrument command        (ADR-0009, #107)
 - ``recipe``          -- pinned-recipe guards             (ADR-0011, #111)
 - ``identity``        -- weight lineage, sha256-addressed (#133)
