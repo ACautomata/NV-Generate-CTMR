@@ -38,11 +38,15 @@ the five per-case volumes lives at
 sugon host recipe at ``deploy/jobs/run_token_dilution_d.sh``. Reports land in
 the sugon artifact area (controlled storage), never in git.
 
-Diagnostic seed discipline (shared with jobs A/B, ADR-0017 pre-registration):
-seeds hang off the diagnostic base 900,000,000, never the formal judge chain's
+Diagnostic seed discipline (unified registry, ADR-0017 decision 5): seeds hang
+off the diagnostic base 900,000,000, never the formal judge chain's
 GLOBAL_SEED. Job D has no challenge band, so its slots hang directly off the
 base: arms 300..304, contrasts 310..313, gain share 320 -- clear of job A
-(slots 0/1/100/101) and job B (slot 200).
+(slots 0/1/100/101) and job B (slot 200). KNOWN DEBT (#232 follow-up): job C's
+bandless block rides the same flat range (base+300..307), so the two jobs'
+arm/MAE CI streams overlap on base+300..304 -- recorded readings are
+unaffected; the follow-up that registers these slot blocks in
+``challenge_registry`` must re-slot one of the two.
 
 Usage (pure CPU statistics over the sampling arm's products):
     python -m ctmr.application.acceptance.distribution.token_dilution \
@@ -62,14 +66,16 @@ from pathlib import Path
 import numpy as np
 import SimpleITK as sitk
 
-from ctmr.application.acceptance.distribution.challenge_registry import BOOTSTRAP_B
+from ctmr.application.acceptance.distribution.challenge_registry import BOOTSTRAP_B, DIAGNOSTIC_SEED_BASE
+from ctmr.application.acceptance.distribution.diagnostic_support import DiagnosticError
 from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
 
-# Diagnostic bootstrap seeds share jobs A/B's namespace discipline (zcrop_
-# compensation.py DIAGNOSTIC_SEED_BASE): far away from the formal judge chain's
-# GLOBAL_SEED (20260821) so a diagnostic CI can never be mistaken for the
-# registered TOST bit-stream. See the module docstring for job D's slot map.
-DIAGNOSTIC_SEED_BASE = 900_000_000
+# Diagnostic bootstrap seeds draw the unified registry's diagnostic namespace
+# (challenge_registry.DIAGNOSTIC_SEED_BASE): far away from the formal judge
+# chain's GLOBAL_SEED (20260821) so a diagnostic CI can never be mistaken for
+# the registered TOST bit-stream. See the module docstring for job D's slot
+# map and the known C/D flat-range overlap -- the seed-registry follow-up
+# registers these slot blocks.
 ARM_CI_SLOT_BASE = 300
 CONTRAST_CI_SLOT_BASE = 310
 SHARE_CI_SLOT = 320
@@ -93,10 +99,6 @@ ANCHOR_MODALITY = "t1c"
 # domain and are measured as-is -- job E's axis, never silently clipped here).
 BRIGHT_QUANTILES = (0.99, 0.999)
 TOP_FRACTION = 0.0005
-
-
-class DiagnosticError(Exception):
-    """Raised when the diagnostic inputs cannot support a token-dilution run."""
 
 
 # ── bright-core statistics ──────────────────────────────────────────────

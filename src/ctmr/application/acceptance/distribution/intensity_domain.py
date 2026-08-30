@@ -89,16 +89,21 @@ from pathlib import Path
 
 import numpy as np
 
+from ctmr.application.acceptance.distribution.challenge_registry import DIAGNOSTIC_SEED_BASE
+from ctmr.application.acceptance.distribution.diagnostic_support import DiagnosticError
 from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
 from ctmr.domain.measurement import WilsonUpper
 
-# Diagnostic bootstrap seeds share jobs A/B's namespace (zcrop_compensation.py /
-# et_discrimination.py DIAGNOSTIC_SEED_BASE): far away from the formal judge
+# Diagnostic bootstrap seeds draw the unified registry's diagnostic namespace
+# (challenge_registry.DIAGNOSTIC_SEED_BASE): far away from the formal judge
 # chain's GLOBAL_SEED (20260821). Job A occupies slots 0/1 and 100/101, job B
 # slot 200 of each challenge band; job C's MAE blocks and input-domain scalars
 # take 300..307 -- the emb pool is not challenge-stratified, so the slots ride
-# the base directly.
-DIAGNOSTIC_SEED_BASE = 900_000_000
+# the base directly. KNOWN DEBT (#232 follow-up): job D's bandless block rides
+# the same flat range (base+300..320), so the two jobs' CI streams overlap on
+# base+300..304 -- recorded readings are unaffected; the follow-up that
+# registers these slot blocks in ``challenge_registry`` must re-slot one of
+# the two.
 JOB_C_SEED_SLOT = 300
 MAE_SEED_SLOTS = {
     "noclip_over": 0,
@@ -136,10 +141,6 @@ HIST_BINS = 50
 HIST_EDGES = np.linspace(HIST_RANGE[0], HIST_RANGE[1], HIST_BINS + 1)
 TIERS = ("brain", "tumour")
 GEN_TIERS = ("brain", "tumour", "et")
-
-
-class DiagnosticError(Exception):
-    """Raised when the diagnostic inputs cannot support an intensity-domain run."""
 
 
 class TrainingPreprocessing:

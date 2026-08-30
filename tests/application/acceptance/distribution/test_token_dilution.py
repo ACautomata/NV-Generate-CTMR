@@ -25,11 +25,13 @@ import numpy as np
 import pytest
 import SimpleITK as sitk
 
-from ctmr.application.acceptance.distribution.challenge_registry import GLOBAL_SEED
-from ctmr.application.acceptance.distribution.et_discrimination import (
+from ctmr.application.acceptance.distribution.challenge_registry import (
     DIAGNOSTIC_SEED_BASE as JOB_A_B_SEED_BASE,
 )
-from ctmr.application.acceptance.distribution.et_discrimination import JOB_B_SEED_SLOT
+from ctmr.application.acceptance.distribution.challenge_registry import (
+    DIAGNOSTIC_SEED_SLOTS,
+    GLOBAL_SEED,
+)
 from ctmr.application.acceptance.distribution.token_dilution import (
     ANCHOR_MODALITY,
     ARM_CI_SLOT_BASE,
@@ -121,7 +123,7 @@ def test_seed_anchor_reproduces_the_frozen_sampling_rule():
 def test_diagnostic_seed_slots_stay_clear_of_the_formal_chain_and_jobs_ab():
     assert GLOBAL_SEED < DIAGNOSTIC_SEED_BASE
     assert DIAGNOSTIC_SEED_BASE == JOB_A_B_SEED_BASE
-    assert JOB_B_SEED_SLOT == 200  # job A occupies slots 0/1 and 100/101, job B 200
+    assert DIAGNOSTIC_SEED_SLOTS["et_rel_diff"] == 200  # job A occupies slots 0/1 and 100/101, job B 200
     assert ARM_CI_SLOT_BASE == 300 and CONTRAST_CI_SLOT_BASE == 310 and SHARE_CI_SLOT == 320
     # job D has no challenge band: slots hang directly off the diagnostic base,
     # 300+ never collides with any A/B slot inside the base-aligned block

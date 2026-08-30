@@ -46,10 +46,8 @@ Usage:
 """
 
 import argparse
-import json
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -59,12 +57,17 @@ from scipy import ndimage
 
 from ctmr.application.acceptance.distribution.challenge_registry import (
     BOOTSTRAP_B,
-    CHALLENGE_SEED_OFFSET,
     CHALLENGES,
+    DIAGNOSTIC_SEED_SLOTS,
     FROZEN_ENVELOPES,
 )
+from ctmr.application.acceptance.distribution.diagnostic_support import (
+    DiagnosticError,
+    DiagnosticReportWriter,
+    DiagnosticSeedAllocator,
+)
 from ctmr.application.acceptance.distribution.measurement_table import MeasurementTable
-from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap, DistributionReadout, RelativeDifference
 from ctmr.domain.grid import INSTRUMENT_GRID
 from ctmr.domain.vocabulary import REGIONS as REGION_LABELS
 
@@ -72,19 +75,6 @@ from ctmr.domain.vocabulary import REGIONS as REGION_LABELS
 # resampled to 1 mm: round(128 * 1.36) = 174 z slices before the centre crop.
 GEN_RESAMPLED_Z = 174
 INSTRUMENT_Z = INSTRUMENT_GRID.size[2]  # 155, the frozen instrument grid z
-
-# Diagnostic bootstrap seeds are offset far away from the formal judge chain's
-# GLOBAL_SEED (20260821): a diagnostic CI must never be mistaken for the
-# registered TOST bit-stream. Each challenge occupies its own 1000-wide seed
-# band (offset x 1000) so no (challenge, quantity, side) pair ever shares one.
-DIAGNOSTIC_SEED_BASE = 900_000_000
-# Uncompensated and compensated blocks of the same quantity draw disjoint
-# diagnostic seed namespaces via this stride (kept inside the challenge band).
-COMPENSATED_SEED_STRIDE = 100
-
-
-class DiagnosticError(Exception):
-    """Raised when the diagnostic inputs cannot support a compensation run."""
 
 
 # ── compensation geometry ───────────────────────────────────────────────
@@ -232,7 +222,7 @@ class PairedCompensation:
             "cz_wt_mm_gen": gen_cz,
             "vol_wt_ml_real_comp": None,
             "vol_wt_ml_gen_comp": None,
-            "vol_wt_rel_uncomp": self._relative_diff(gen_vol, real_vol),
+            "vol_wt_rel_uncomp": RelativeDifference.of(gen_vol, real_vol),
             "vol_wt_rel_comp": None,
             "centroid_wt_z_uncomp": self._signed_diff(gen_vol, real_vol, gen_cz, real_cz),
             "centroid_wt_z_comp": None,
@@ -247,16 +237,9 @@ class PairedCompensation:
         gen = ZCropCompensation.restrict_and_measure(gen_mask, self._window, "gen")
         reading["vol_wt_ml_real_comp"] = real["vol_ml"]
         reading["vol_wt_ml_gen_comp"] = gen["vol_ml"]
-        reading["vol_wt_rel_comp"] = self._relative_diff(gen["vol_ml"], real["vol_ml"])
+        reading["vol_wt_rel_comp"] = RelativeDifference.of(gen["vol_ml"], real["vol_ml"])
         reading["centroid_wt_z_comp"] = self._signed_diff(gen["vol_ml"], real["vol_ml"], gen["centroid_z_mm"], real["centroid_z_mm"])
         return reading
-
-    @staticmethod
-    def _relative_diff(gen_value: float | None, real_value: float | None) -> float | None:
-        """(gen - real) / real; the real denominator must exist and be positive."""
-        if gen_value is None or real_value is None or real_value <= 0:
-            return None
-        return (gen_value - real_value) / real_value
 
     @staticmethod
     def _signed_diff(gen_vol, real_vol, gen_value, real_value):
@@ -271,22 +254,16 @@ class PairedCompensation:
     def summary_stats(values, bootstrap_b: int, seed: int) -> dict:
         """Distribution read-out of one per-case quantity: quantiles + cluster-bootstrap CI90.
 
-        Quantiles use the same q*(n-1) linear rule as the calibration side
-        (``ClusterBootstrap.quantile``); the CI resamples cases exactly like the
-        formal judge, but under the diagnostic seed namespace.
+        Quantiles come from the shared ``DistributionReadout`` (the same
+        q*(n-1) linear rule as the calibration side); the CI resamples cases
+        exactly like the formal judge, but under the diagnostic seed namespace.
         """
-        if not values:
-            return {"median": None, "mean": None, "q05": None, "q95": None, "ci90_low": None, "ci90_high": None, "n_cases": 0}
-        ci = ClusterBootstrap(bootstrap_b).ci90([[value] for value in values], seed)
-        return {
-            "median": ClusterBootstrap.quantile(values, 0.5),
-            "mean": sum(values) / len(values),
-            "q05": ClusterBootstrap.quantile(values, 0.05),
-            "q95": ClusterBootstrap.quantile(values, 0.95),
-            "ci90_low": ci["low"],
-            "ci90_high": ci["high"],
-            "n_cases": len(values),
-        }
+        stats = DistributionReadout.of(values)
+        stats.update({"ci90_low": None, "ci90_high": None, "n_cases": len(values)})
+        if values:
+            ci = ClusterBootstrap(bootstrap_b).ci90([[value] for value in values], seed)
+            stats["ci90_low"], stats["ci90_high"] = ci["low"], ci["high"]
+        return stats
 
 
 # ── attribution ─────────────────────────────────────────────────────────
@@ -327,18 +304,32 @@ class DiagnosticReport:
 
     Margins quote the frozen ADR-0002 literals for orientation only -- the
     within-margin flags compare like-for-like with the formal report, but this
-    run registers no verdict.
+    run registers no verdict. Bootstrap seeds draw the registered job A slots
+    through the diagnostic allocator (``challenge_registry``).
     """
 
     SCHEMA = "zcrop-compensation-diagnostic/1"
     TITLE = "诊断作业 A:z-crop 补偿重算(测量轴归因)"
     QUANTITIES = ("vol_wt_rel", "centroid_wt_z")
+    SEED_SLOTS = {
+        "vol_wt_rel": ("zcrop_vol_uncomp", "zcrop_vol_comp"),
+        "centroid_wt_z": ("zcrop_centroid_uncomp", "zcrop_centroid_comp"),
+    }
 
     def __init__(self, measurements_path, pred_root, bootstrap_b: int, run_id: str | None = None):
         self._measurements_path = Path(measurements_path)
         self._pred_root = Path(pred_root)
         self._bootstrap_b = bootstrap_b
         self._run_id = run_id
+        self._writer = DiagnosticReportWriter(
+            schema=self.SCHEMA,
+            title=self.TITLE,
+            issue=206,
+            job_label="作业 A",
+            stem="zcrop_compensation_diagnostic",
+            inputs={"measurements": str(self._measurements_path), "pred_root": str(self._pred_root)},
+            run_id=self._run_id,
+        )
 
     @staticmethod
     def wt_vol_margin(challenge: str) -> float:
@@ -356,35 +347,20 @@ class DiagnosticReport:
                     [reading for reading in readings if reading["challenge"] == challenge],
                     challenge,
                     quantity,
-                    DIAGNOSTIC_SEED_BASE + CHALLENGE_SEED_OFFSET[challenge] * 1000 + index,
                 )
-                for index, quantity in enumerate(self.QUANTITIES)
+                for quantity in self.QUANTITIES
             }
             for challenge in challenges
         }
-        payload = {
-            "schema": self.SCHEMA,
-            "title": self.TITLE,
-            "issue": 206,
-            "variant": "diagnostic",
-            "disclaimer": (
-                f"诊断读数,不产生任何验收判定;与正式 L2 验收面严格分离(#205 作业 A)。bootstrap 种子独立于正式判定链(诊断基 {DIAGNOSTIC_SEED_BASE})。"
-            ),
-            "run_id": self._run_id,
-            "generated_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "inputs": {"measurements": str(self._measurements_path), "pred_root": str(self._pred_root)},
-            "geometry": self._geometry(window),
-            "per_case": readings,
-            "per_challenge": per_challenge,
-            "attribution_overall": self._attribution_overall(per_challenge),
-        }
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        json_path = output_dir / "zcrop_compensation_diagnostic.json"
-        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-        md_path = output_dir / "zcrop_compensation_diagnostic.md"
-        md_path.write_text(self._markdown(payload))
-        return json_path, md_path
+        payload = self._writer.payload(
+            {
+                "geometry": self._geometry(window),
+                "per_case": readings,
+                "per_challenge": per_challenge,
+                "attribution_overall": self._attribution_overall(per_challenge),
+            }
+        )
+        return self._writer.write(payload, self._markdown(payload), output_dir)
 
     @staticmethod
     def _geometry(window: OverlapWindow) -> dict:
@@ -403,17 +379,18 @@ class DiagnosticReport:
             ),
         }
 
-    def _quantity_block(self, cases, challenge: str, quantity: str, challenge_seed: int) -> dict:
+    def _quantity_block(self, cases, challenge: str, quantity: str) -> dict:
         margin = self.wt_vol_margin(challenge) if quantity == "vol_wt_rel" else self.wt_centroid_margin(challenge)
+        uncomp_slot, comp_slot = self.SEED_SLOTS[quantity]
         uncomp_stats = PairedCompensation.summary_stats(
             [case[f"{quantity}_uncomp"] for case in cases if case[f"{quantity}_uncomp"] is not None],
             self._bootstrap_b,
-            challenge_seed,
+            DiagnosticSeedAllocator.seed(challenge, DIAGNOSTIC_SEED_SLOTS[uncomp_slot]),
         )
         comp_stats = PairedCompensation.summary_stats(
             [case[f"{quantity}_comp"] for case in cases if case[f"{quantity}_comp"] is not None],
             self._bootstrap_b,
-            challenge_seed + COMPENSATED_SEED_STRIDE,
+            DiagnosticSeedAllocator.seed(challenge, DIAGNOSTIC_SEED_SLOTS[comp_slot]),
         )
         return {
             "margin": margin,
@@ -448,13 +425,7 @@ class DiagnosticReport:
 
     def _markdown(self, payload: dict) -> str:
         geometry = payload["geometry"]
-        lines = [
-            f"# {payload['title']}",
-            "",
-            f"**Issue**: [#206](https://github.com/ACautomata/NV-Generate-CTMR/issues/206)(父 #205 作业 A)"
-            f" · **run**: `{payload['run_id'] or '未绑定'}`",
-            f"**variant: diagnostic —— {payload['disclaimer']}**",
-            "",
+        lines = self._writer.markdown_preamble(payload) + [
             "## 几何口径",
             "",
             f"- 采样与重采样:{geometry['sampling']}",

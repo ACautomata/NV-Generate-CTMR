@@ -19,8 +19,13 @@ the ADR-0002 published envelope literals -- all moved verbatim out of the
 terminal-acceptance judge (``final_acceptance``), which now imports this
 module, as do the diagnostic readers. This is the registration *data*: the
 envelope verification gate stays with the judge's ``FrozenEnvelopes`` and the
-TOST bit-stream stays with the judge's judgement chain; the diagnostic seed
-namespaces join this registry in the successor ticket (#232).
+TOST bit-stream stays with the judge's judgement chain. The diagnostic seed
+namespace joined the registry in the successor ticket (#232, ADR-0017
+decision 5): the whole L2 seed space -- judge band + diagnostic namespace --
+is registered here, and the「L2 全域种子无碰撞」invariant is a unit test on
+this table (``tests/application/acceptance/distribution/`` +
+``test_diagnostic_support.py``); jobs A/B draw seeds through
+``diagnostic_support.DiagnosticSeedAllocator``, never from local constants.
 
 Every value here is frozen by ADR-0002/0003/0004 and the split manifest --
 literals only, no logic.
@@ -39,6 +44,29 @@ HOLDOUT_QUOTAS = {"GLI": 250, "SSA": 12, "MEN": 200, "METS": 48, "PED": 20}
 BOOTSTRAP_B = 10_000
 GLOBAL_SEED = 20260821
 CHALLENGE_SEED_OFFSET = {"GLI": 1, "SSA": 2, "MEN": 3, "METS": 4, "PED": 5}
+
+# Diagnostic seed namespace (ADR-0017 decision 5, issue #232): the diagnostic
+# segment of the unified L2 seed registry -- base 900,000,000, one 1000-wide
+# band per challenge (CHALLENGE_SEED_OFFSET x band), a full band above the
+# judge band's reach so a diagnostic CI can never be mistaken for the
+# registered TOST bit-stream. Slots are allocated here, once: job A (#206)
+# holds the uncompensated block 0/1 and the compensated block 100/101 of each
+# band, job B (#207) slot 200 -- the pre-#232 job-module constants reproduced
+# byte-exactly. Registered slots are drawn only through
+# ``diagnostic_support.DiagnosticSeedAllocator``. KNOWN DEBT: jobs C/D's
+# bandless slot blocks (base+300..307 / base+300..320, overlapping on
+# base+300..304) and the geometry audit's banded slot 300 are still
+# job-local constants pending their follow-up registration -- registering
+# them here is what extends the no-collision invariant over those draws.
+DIAGNOSTIC_SEED_BASE = 900_000_000
+DIAGNOSTIC_SEED_BAND = 1000
+DIAGNOSTIC_SEED_SLOTS = {
+    "zcrop_vol_uncomp": 0,  # job A: vol_wt_rel, uncompensated block
+    "zcrop_centroid_uncomp": 1,  # job A: centroid_wt_z, uncompensated block
+    "zcrop_vol_comp": 100,  # job A: vol_wt_rel, compensated block
+    "zcrop_centroid_comp": 101,  # job A: centroid_wt_z, compensated block
+    "et_rel_diff": 200,  # job B: per-case relative-difference CI90
+}
 
 # ADR-0002 frozen envelopes (published 4-dp literals; the authoritative source
 # for every pass line -- equality against a controlled calibration summary is

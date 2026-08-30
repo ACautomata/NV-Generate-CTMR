@@ -21,15 +21,15 @@ from pathlib import Path
 
 import pytest
 
-from ctmr.application.acceptance.distribution.challenge_registry import CHALLENGE_SEED_OFFSET, GLOBAL_SEED, HOLDOUT_QUOTAS
-from ctmr.application.acceptance.distribution.et_discrimination import (
+from ctmr.application.acceptance.distribution.challenge_registry import (
+    CHALLENGE_SEED_OFFSET,
     DIAGNOSTIC_SEED_BASE,
-    JOB_B_SEED_SLOT,
-    DiagnosticError,
-    EtDiscrimination,
-    EtDiscriminationReport,
-    main,
+    DIAGNOSTIC_SEED_SLOTS,
+    GLOBAL_SEED,
+    HOLDOUT_QUOTAS,
 )
+from ctmr.application.acceptance.distribution.diagnostic_support import DiagnosticError, DiagnosticSeedAllocator
+from ctmr.application.acceptance.distribution.et_discrimination import EtDiscrimination, EtDiscriminationReport, main
 from ctmr.application.acceptance.distribution.measurement_table import MEASUREMENT_FIELDS, MeasurementTable
 
 
@@ -236,11 +236,13 @@ def test_holdout_quotas_sum_to_the_530_case_holdout():
     assert sum(HOLDOUT_QUOTAS[ch] for ch in ("GLI", "MEN", "METS", "PED", "SSA")) == 530
 
 
-def test_diagnostic_seeds_stay_clear_of_the_formal_judge_chain_and_job_a():
-    seed = DIAGNOSTIC_SEED_BASE + CHALLENGE_SEED_OFFSET["GLI"] * 1000 + JOB_B_SEED_SLOT
-    assert seed >= DIAGNOSTIC_SEED_BASE  # never inside the formal band (GLOBAL_SEED = 20260821)
+def test_diagnostic_seed_draws_the_registered_slot_through_the_allocator():
+    """Job B's rel-diff CI draws slot 200 of each challenge band -- the
+    pre-#232 module constants, now registry data (issue #232), byte-exact."""
+    seed = DiagnosticSeedAllocator.seed("GLI", DIAGNOSTIC_SEED_SLOTS["et_rel_diff"])
+    assert seed == DIAGNOSTIC_SEED_BASE + CHALLENGE_SEED_OFFSET["GLI"] * 1000 + 200  # the legacy formula
     assert GLOBAL_SEED < DIAGNOSTIC_SEED_BASE
-    assert JOB_B_SEED_SLOT == 200  # job A occupies slots 0/1 and 100/101 of each band
+    assert DIAGNOSTIC_SEED_SLOTS["et_rel_diff"] == 200  # job A occupies slots 0/1 and 100/101 of each band
 
 
 def test_missing_required_column_raises_a_diagnostic_error(tmp_path):
