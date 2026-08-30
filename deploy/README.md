@@ -13,6 +13,7 @@ deploy/
 │   ├── p1_predict_all.sh           #   #38 五挑战并行仪器预测（每挑战一卡）
 │   ├── run_zcrop_compensation_a.sh      #   #206 诊断作业 A：z-crop 补偿重算（测量轴归因，只读、不入 git）
 │   ├── run_et_discrimination_b.sh       #   #207 诊断作业 B：冻结仪器 ET 甄别（ET 缺失定量化，只读、不入 git）
+│   ├── run_intensity_domain_c.sh        #   #208 诊断作业 C：t1c 强度域甄别（三方直方图+条件 MAE+>1000 占比，只读、不入 git）
 │   ├── run_token_dilution_d.sh          #   #209 诊断作业 D：同 seed 换 token 采样亮核甄别（GPU 采样 + CPU 统计，不入 git）
 │   └── run_zcrop_geometry_audit_217.sh  #   #217 复核作业 A：工件 affine 几何基座复核（对照读数，只读、不入 git）
 ├── data/
@@ -92,6 +93,7 @@ echo $! > /root/private_data/<run_dir>/predict.pid
 | `p1_predict_all.sh` | #38 五挑战并行预测（每挑战一卡，TTA 保持开启），通常作为上一条 Step 3 的替代入口 | `bash deploy/jobs/p1_predict_all.sh [p1\|p3]` | 进度看 `$BASE/logs/predict-status.txt` |
 | `run_zcrop_compensation_a.sh` | #206 诊断作业 A（父 #205）：L2 终验逐 case z-crop 补偿重算 `vol_wt_rel`/质心 z，产出「测量轴 vs 候选缺陷」归因读数（variant=diagnostic，不产生验收判定） | `bash deploy/jobs/run_zcrop_compensation_a.sh`（路径可用 `L2_RUN_TREE`/`MEASUREMENTS_CSV`/`PREDICT_DIR` 覆写） | 纯 CPU 重算，无需 DCU 卡；报告落运行树 `diagnostics/zcrop_compensation/`（工件区，不入 git），核心统计为带单测的纯函数 |
 | `run_et_discrimination_b.sh` | #207 诊断作业 B（父 #205）：holdout 530 例生成伪四模态体已产出的逐观测仪器读数重算为逐挑战 ET 检出率、ET 体积分布 vs real、空 pred 计数（#38 读数口径同族；variant=diagnostic，不产生验收判定） | `bash deploy/jobs/run_et_discrimination_b.sh`（路径可用 `L2_RUN_TREE`/`MEASUREMENTS_CSV`/`OUTPUT_DIR` 覆写） | 零推理纯 CPU 读数，无需 DCU 卡；报告落运行树 `diagnostics/et_discrimination/`（工件区，不入 git），核心统计为带单测的纯函数 |
+| `run_intensity_domain_c.sh` | #208 诊断作业 C（父 #205）：real/VAE 重建/生成三方直方图与瘤内/全脑分层顶部统计（P99/P99.9/top-0.5% 均值）、VAE 条件 MAE 双臂（clip=False 现网臂 vs clip=True 对照臂，裁决归一化 clip 取舍）、生成 >1000 int16 体素占比（>1.0 输出域假说检验；variant=diagnostic，不产生验收判定） | `LIMIT=200 DEVICE=cuda:0 bash deploy/jobs/run_intensity_domain_c.sh`（路径可用 `PHASE_ROOT`/`P1_ROOT`/`OUTPUT_DIR` 等覆写；`SKIP_EMB_POOL=1` 只跑 gen 池） | gen 池纯 CPU 零推理；emb 池需 torch（VAE encode/decode，DCU 上 `DEVICE=cuda:0` 快、CPU 可跑但慢）；报告落运行树 `diagnostics/intensity_domain/`（工件区，不入 git），核心统计为带单测的纯函数 |
 | `run_token_dilution_d.sh` | #209 诊断作业 D（父 #205）：固定 16 例 dev cohort 上冻结候选 checkpoint 同 seed 换 token 五臂采样（t1n/t1c/t2w/t2f + 对照泛 MR 8；每例一 seed 五臂共用），亮核顶部统计 + 34 对 8 增益份额分带，定量模态标签增广稀释（RC-2/L3 甄别；variant=diagnostic，不产生验收判定） | `EMB_ROOT=<...> bash deploy/jobs/run_token_dilution_d.sh`（其余路径可用 `P1_ROOT`/`CKPT`/`DEV_LIST`/`SAMPLES_DIR`/`OUTPUT_DIR` 覆写） | 需一张 DCU 卡（16 例 × 5 臂 = 80 次采样，可重入续采）；亮核统计第二步纯 CPU；报告与采样产物落 `$P1_ROOT/token_dilution/`（工件区，不入 git），核心统计为带单测的纯函数 |
 | `run_zcrop_geometry_audit_217.sh` | #217 复核作业 A（父 #205）：holdout 生成工件携带单位 1mm affine，作业 A 注册的 z-crop 19 层在工件上不发生（实为 pad 13/14）；按两种几何各重算一遍 centroid_wt_z，产出对照读数＋越窗重判＋视场缺口定量（variant=diagnostic，不产生验收判定，不回改已落盘的作业 A） | `bash deploy/jobs/run_zcrop_geometry_audit_217.sh`（路径可用 `L2_RUN_TREE`/`MEASUREMENTS_CSV`/`PREDICT_DIR` 覆写） | 纯 CPU 重算，无需 DCU 卡；报告落运行树 `diagnostics/zcrop_geometry_audit/`（工件区，不入 git），核心统计为带单测的纯函数 |
 
