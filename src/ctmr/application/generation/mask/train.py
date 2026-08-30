@@ -23,8 +23,8 @@ Deltas against the upstream ``train_controlnet.py`` loop, all pinned:
 - ``scale_factor`` is REUSED from the frozen P1-DM checkpoint (never recomputed;
   the mask recipe has no recompute sanity since the P1-DM already froze it);
 - the training list is the #52 ``p2_mask_cond.json`` (fold=0 -> train side is
-  fold!=0 as the MAISI loader partitions; the val loader is DISCARDED, never used
-  to select a checkpoint — the dev-eval sidecar does the selection, spec #51);
+  fold!=0 as the shared bypass loader partitions; the val side is never
+  constructed — the dev-eval sidecar selects the candidate, spec #51);
 - checkpoints persist per epoch as ``epoch_<N>.pt`` (``controlnet_state_dict`` +
   ``scale_factor``) for the dev-eval sidecar and the contract selection;
 - the loop polls ``<model_dir>/.early_stop`` at epoch boundaries so the
@@ -55,81 +55,20 @@ import json
 import os
 from pathlib import Path
 
-import monai
 import torch
 import torch.distributed as dist
-from monai.data import CacheDataset, partition_dataset
-from monai.networks.utils import copy_model_state
-from monai.transforms import Compose, EnsureTyped, Lambdad, LoadImaged, Orientationd
-from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader
 
 from ctmr.application.generation.mask.inference import binarize_labels
+from ctmr.application.generation.train_loader import BypassTrainLoader
 from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWriter
 from ctmr.application.train_cli import TrainCli
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.generation.objective import TumourWeightedTarget
 from ctmr.domain.recipe import MaskRecipeSpec
-from ctmr.infrastructure.dataio.list_assembly import add_data_dir2path
+from ctmr.infrastructure.bypass_mounting import BypassMounting
 from ctmr.infrastructure.gradient_executors import Bf16GradientExecutor, Fp16GradientExecutor, PlainGradientExecutor
 from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
-from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
-
-
-def prepare_maisi_controlnet_json_dataloader(
-    json_data_list,
-    data_base_dir,
-    batch_size=1,
-    fold=0,
-    cache_rate=0.0,
-    rank=0,
-    world_size=1,
-    modality_mapping=None,
-):
-    """Mask-family dataloader: image (tgt latent), label (the combined condition mask).
-
-    The upstream MAISI loader, verbatim: the transform set carries the
-    ``top_region_index``/``bottom_region_index`` companions (the mask list
-    entries provide them) and joins ``image``/``label`` via
-    ``add_data_dir2path`` (fold=0 side returns as the val loader, which the
-    trainer discards).
-    """
-    use_ddp = world_size > 1
-    if isinstance(json_data_list, list):
-        list_train = []
-        list_valid = []
-        for data_list, data_root in zip(json_data_list, data_base_dir):
-            json_data = json.loads(Path(data_list).read_text())["training"]
-            train, val = add_data_dir2path(json_data, data_root, fold)
-            list_train += train
-            list_valid += val
-    else:
-        json_data = json.loads(Path(json_data_list).read_text())["training"]
-        list_train, list_valid = add_data_dir2path(json_data, data_base_dir, fold)
-
-    common_transform = [
-        LoadImaged(keys=["image", "label"], image_only=True, ensure_channel_first=True),
-        Orientationd(keys=["image", "label"], axcodes="RAS"),
-        EnsureTyped(keys=["label"], dtype=torch.long, track_meta=True),
-        Lambdad(keys="top_region_index", func=lambda x: torch.FloatTensor(x), allow_missing_keys=True),
-        Lambdad(keys="bottom_region_index", func=lambda x: torch.FloatTensor(x), allow_missing_keys=True),
-        Lambdad(keys="spacing", func=lambda x: torch.FloatTensor(x)),
-        Lambdad(keys=["top_region_index", "bottom_region_index", "spacing"], func=lambda x: x * 1e2, allow_missing_keys=True),
-        Lambdad(keys=["modality"], func=lambda x: modality_mapping[x], allow_missing_keys=True),
-        EnsureTyped(keys=["modality"], dtype=torch.long, allow_missing_keys=True),
-    ]
-    train_transforms, val_transforms = Compose(common_transform), Compose(common_transform)
-
-    if use_ddp:
-        list_train = partition_dataset(data=list_train, shuffle=True, num_partitions=world_size, even_divisible=True)[rank]
-    train_ds = CacheDataset(data=list_train, transform=train_transforms, cache_rate=cache_rate, num_workers=8)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
-    if use_ddp:
-        list_valid = partition_dataset(data=list_valid, shuffle=True, num_partitions=world_size, even_divisible=False)[rank]
-    val_ds = CacheDataset(data=list_valid, transform=val_transforms, cache_rate=cache_rate, num_workers=8)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=False)
-    return train_loader, val_loader
 
 
 class DataCatalog:
@@ -177,7 +116,9 @@ class TrainKernel:
     """Mask-conditioned kernel: mask data, frozen-DM ControlNet hook-up, weighted L1.
 
     The four-method ``PhaseTrainKernel`` boundary. Recipe values live here, not
-    in the shell: AdamW + lr + PolynomialLR power 2.0 (ADR-0007).
+    in the shell: AdamW + lr + PolynomialLR power 2.0 (ADR-0007). The hook-up
+    itself is the shared ``BypassMounting`` collaborator -- the kernel injects
+    only the recipe values and composes the domain entity from the mount.
     """
 
     def __init__(self, args, device, logger, local_rank):
@@ -188,13 +129,16 @@ class TrainKernel:
         self._controlnet = None
         self._model = None
         self._weighted_target = TumourWeightedTarget(args.controlnet_train["weighted_loss"], args.controlnet_train["weighted_loss_label"])
+        self._mounting = BypassMounting(args, device, logger)
+        self._train_loader = BypassTrainLoader(load_keys=("image", "label"), companion_keys=("top_region_index", "bottom_region_index"))
 
     def build_loader(self):
         args = self._args
         if self._local_rank == 0:
             self._logger.info(f"num_files_train (mask family, no replay): {len(DataCatalog(args, self._logger).file_records())}")
         world_size = dist.get_world_size() if dist.is_initialized() else 1
-        train_loader, _val_loader = prepare_maisi_controlnet_json_dataloader(
+        # The loader's contract is train-side only (spec #51 decision 7, BypassTrainLoader).
+        return self._train_loader.build(
             json_data_list=args.json_data_list,
             data_base_dir=args.data_base_dir,
             batch_size=args.controlnet_train["batch_size"],
@@ -204,57 +148,31 @@ class TrainKernel:
             world_size=world_size,
             modality_mapping=args.modality_mapping,
         )
-        # The val split (fold==fold) is DISCARDED: the mask family selects its
-        # candidate by the dev-eval sidecar, never by training/validation loss
-        # (spec #51 decision 7).
-        return train_loader
 
     def load_models(self, loader):
         args = self._args
-        controlnet = define_instance(args, "controlnet_def").to(self._device)
-        unet = define_instance(args, "diffusion_unet_def").to(self._device)
-        # The DM-source checkpoint pickles MONAI meta-tensor globals alongside the
-        # weights; allowlist them so weights_only stays enabled (trusted source).
-        torch.serialization.add_safe_globals([monai.data.meta_tensor.MetaTensor, monai.utils.enums.TraceKeys])
-        dm_ckpt = torch.load(args.trained_diffusion_path, map_location=self._device, weights_only=True)
-        state = unet.load_state_dict(dm_ckpt["unet_state_dict"], strict=False)
-        if state.missing_keys:
-            raise ValueError(f"DM source checkpoint missing keys for frozen DM: {state.missing_keys}")
-        if state.unexpected_keys:
-            self._logger.warning(f"DM source checkpoint unexpected keys (ignored): {state.unexpected_keys}")
-        # init ControlNet from the frozen DM encoder/mid (spec #51 decision 7 / ADR-0007).
-        copy_model_state(controlnet, unet.state_dict())
-        # Only the ControlNet is trained; the DM stays a frozen, non-DDP module
-        # (MAISI convention: the trainable bypass is DDP-wrapped, the frozen DM is not).
-        if dist.is_initialized():
-            controlnet = DistributedDataParallel(controlnet, device_ids=[self._device], find_unused_parameters=True)
-        scale_factor = float(dm_ckpt["scale_factor"])
-        for p in unet.parameters():
-            p.requires_grad = False
-        unet.eval()
-        controlnet.train()
-        self._logger.info(f"DM frozen (requires_grad=False); ControlNet init from DM encoder/mid -> {args.trained_diffusion_path}")
-        self._logger.info(f"scale_factor reused from P1-DM checkpoint -> {scale_factor}")
-        scale_tensor = torch.tensor(scale_factor, device=self._device)
-
-        optimizer = torch.optim.AdamW(controlnet.parameters(), lr=args.controlnet_train["lr"])
-        total_steps = (args.controlnet_train["n_epochs"] * len(loader.dataset)) / args.controlnet_train["batch_size"]
-        lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(optimizer, total_iters=total_steps, power=2.0)
-
-        self._controlnet = controlnet
+        mounted = self._mounting.mount(
+            len(loader.dataset),
+            lr=args.controlnet_train["lr"],
+            n_epochs=args.controlnet_train["n_epochs"],
+            batch_size=args.controlnet_train["batch_size"],
+        )
+        self._controlnet = mounted.trainable
         # The domain composition carries the training recipe: the frozen DM
         # (behaviour holder), the trainable bypass and the Adam + PolynomialLR
         # session members.  The shell's TrainContext keeps the same handles for
         # checkpoint scale payloads and the shared optimizer/scheduler instances.
         self._model = DiffusionModel(
-            unet=unet,
-            scale_factor=scale_tensor,
-            noise_scheduler=define_instance(args, "noise_scheduler"),
-            bypass=ControlNetBypass(controlnet),
-            optimizer=optimizer,
-            lr_scheduler=lr_scheduler,
+            unet=mounted.dm,
+            scale_factor=mounted.scale,
+            noise_scheduler=mounted.noise_scheduler,
+            bypass=ControlNetBypass(mounted.trainable),
+            optimizer=mounted.optimizer,
+            lr_scheduler=mounted.scheduler,
         )
-        return TrainContext(trainable=controlnet, optimizer=optimizer, scheduler=lr_scheduler, scale=scale_tensor, device=self._device)
+        return TrainContext(
+            trainable=mounted.trainable, optimizer=mounted.optimizer, scheduler=mounted.scheduler, scale=mounted.scale, device=self._device
+        )
 
     def train_step(self, batch, gradient_executor):
         """The thin batch adapter: mask-binarize + weight-build, then the domain closed update.
@@ -283,16 +201,7 @@ class TrainKernel:
         )
 
     def checkpoint_payload(self, epoch, avg_loss, scale):
-        controlnet_state = (
-            self._controlnet.module.state_dict() if isinstance(self._controlnet, DistributedDataParallel) else self._controlnet.state_dict()
-        )
-        return {
-            "epoch": epoch,
-            "loss": avg_loss,
-            "num_train_timesteps": self._args.noise_scheduler["num_train_timesteps"],
-            "scale_factor": scale,
-            "controlnet_state_dict": controlnet_state,
-        }
+        return self._mounting.checkpoint_payload(self._controlnet, epoch, avg_loss, scale)
 
 
 def main(argv=None):

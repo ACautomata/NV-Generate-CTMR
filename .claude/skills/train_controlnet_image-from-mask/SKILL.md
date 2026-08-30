@@ -26,7 +26,7 @@ The DM you supply must match your modality (`diff_unet_3d_rflow-ct` for CT; `dif
 
 ## Training data format
 
-The loop consumes **one thing per training case: a `(image, label)` pair**, listed in a JSON data list. `prepare_maisi_controlnet_json_dataloader` (now in `ctmr.application.generation.mask.train`) loads it; the loader does **no spatial resampling** — the files must already be on compatible grids (see below).
+The loop consumes **one thing per training case: a `(image, label)` pair**, listed in a JSON data list. `BypassTrainLoader` (in `ctmr.application.generation.train_loader`, shared with the cross-modal family) loads it; the loader does **no spatial resampling** — the files must already be on compatible grids (see below).
 
 ### Per-case files
 
