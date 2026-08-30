@@ -33,6 +33,7 @@ import pytest
 import SimpleITK as sitk
 import torch
 
+from ctmr.application.generation.modality_label.monitor import FidTrendScorer, L2PostScore
 from ctmr.application.generation.trend import (
     DevCohortBuilder,
     L2TrendRunner,
@@ -108,6 +109,64 @@ def test_trend_ledger_roundtrip(tmp_path):
         ledger.append(record)
 
     assert ledger.read() == trend
+
+
+# --------------------------------------------------- watch engine collaborators (issue #225)
+
+
+class _ScriptedFeatures:
+    def volume_features(self, path):
+        return {"xy": np.zeros(2), "yz": None, "zx": np.ones(2)}
+
+
+class _ScriptedFid:
+    def __init__(self):
+        self.seen = None
+
+    def score(self, generated):
+        self.seen = generated
+        return {"fid": "report"}, 0.42
+
+
+def test_fid_trend_scorer_assembles_the_plane_means():
+    fid = _ScriptedFid()
+    samples = [{"modality": "t1n", "path": "a.nii.gz"}, {"modality": "t1c", "path": "b.nii.gz"}]
+
+    fields, log_line = FidTrendScorer(_ScriptedFeatures(), fid)(samples)
+
+    assert fields == {"fid": {"fid": "report"}, "m": 0.42}
+    assert log_line == "mean_fid=0.42"
+    # the None plane is skipped, per-sample planes mean into the per-modality buckets
+    assert list(fid.seen) == ["t1n", "t1c", "t2w", "t2f"]  # all four target modalities, in order
+    assert fid.seen["t1n"]["yz"] == []
+    assert len(fid.seen["t1n"]["zx"]) == 1
+    assert fid.seen["t2w"] == {"xy": [], "yz": [], "zx": []}  # no samples -> empty buckets
+
+
+class _ScriptedL2:
+    def __init__(self, fail=False):
+        self.calls = []
+        self._fail = fail
+
+    def run(self, samples, cohort, work_dir):
+        self.calls.append((len(samples), len(cohort), work_dir))
+        if self._fail:
+            raise RuntimeError("nnunet boom")
+        return {"median_wt": 1.0}
+
+
+def test_l2_post_score_skip_degrades_to_none_and_success_passes_through(tmp_path):
+    l2 = _ScriptedL2()
+    assert L2PostScore(l2, [{"case": "c"}], skip=True)(5, [{"path": "s"}], tmp_path) == {"l2_trend": None}
+    assert l2.calls == []  # --skip-l2 never reaches the instruments
+
+    assert L2PostScore(l2, [{"case": "c"}], skip=False)(5, [{"path": "s"}], tmp_path) == {"l2_trend": {"median_wt": 1.0}}
+    assert l2.calls == [(1, 1, tmp_path)]
+
+
+def test_l2_post_score_failure_records_none_instead_of_dying(tmp_path):
+    # a single-epoch instrument hiccup must not kill the sidecar
+    assert L2PostScore(_ScriptedL2(fail=True), [], skip=False)(5, [], tmp_path) == {"l2_trend": None}
 
 
 # --------------------------------------------------- shared trend machinery gates

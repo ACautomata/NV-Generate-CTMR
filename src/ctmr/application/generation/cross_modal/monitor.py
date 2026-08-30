@@ -57,9 +57,8 @@ import copy
 import json
 import multiprocessing as mp
 import sys
-import time
 from concurrent.futures import ProcessPoolExecutor
-from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import nibabel as nib
@@ -73,10 +72,9 @@ from ctmr.application.generation.cross_modal.baseline import ReferenceGridWriter
 from ctmr.application.generation.cross_modal.plan import MODALITY_PAIRS, seed_of
 from ctmr.application.shell import (
     MODALITY_TOKENS,
-    STOP_FILE,
-    CheckpointWatcher,
     EarlyStopRule,
-    TrendLedger,
+    SelectionEmitter,
+    WatchEngine,
 )
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
@@ -370,6 +368,21 @@ class CandidateSampler:
         return samples
 
 
+class PairTrendScorer:
+    """The watch scorer seam: per-target-modality mean PSNR/SSIM of the paired cohort."""
+
+    def __init__(self, scorer, cohort_source, raw_root, ref_root):
+        self._scorer = scorer
+        self._cohort_source = cohort_source
+        self._raw_root = raw_root
+        self._ref_root = ref_root
+
+    def __call__(self, samples):
+        scored = self._scorer.score_cohort(samples, self._cohort_source, self._raw_root, self._ref_root)
+        fields = {"metric": "paired-psnr-ssim", "report": scored["report"], "m": scored["m"], "mean_psnr": scored["mean_psnr"]}
+        return fields, f"mean_ssim={scored['m']:.4f} mean_psnr={scored['mean_psnr']:.2f}"
+
+
 def parse_args(argv=None):
     """The sidecar entry argparse surface (verbatim from the retired dev-eval script entry).
 
@@ -414,7 +427,6 @@ def main(argv=None):
     args = parse_args(argv)
 
     eval_root = Path(args.eval_root)
-    ledger = TrendLedger(eval_root)
 
     if args.command == "reference":
         dev_list = DevList(args.dev_list, eval_root).build()
@@ -442,23 +454,21 @@ def main(argv=None):
         return 0
 
     if args.command == "select":
-        trend = ledger.read()
-        selection = EarlyStopRule.selection(trend, direction="max", metric_name="mean_ssim")
-        if selection is None:
-            print("no eval points; nothing to select", file=sys.stderr)
-            return 1
-        best = next(point for point in trend if point["epoch"] == selection["epoch"] and point["m"] is not None)
-        selection["mean_psnr"] = best.get("mean_psnr")
-        selection["rule"] = "argmax mean dev 3D SSIM over eval points (pre-registered; PSNR recorded alongside)"
-        selection["trend"] = trend
-        selection["recorded_utc"] = datetime.now(UTC).isoformat()
-        out = Path(args.out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(selection, indent=2) + "\n")
-        print(f"selection -> {out} (epoch {selection['epoch']}, mean_ssim {selection['mean_ssim']:.4f}, mean_psnr {selection['mean_psnr']:.2f})")
-        return 0
 
-    # watch mode
+        def extra_fields(trend, selection):
+            best = next(point for point in trend if point["epoch"] == selection["epoch"] and point["m"] is not None)
+            return {"mean_psnr": best.get("mean_psnr")}
+
+        return SelectionEmitter(eval_root).emit(
+            args.out,
+            rule_text="argmax mean dev 3D SSIM over eval points (pre-registered; PSNR recorded alongside)",
+            direction="max",
+            metric_name="mean_ssim",
+            extra_fields=extra_fields,
+            summary_extra=lambda selection: f", mean_psnr {selection['mean_psnr']:.2f}",
+        )
+
+    # watch mode: assemble the stage collaborators, the shell engine drives the loop
     dev_list = DevList(args.dev_list, eval_root).build()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cohort_source = DevCohort(dev_list)
@@ -483,53 +493,17 @@ def main(argv=None):
     merged.cfg_guidance_scale = 0.0
     scorer = PairwiseScorer(workers=args.score_workers)
     sampler = CandidateSampler(merged, device, None)
-    watcher = CheckpointWatcher(args.ckpt_dir, args.eval_every, args.max_epoch, {r["epoch"] for r in ledger.read()})
-    idle_since = None
-
-    while True:
-        pending = watcher.pending()
-        if not pending:
-            if args.idle_exit_seconds and idle_since is not None and time.time() - idle_since > args.idle_exit_seconds:
-                break
-            if args.idle_exit_seconds and idle_since is None:
-                idle_since = time.time()
-            time.sleep(args.poll_seconds)
-            continue
-        idle_since = None
-        for epoch, path in pending:
-            if any(r["epoch"] == epoch for r in ledger.read()):
-                watcher.mark_done(epoch)
-                continue
-            epoch_dir = eval_root / f"epoch_{epoch}"
-            try:
-                samples = sampler.generate_cohort(path, cohort, cohort_source, phase_root, epoch_dir / "samples")
-                scored = scorer.score_cohort(samples, cohort_source, args.raw_root, eval_root / "reference_grid")
-            except Exception as error:
-                print(f"[eval] epoch {epoch} skipped: {error}", file=sys.stderr, flush=True)
-                continue
-            record = {
-                "eval_utc": datetime.now(UTC).isoformat(),
-                "epoch": epoch,
-                "checkpoint": str(path),
-                "metric": "paired-psnr-ssim",
-                "report": scored["report"],
-                "m": scored["m"],
-                "mean_psnr": scored["mean_psnr"],
-                "cohort_file": str(dev_list),
-            }
-            ledger.append(record)
-            (epoch_dir / "trend.json").write_text(json.dumps(record, indent=2) + "\n")
-            watcher.mark_done(epoch)
-            stop, reason = rule.should_stop(ledger.read())
-            print(
-                f"[eval] epoch {epoch}: mean_ssim={scored['m']:.4f} mean_psnr={scored['mean_psnr']:.2f} stop={stop} ({reason})",
-                flush=True,
-            )
-            if stop:
-                (Path(args.ckpt_dir) / STOP_FILE).write_text(json.dumps({"reason": reason, "epoch": epoch}) + "\n")
-                print(f"early-stop fired ({reason}); wrote {Path(args.ckpt_dir) / STOP_FILE}", flush=True)
-                return 0
-    return 0
+    return WatchEngine(
+        ckpt_dir=args.ckpt_dir,
+        eval_root=eval_root,
+        eval_every=args.eval_every,
+        max_epoch=args.max_epoch,
+        rule=rule,
+        sampler_factory=partial(sampler.generate_cohort, cases=cohort, cohort_source=cohort_source, phase_root=phase_root),
+        scorer=PairTrendScorer(scorer, cohort_source, args.raw_root, eval_root / "reference_grid"),
+        poll_seconds=args.poll_seconds,
+        idle_exit_seconds=args.idle_exit_seconds,
+    ).run(cohort_file=str(dev_list))
 
 
 if __name__ == "__main__":

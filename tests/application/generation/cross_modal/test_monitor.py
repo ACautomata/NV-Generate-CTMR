@@ -36,6 +36,7 @@ from ctmr.application.generation.cross_modal.monitor import (
     PSNR_CAP_DB,
     DevCohort,
     DevList,
+    PairTrendScorer,
     PairwiseScorer,
     read_src_latent,
 )
@@ -239,3 +240,19 @@ def test_select_rerun_yields_the_identical_contract_apart_from_the_timestamp(tmp
     first = select_once()
     second = select_once()  # a second process replays select against the same on-disk state
     assert first == second
+
+
+# ------------------------------------------------- watch engine scorer seam (issue #225)
+
+
+def test_pair_trend_scorer_shapes_fields_and_log_line():
+    class _ScriptedPairwise:
+        def score_cohort(self, samples, cohort_source, raw_root, ref_root):
+            assert samples == "samples-marker"
+            assert (cohort_source, raw_root, ref_root) == ("cohort-marker", "raw", "ref")
+            return {"report": {"t1c": {"psnr": 20.0, "ssim": 0.5}}, "m": 0.5, "mean_psnr": 20.0}
+
+    fields, log_line = PairTrendScorer(_ScriptedPairwise(), "cohort-marker", "raw", "ref")("samples-marker")
+
+    assert fields == {"metric": "paired-psnr-ssim", "report": {"t1c": {"psnr": 20.0, "ssim": 0.5}}, "m": 0.5, "mean_psnr": 20.0}
+    assert log_line == "mean_ssim=0.5000 mean_psnr=20.00"

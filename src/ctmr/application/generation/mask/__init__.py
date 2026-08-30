@@ -14,10 +14,11 @@
 
 The mask (tumour-mask-conditioned) use case as three word-named modules
 (ADR-0015 §7⑥): ``train`` (ControlNet-only candidate finetune), ``monitor``
-(dev sidecar: FID + instrument + round-trip-Dice trend, reference/watch/select
-polling + early stop) and ``sample`` (final-holdout sample generation with the
-selected candidate). ``inference`` holds the mask-conditioned sampling wrapper
-shared with the user-facing mask→image tools. The family kernels inject into
+(dev sidecar: FID + instrument + round-trip-Dice trend; reference/watch/select
+assembly over the shell ``WatchEngine``, early stop included) and ``sample``
+(final-holdout sample generation with the selected candidate). ``inference``
+holds the mask-conditioned sampling wrapper shared with the user-facing
+mask→image tools. The family kernels inject into
 ``ctmr.application.shell``'s ``PhaseHarness``; the ``ctmr generate mask`` CLI
 verbs dispatch here. The historical phase codename stays in CONTEXT.md and ADR
 history only.
