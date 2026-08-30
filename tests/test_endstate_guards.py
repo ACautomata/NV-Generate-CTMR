@@ -10,9 +10,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-state guard suite (issue #144 / ADR-0015 §9-§10, batch M7; issue #175 / ADR-0016 M4-M5).
+"""End-state guard suite (issue #144 / ADR-0015 §9-§10, batch M7; issue #175 / ADR-0016 M4-M5; issue #230 / ADR-0018 gate 5).
 
-Four terminal-state gates pin the post-migration repository shape:
+Five terminal-state gates pin the post-migration repository shape:
 
 1. live code and live docs carry zero references into the retired scripts
    layer (git history is the reproduction anchor); frozen historical corpora
@@ -25,7 +25,12 @@ Four terminal-state gates pin the post-migration repository shape:
    dead, hyphen compounds live only at the CLI verb layer);
 4. the legacy generation addresses deleted with issue #175 — the harness /
    instrument forwarding shims and the domain-replaced engine drivers — stay
-   out of live surfaces (ADR-0016 M4-M5).
+   out of live surfaces (ADR-0016 M4-M5);
+5. every module under src/ctmr is reached by some in-repo reference, or is
+   explicitly registered on the orphan whitelist (issue #230 / ADR-0018
+   decision 5: the eleven provisioning/dataio retirees were alive in name --
+   tested, green, yet called by nothing; orphan status becomes a declared
+   state, never a silent one).
 
 Each gate runs two ways: a positive probe over the real repository (must be
 clean) and a negative probe over a synthetic tree (a seeded violation must be
@@ -34,6 +39,7 @@ exempt from gates 1 and 4's scan: it must spell the forbidden needles to find
 them.
 """
 
+import ast
 import re
 from pathlib import Path
 
@@ -213,3 +219,165 @@ def test_name_gate_detects_seeded_violations(tmp_path):
     (pkg / "maisi_engine" / "utils_frozen.py").write_text("", encoding="utf-8")
     flagged = {part for _rel, part, _why in package_name_violations(pkg)}
     assert flagged == {"p1_utils-foo.py", "l2_measurement.py", "utils.py"}
+
+
+# Gate 5: the orphan-module whitelist (issue #230 / ADR-0018 decision 5). A
+# module under src/ctmr that no in-repo reference reaches is an orphan: the
+# provisioning/dataio retirees were exactly that -- born with green tests,
+# yet called by nothing. The cleanup retired them together with their tests;
+# any orphan left after the sweep must be registered here explicitly (orphan
+# status becomes a declaration, not a silence) or retired by its own ruling.
+# A reference is any in-repo reach: an import in src/ or tests/ (AST-parsed,
+# relative imports resolved, ``from pkg import name`` counting only when that
+# submodule spelling exists), a VERBS registry handler module, the
+# console-script / ``python -m`` entry points, or a ``python -m ctmr...``
+# module invocation in a deploy shell recipe -- the deploy surface is the
+# only scanned non-Python reference home, because frozen corpora (adr /
+# research / calibration) carry historical commands that are records, not
+# reaches. Tests count as references because a module whose only reach is
+# its own test file is exactly the "retired module still carried by its
+# tests" state this gate polices: retiring a module means retiring its test
+# with it, which drops the module to zero reaches and makes the gate fire
+# until both are gone.
+#
+# First sweep (#230): the provisioning/dataio retirees left the tree, and the
+# probe surfaced three legacy run modules the ADR had not listed -- each a
+# one-shot controlled-execution runner whose historical run record is the
+# reproduction anchor (CONTEXT.md "历史运行器"), none carried by its caller
+# anymore. Retiring them needs its own ruling (ADR-0018's decision 1 list is
+# closed); until then their orphan status is declared here and in the ADR's
+# implementation note.
+ORPHAN_WHITELIST: frozenset[str] = frozenset(
+    {
+        "ctmr.application.acceptance.distribution.calibration_prep",  # #36 calibration-set assembly, protocol frozen (ADR-0002)
+        "ctmr.application.acceptance.distribution.freeze_audit",  # #37 frozen-artifact audit, verdict recorded in controlled storage
+        "ctmr.application.acceptance.quantitative.fid_2d5",  # one-shot 2.5D FID calculator (dev-trend machinery uses quantitative.fid)
+    }
+)
+
+PACKAGE_ROOT = REPO_ROOT / "src" / "ctmr"
+
+SHELL_MODULE_INVOCATION = re.compile(r"(?:python3?)\s+-m\s+([\w.]+)")
+
+
+def prefix_reaches(name, modules):
+    """The spellings of one dotted name that exist as modules: ``import
+    a.b.c`` needs a, a.b and a.b.c to exist, so every prefix hits."""
+    parts = name.split(".")
+    return {".".join(parts[:size]) for size in range(1, len(parts) + 1)} & set(modules)
+
+
+def package_modules(package_root):
+    """Every importable module name under the package -> its file."""
+    modules = {}
+    for path in sorted(package_root.rglob("*.py")):
+        rel = path.relative_to(package_root.parent).with_suffix("")
+        parts = rel.parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        modules[".".join(parts)] = path
+    return modules
+
+
+def import_reaches(tree, containing_package, modules):
+    """Module names in ``modules`` that the AST's import statements reach.
+
+    ``from pkg import name`` hits ``pkg.name`` only when that submodule
+    spelling exists in the tree -- an attribute import is not a module reach.
+    Relative imports resolve against ``containing_package`` (the containing
+    package for a module file, the package itself for ``__init__``).
+    """
+    reaches = set()
+
+    def hit(name):
+        reaches.update(prefix_reaches(name, modules))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                hit(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            base = [] if node.module is None else node.module.split(".")
+            if node.level:
+                parts = containing_package.split(".")
+                for _ in range(node.level - 1):
+                    parts = parts[:-1]
+                base = [*parts, *base]
+            if base:
+                hit(".".join(base))
+                for alias in node.names:
+                    hit(".".join([*base, alias.name]))
+    return reaches
+
+
+def file_references(path, module_name, modules):
+    """The module names one .py file's imports reach (``module_name=None``
+    scans a file outside the package -- tests imports are absolute)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    if module_name is None or path.name == "__init__.py":
+        containing_package = module_name or ""
+    else:
+        containing_package = module_name.rsplit(".", 1)[0] if "." in module_name else ""
+    return import_reaches(tree, containing_package, modules)
+
+
+def deploy_shell_references(modules, repo_root):
+    """Module names invoked as ``python -m <module>`` inside deploy recipes."""
+    reaches = set()
+    for path in (repo_root / "deploy").rglob("*.sh"):
+        for match in SHELL_MODULE_INVOCATION.finditer(path.read_text(encoding="utf-8")):
+            reaches.update(prefix_reaches(match.group(1), modules))
+    return reaches
+
+
+def registry_references(modules):
+    """The VERBS handler modules (the CLI registry's lazy-import strings)."""
+    from ctmr.cli import VERBS
+
+    reaches = set()
+    for route in VERBS.values():
+        reaches.update(prefix_reaches(route.module, modules))
+    return reaches
+
+
+def orphan_modules(package_root, repo_root=None):
+    """Modules under ``package_root`` that no in-repo reference reaches."""
+    modules = package_modules(package_root)
+    referenced = set()
+    for name, path in modules.items():
+        referenced |= file_references(path, name, modules)
+    # entry points: the pyproject console script (ctmr = ctmr.cli:main) and
+    # the ``python -m ctmr`` execution form live outside the import graph
+    for name in ("ctmr.cli", "ctmr.__main__"):
+        if name in modules:
+            referenced.add(name)
+    if repo_root is not None:
+        for path in repo_root.glob("tests/**/*.py"):
+            referenced |= file_references(path, None, modules)
+        referenced |= deploy_shell_references(modules, repo_root)
+        referenced |= registry_references(modules)
+    return set(modules) - referenced
+
+
+def test_no_orphan_modules_outside_the_whitelist():
+    orphans = orphan_modules(PACKAGE_ROOT, REPO_ROOT) - ORPHAN_WHITELIST
+    assert not orphans, f"zero-caller modules outside the ADR-0018 whitelist: {sorted(orphans)}"
+
+
+def test_whitelist_entries_are_current_orphans():
+    stale = ORPHAN_WHITELIST - orphan_modules(PACKAGE_ROOT, REPO_ROOT)
+    assert not stale, f"whitelist entries that are no longer orphans (remove them): {sorted(stale)}"
+
+
+def test_orphan_gate_detects_a_seeded_orphan(tmp_path):
+    pkg = tmp_path / "src" / "ctmr"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("import ctmr.live_mod\n", encoding="utf-8")
+    (pkg / "imported_mod.py").write_text("THING = 1\n", encoding="utf-8")
+    # both absolute and relative spellings reach imported_mod
+    (pkg / "live_mod.py").write_text(
+        "import ctmr.imported_mod\nfrom ctmr.imported_mod import THING\nfrom . import imported_mod as _\n",
+        encoding="utf-8",
+    )
+    (pkg / "orphan_mod.py").write_text("UNUSED = 2\n", encoding="utf-8")
+    assert orphan_modules(tmp_path / "src" / "ctmr") == {"ctmr.orphan_mod"}

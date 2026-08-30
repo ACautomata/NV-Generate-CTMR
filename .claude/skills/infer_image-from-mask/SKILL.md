@@ -129,5 +129,5 @@ Background voxels (where the mask is `0`) are set to `a_min` (CT: `-1000` HU) vi
 |---|---|
 | `ctmr.application.generation.mask.inference` | Home of this workflow's surviving conditioning helpers: `binarize_labels` conditions, `crop_img_body_mask` regularizes. (The former wrapper kernel `ldm_conditional_sample_one_image_from_mask` was deleted with issue #175 — git history.) |
 | former `sample.py` (scripts layer, git history) — `LDMSampler.sample_one_pair` | Paired-pipeline wrapper around the same core sampler. |
-| `ctmr.infrastructure.dataio.downloads` (`download_model_data`) | Downloads ControlNet + image AE + image DM weights. Run once before inference. |
+| `hf download` (CLI) — see the download-models skill | Downloads ControlNet + image AE + image DM weights. Run once before inference (the retired `download_model_data` assembly, git history per ADR-0018). |
 | former `utils.py` (`add_body_envelope`, `remap_labels`) — retired (git history) | Mask preprocessing utilities — needed for Options A/B above and for converting 0..124 → 132-class. (`binarize_labels` moved into `ctmr.application.generation.mask.inference`.) |

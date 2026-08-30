@@ -25,7 +25,6 @@
 """
 Shared inference helpers reused across:
 
-- ``sample_mask.py`` (retired scripts layer, git history) — mask DDPM (anatomy_size → mask); its dataio adapter ``ctmr.infrastructure.dataio.sample_mask`` stays live
 - the cross-modal family (live) — P3 candidate/monitor image-side model loading
 
 What lives here:

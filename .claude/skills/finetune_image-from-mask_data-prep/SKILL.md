@@ -102,7 +102,7 @@ combined[remapped > 0] = remapped[remapped > 0]
 # save `combined` as mask_combined_label*.nii.gz
 ```
 
-(`ctmr.infrastructure.dataio.mask_postprocess.remap_labels` does the same thing but reads a JSON of `[orig, target]` pairs — handy if you prefer a config file. Use whichever fits your pipeline.)
+(The same remap-from-JSON pattern existed in the former `ctmr.infrastructure.dataio.mask_postprocess.remap_labels` — retired to git history, issue #230 / ADR-0018. The inline remap above is the live recipe.)
 
 ---
 

@@ -112,8 +112,8 @@ MAE_SEED_SLOTS = {
 }
 
 # The official BraTS release tree names challenges by their release suffix,
-# which diverges from the pinned challenge code for METS ("...-MET-..."; the
-# canonical mapping is dataset_prep.DIR_SUFFIX). Matching the literal code
+# which diverges from the pinned challenge code for METS ("...-MET-...").
+# Matching the literal code
 # finds nothing and silently drops all 48 METS real companions (#216 review).
 OFFICIAL_TREE_SUFFIX = {"METS": "MET"}
 
@@ -570,7 +570,7 @@ class NiftiGenCaseRepository:
     def _challenge_dir(self, challenge):
         """The real-tree challenge directory: the L2 layout (<real-root>/<CH>)
         first, then the official BraTS tree naming via the canonical release
-        suffix (dataset_prep DIR_SUFFIX: METS ships as "...-MET-..." -- the
+        suffix (OFFICIAL_TREE_SUFFIX: METS ships as "...-MET-..." -- the
         literal challenge code matches nothing there, #216 review)."""
         if challenge not in self._challenge_dirs:
             direct = self._real_root / challenge

@@ -31,7 +31,13 @@ There is currently no ControlNet for MRI — MR variability is too large to trai
 network="rflow"                       # or "ddpm" for ddpm-ct
 generate_version="rflow-ct"           # or "ddpm-ct"
 
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+# weights (rflow-ct; for ddpm-ct swap the last two for
+# diff_unet_3d_ddpm-ct.pt / controlnet_3d_ddpm-ct.pt)
+hf download nvidia/NV-Generate-CT models/autoencoder_v1.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/mask_generation_autoencoder.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/mask_generation_diffusion_unet.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/diff_unet_3d_rflow-ct.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/controlnet_3d_rflow-ct.pt --local-dir .
 python -m ctmr.infrastructure.maisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \
@@ -44,7 +50,8 @@ python -m ctmr.infrastructure.maisi_engine.diff_model_infer \
 network="rflow"
 generate_version="rflow-mr"
 
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+hf download nvidia/NV-Generate-MR models/autoencoder_v2.pt --local-dir .
+hf download nvidia/NV-Generate-MR models/diff_unet_3d_rflow-mr.pt --local-dir .
 python -m ctmr.infrastructure.maisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \
@@ -59,7 +66,8 @@ Set `"modality"` in `config_maisi_diff_model_rflow-mr.json` per the [Modality co
 network="rflow"
 generate_version="rflow-mr-brain"
 
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+hf download nvidia/NV-Generate-CT models/autoencoder_v1.pt --local-dir .
+hf download nvidia/NV-Generate-MR-Brain models/diff_unet_3d_rflow-mr-brain_v1.pt --local-dir .
 python -m ctmr.infrastructure.maisi_engine.diff_model_infer \
     -t ./configs/config_network_${network}.json \
     -e ./configs/environment_maisi_diff_model_${generate_version}.json \

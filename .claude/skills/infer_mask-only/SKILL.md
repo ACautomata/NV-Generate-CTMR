@@ -5,7 +5,7 @@ description: Reference guide to the retired mask-generation stage: Path A/B disp
 
 # Mask-generation reference (NV-Generate-CTMR)
 
-This reference records the **mask-generation stage** formerly run inside the paired pipeline. Its one-command orchestrator (the `LDMSampler` class) retired with the scripts layer (issue #143), and it was never a standalone CLI. The Path A kernel remains in `ctmr.infrastructure.dataio.sample_mask`, but it is **not** a user entry point: model assembly, Path-B dispatch, I/O, and output publication have no canonical live runner. See [`infer_mask-image-paired`](../infer_mask-image-paired/SKILL.md) for the full retired contract.
+This reference records the **mask-generation stage** formerly run inside the paired pipeline. Its one-command orchestrator (the `LDMSampler` class) retired with the scripts layer (issue #143), and it was never a standalone CLI. The Path A kernel (`ldm_conditional_sample_one_mask`), Path B lookup, and label utilities all retired to git history with issue #230 / ADR-0018 — the whole stage is reproducible only from git history. See [`infer_mask-image-paired`](../infer_mask-image-paired/SKILL.md) for the full retired contract.
 
 The mask stage produced a 3D MAISI-labeled volume to condition the image LDM. **CT-only** — the mask DM was trained on CT masks, and there is no MR equivalent.
 
@@ -81,11 +81,11 @@ The pretrained mask DM was trained at **256×256×256 × 1.5 mm isotropic** (Pat
 
 | Entry | Role |
 |---|---|
-| `ctmr.infrastructure.dataio.sample_mask` | Path A core sampler: `ldm_conditional_sample_one_mask` (DDPM → softmax/argmax → label remap → post-process). |
-| `ctmr.infrastructure.dataio.find_masks` | Path B exact-match DB lookup: `find_masks(body_region, anatomy_list, spacing, output_size, ...)`. |
+| former `ctmr.infrastructure.dataio.sample_mask` (git history, issue #230 / ADR-0018) | Path A core sampler: `ldm_conditional_sample_one_mask` (DDPM → softmax/argmax → label remap → post-process). |
+| former `ctmr.infrastructure.dataio.find_masks` (git history, issue #230 / ADR-0018) | Path B exact-match DB lookup: `find_masks(body_region, anatomy_list, spacing, output_size, ...)`. |
 | former `sample.py` (scripts layer, git history) — `LDMSampler` | Orchestrator: chose Path A or B based on `controllable_anatomy_size`, then chained the image stage. Hosted `LDMSampler.find_closest_masks` for Path B's closest-match fallback. |
 | former `inference.py` (scripts layer, git history) | Paired-pipeline entry point (mask stage + image stage together). |
-| `ctmr.infrastructure.dataio.mask_postprocess` | Label utilities: `remap_labels`, `general_mask_generation_post_process`. |
+| former `ctmr.infrastructure.dataio.mask_postprocess` (git history, issue #230 / ADR-0018) | Label utilities: `remap_labels`, `general_mask_generation_post_process`. |
 
 ## Related skills
 

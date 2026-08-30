@@ -38,9 +38,9 @@ migration batches.
 
 Deliberately NOT vendored here: ``sample.py`` from the retired scripts layer
 (git history; the LDMSampler
-backward-compat shell). Its re-exported mask/image pipelines live in
-``sample_mask``/``infer_image_from_mask``, which belong to the dataio and
-application layers of later migration batches, not to the frozen engine.
+backward-compat shell). Its re-exported mask/image pipelines lived in a
+dataio adapter (``sample_mask`` — retired to git history with issue #230 /
+ADR-0018) and an application-layer composition; not in the frozen engine.
 
 Process-spawn precedent (#123) is preserved by construction: neither this
 package nor its smoke test touches multiprocessing context choices.

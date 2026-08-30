@@ -12,19 +12,21 @@
 """Unified ``ctmr`` console-entry surface (issue #130 / ADR-0015 §3; registry issue #228).
 
 Observed purely through the CLI seam (argv in, dispatch/help/exit code out):
-``ctmr --help`` lists the five command families pinned by the ADR; every
-concrete invocation of a family whose verbs have not landed yet answers a
-friendly "not migrated yet" message instead of an error traceback. The live
-verbs are one registry (``ctmr.cli.VERBS``) that both the argparse spelling
-tree and the dispatch router read, so these gates pin observed behavior --
-help texts, unknown-verb exit codes, and the routed (handler, rest) result via
-the public ``CtmrCli.route`` lookup -- and never import private methods: every
-registry row must dispatch its handler argv verbatim (``peel_verb`` rows keep
-the verb spelling for the module's own verb parser), and adding a verb is
-provably one registry entry. The stdlib-only purity of ``ctmr.cli`` keeps the
-light sci-stack CI job able to exercise these paths (ADR-0013 §4); the
-dispatch gates pre-seed fake handler modules into ``sys.modules`` so the
-torch/monai/nnunetv2 stacks stay out (lazy import hits ``sys.modules`` first).
+``ctmr --help`` lists the four command families pinned by the ADR (the
+``data`` family retired with its provisioning/dataio services, issue #230 /
+ADR-0018); every concrete invocation of a family whose verbs have not landed
+yet answers a friendly "not migrated yet" message instead of an error
+traceback. The live verbs are one registry (``ctmr.cli.VERBS``) that both the
+argparse spelling tree and the dispatch router read, so these gates pin
+observed behavior -- help texts, unknown-verb exit codes, and the routed
+(handler, rest) result via the public ``CtmrCli.route`` lookup -- and never
+import private methods: every registry row must dispatch its handler argv
+verbatim (``peel_verb`` rows keep the verb spelling for the module's own verb
+parser), and adding a verb is provably one registry entry. The stdlib-only
+purity of ``ctmr.cli`` keeps the light sci-stack CI job able to exercise these
+paths (ADR-0013 §4); the dispatch gates pre-seed fake handler modules into
+``sys.modules`` so the torch/monai/nnunetv2 stacks stay out (lazy import hits
+``sys.modules`` first).
 """
 
 import os
@@ -38,8 +40,8 @@ import pytest
 from ctmr import cli
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FAMILIES = ["generate", "measure", "accept", "data", "experiment"]
-NOT_MIGRATED_FAMILIES = ["data", "experiment"]  # generate/measure/accept have live verbs; unknown accept layers/verbs are argparse errors
+FAMILIES = ["generate", "measure", "accept", "experiment"]
+NOT_MIGRATED_FAMILIES = ["experiment"]  # generate/measure/accept have live verbs; unknown accept layers/verbs are argparse errors
 
 _HEAVY_DEPS = [
     "torch",
@@ -59,7 +61,7 @@ _HEAVY_DEPS = [
 ]
 
 
-def test_help_lists_all_five_command_families(capsys):
+def test_help_lists_all_four_command_families(capsys):
     with pytest.raises(SystemExit) as excinfo:
         cli.main(["--help"])
     assert excinfo.value.code == 0
@@ -72,11 +74,21 @@ def test_help_lists_all_five_command_families(capsys):
         "use-case chains modality-label|mask|cross-modal (train/dev-eval/generate/manifest)",
         "instrument-side prediction/calibration/FID",
         "quantitative/distribution/expert-review chains plus contract orchestration",
-        "data preparation/encoding/download tooling -- not migrated yet",
         "experiment-record repository -- not migrated yet",
     ):
         # compare whitespace-squashed: argparse rewraps long help lines
         assert "".join(blurb.split()) in "".join(out.split())
+    # the data family retired with its provisioning/dataio services (#230 / ADR-0018)
+    assert "preparation/encoding/download" not in "".join(out.split())
+
+
+def test_retired_data_family_is_an_argparse_error_not_a_not_migrated_pointer(capsys):
+    # the data door came off the table: an unknown family is an argparse
+    # usage error, not the not-migrated pointer experiment still answers
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["data", "prep"])
+    assert excinfo.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_gen_alias_reaches_the_generate_family():

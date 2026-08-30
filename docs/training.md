@@ -16,7 +16,7 @@ The information for the training hyperparameters and data processing parameters,
 
 ### Retired VAE runner contract
 
-The end-to-end VAE caller retired to git history with the scripts layer (issue #143), pending the `ctmr data` command family (ADR-0015 §3); the loop itself lives on in [`ctmr.application.vae_train`](../src/ctmr/application/vae_train.py) and its invocation shape is pinned by its tests. The retired caller wired: three config layers (network / train / environment) → data pipeline (`VAE_Transform` + `CacheDataset`) → the per-epoch loop → checkpoint publication + periodic validation.
+The end-to-end VAE caller retired to git history with the scripts layer (issue #143); the `ctmr data` verb face it once awaited is itself retired (issue #230 / ADR-0018) -- a future live entry (`ctmr data vae-train`, ADR-0019 B3) must be added back as one registry row. The loop itself lives on in [`ctmr.application.vae_train`](../src/ctmr/application/vae_train.py) and its invocation shape is pinned by its tests. The retired caller wired: three config layers (network / train / environment) → data pipeline (`VAE_Transform` + `CacheDataset`) → the per-epoch loop → checkpoint publication + periodic validation.
 
 Its input shape, for reference when the caller is rebuilt:
 

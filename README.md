@@ -144,7 +144,10 @@ You can also run it in command line to generate MR image without mask. Please ch
 ```bash
 network="rflow"
 generate_version="rflow-mr-brain"
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+# weights: image AE + MR-Brain image DM (the retired download_model_data assembly,
+# git history per ADR-0018, downloaded here directly from HuggingFace)
+hf download nvidia/NV-Generate-CT models/autoencoder_v1.pt --local-dir .
+hf download nvidia/NV-Generate-MR-Brain models/diff_unet_3d_rflow-mr-brain_v1.pt --local-dir .
 python -m ctmr.infrastructure.maisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
 ```
 
@@ -161,7 +164,15 @@ python -m ctmr.infrastructure.maisi_engine.diff_model_infer -t ./configs/config_
 ```bash
 network="rflow"
 generate_version="rflow-ct" # can change to "ddpm-ct"
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+# weights: image AE + mask AE + mask DM + image DM + ControlNet (rflow-ct; for
+# ddpm-ct swap the last two for diff_unet_3d_ddpm-ct.pt / controlnet_3d_ddpm-ct.pt).
+# The retired download_model_data assembly (git history per ADR-0018) is downloaded
+# here directly from HuggingFace.
+hf download nvidia/NV-Generate-CT models/autoencoder_v1.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/mask_generation_autoencoder.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/mask_generation_diffusion_unet.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/diff_unet_3d_rflow-ct.pt --local-dir .
+hf download nvidia/NV-Generate-CT models/controlnet_3d_rflow-ct.pt --local-dir .
 python -m ctmr.infrastructure.maisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
 ```
 
@@ -174,7 +185,10 @@ Change `"modality"` in [configs/config_maisi_diff_model_rflow-mr.json](configs/c
 ```bash
 network="rflow"
 generate_version="rflow-mr"
-python -c "from ctmr.infrastructure.dataio.downloads import download_model_data; download_model_data('${generate_version}', './', model_only=True)"
+# weights: image AE + image DM (the retired download_model_data assembly,
+# git history per ADR-0018, downloaded here directly from HuggingFace)
+hf download nvidia/NV-Generate-MR models/autoencoder_v2.pt --local-dir .
+hf download nvidia/NV-Generate-MR models/diff_unet_3d_rflow-mr.pt --local-dir .
 python -m ctmr.infrastructure.maisi_engine.diff_model_infer -t ./configs/config_network_${network}.json -e ./configs/environment_maisi_diff_model_${generate_version}.json -c ./configs/config_maisi_diff_model_${generate_version}.json
 ```
 
