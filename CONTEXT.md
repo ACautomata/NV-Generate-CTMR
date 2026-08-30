@@ -190,7 +190,7 @@ _Avoid_: 从 git 捡回退役件当活入口复用或从中再抄、为复现而
 ### 身份与运维
 
 **检查点身份(Checkpoint Identity)**:
-模型权重的业务身份——以 checkpoint sha256 内容寻址标识的血统实例,不是 Python 对象或网络类:同一 Unet 架构会实例化出基模/P1 各 epoch 候选/P2 冻结底座等互异实体。载体是权重集 payload 及其血统记录;dm_source.json 账本是 DM source 血统的权威登记处。CheckpointRepository 是其唯一持久化协议(state_dict 存取＋tmp 原子发布＋latest.json 指针,b 档辖区——provenance 运行日志不入仓储)。DiffusionModel 行为实体不含身份——由 checkpoint payload 经工厂方法重建,身份不入实体本身。
+模型权重的业务身份——以 checkpoint sha256 内容寻址标识的血统实例,不是 Python 对象或网络类:同一 Unet 架构会实例化出基模/P1 各 epoch 候选/P2 冻结底座等互异实体。载体是权重集 payload 及其血统记录;dm_source.json 账本是 DM source 血统的权威登记处。CheckpointRepository 是其唯一持久化协议(state_dict 存取＋tmp 原子发布＋latest.json 指针,b 档辖区——provenance 运行日志不入仓储)。文件寻址是身份的另一半边:内存 payload 经 `WeightsRef.of_bytes`、盘上 checkpoint 文件经 infrastructure `weights_ref_of_file`(1MB 流式,文件读取的唯一落点——domain 不收 IO)折进同一 WeightsRef,同字节同身份、路径不入身份,检查点门禁的比对语义是 WeightsRef 对 WeightsRef。DiffusionModel 行为实体不含身份——由 checkpoint payload 经工厂方法重建,身份不入实体本身。
 _Avoid_: 把架构类当实体类型作身份、以文件路径代替内容寻址、绕开仓储直接读写 checkpoint
 
 **运维面(deploy)**:

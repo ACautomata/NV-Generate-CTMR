@@ -67,7 +67,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -89,9 +88,11 @@ from ctmr.application.generation.cross_modal.baseline import (
 from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
+from ctmr.domain.identity import WeightsRef
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config, setup_logging
 from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
 from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, load_image_models
+from ctmr.infrastructure.weightsref import weights_ref_of_file
 
 LATENT = (4, 64, 64, 32)
 INFER_SCHEMA = "brats-p3-controlnet-infer/1"
@@ -206,7 +207,7 @@ class CandidateRunGuard:
         path = Path(checkpoint["path"])
         if not path.is_file():
             raise CandidatePlanError(f"candidate ControlNet checkpoint missing: {path}")
-        if self.file_sha256(path) != checkpoint["sha256"]:
+        if weights_ref_of_file(path) != WeightsRef(sha256=checkpoint["sha256"]):
             raise CandidatePlanError(f"candidate ControlNet checkpoint changed on disk: {path}")
         # anti-confusion (issue #61 acceptance criterion 3): a trained candidate pins its own
         # ControlNet checkpoint, never the upstream P1-DM (that would be the zero-training
@@ -224,7 +225,7 @@ class CandidateRunGuard:
                 "the cross-modal candidate run must pin exactly one --config inference=<cross-modal candidate inference config> "
                 "(the recorded inference provenance, issue #61 acceptance criterion 1)"
             )
-        if self.file_sha256(self._infer_config_path) != inference_entries[0]["sha256"]:
+        if weights_ref_of_file(self._infer_config_path).sha256 != inference_entries[0]["sha256"]:
             raise CandidatePlanError(
                 f"--infer-config sha256 does not match the config pinned by run {record['run_id']}; "
                 "regenerate with the recorded official cross-modal candidate inference config"
@@ -233,11 +234,7 @@ class CandidateRunGuard:
 
     @staticmethod
     def file_sha256(path):
-        digest = hashlib.sha256()
-        with open(path, "rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
+        return weights_ref_of_file(path).sha256
 
 
 class CandidateSamplePlanBuilder:
