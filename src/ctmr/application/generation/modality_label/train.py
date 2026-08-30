@@ -63,6 +63,7 @@ from ctmr.application.train_cli import TrainCli
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.generation.objective import ModalityLabelPerturber
 from ctmr.domain.recipe import P1RecipeSpec
+from ctmr.infrastructure.bypass_mounting import MonaiCheckpoint
 from ctmr.infrastructure.gradient_executors import Bf16GradientExecutor, Fp16GradientExecutor, PlainGradientExecutor
 from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
@@ -188,10 +189,9 @@ class TrainKernel:
         unet = torch.nn.SyncBatchNorm.convert_sync_batchnorm(unet)
         if dist.is_initialized():
             unet = DistributedDataParallel(unet, device_ids=[self._device], find_unused_parameters=True)
-        # The base checkpoint pickles MONAI meta-tensor globals alongside the
-        # weights; allowlist them so weights_only stays enabled (trusted source).
-        torch.serialization.add_safe_globals([monai.data.meta_tensor.MetaTensor, monai.utils.enums.TraceKeys])
-        checkpoint = torch.load(args.existing_ckpt_filepath, map_location=self._device, weights_only=True)
+        # The allowlisted weights_only load of the base checkpoint (the one
+        # safe_globals point shared with the P2/P3 DM-source hook-up).
+        checkpoint = MonaiCheckpoint(args.existing_ckpt_filepath, self._device).load()
         target = unet.module if dist.is_initialized() else unet
         state = target.load_state_dict(checkpoint["unet_state_dict"], strict=False)
         if state.missing_keys:
