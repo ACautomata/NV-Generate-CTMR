@@ -83,6 +83,14 @@ _Avoid_: 旁路微调、adapter 训练
 **回放混合**:
 在训练数据 list 层混入基模训练数据(MR-RATE)以防灾难性遗忘——仅全参续训需要,ControlNet-only 与 P3 不用。
 
+**并行口径(parallelism topology)**:
+per-GPU batch=1 固定、全局有效 batch=卡数、训练 world_size=8;配方 ADR 钉的 per-GPU 值不随卡数改动。既往 world_size=7 的 run 以 provenance 的 world_size 字段区分,不追溯重算。
+_Avoid_: 为保全局 batch 恒定改 per-GPU batch、混淆不同 world_size run 的读数
+
+**VAE 训练(VAE GAN training)**:
+潜空间自编码器+判别器的 GAN 交替训练循环复活——DDP 并行(双网络包装、per-rank 分片、rank0 写盘),live 入口 `ctmr data vae-train`;自 tutorial 抽取件升级而来。落地名:`ctmr.application.vae_train`。
+_Avoid_: 无 live 入口的散件训练循环、单卡 VAE 训练
+
 **病例级持出**:
 按子挑战分层的固定病例归属；病例整体不进任何阶段的训练 list，跨阶段复用同一划分。
 _Avoid_: 随机切分、逐条目切分
@@ -90,6 +98,10 @@ _Avoid_: 随机切分、逐条目切分
 **数据划分角色**:
 所有阶段共享按子挑战分层的固定病例级 `70% 训练集 / 10% 开发集 / 20% 最终验收持出集`。开发集用于轻验收、早停与 checkpoint 选择；最终验收持出集只在候选冻结后运行完整 L1/L2/L3，不能用于调参。最终验收采用非补偿性 AND：三层全部必算主判据都必须通过，任一层失败即未通过完整 spec 终验。P3 的同一病例全部 12 个有序模态对必须落在同一侧。
 _Avoid_: 将最终验收持出集用于每 epoch 监控、以高分 L1 抵消 L2/L3 失败、逐条目切分、跨阶段改变病例归属
+
+**周期验证(interval validation)**:
+训练进程内每 `--val-every N` epoch(默认 10)进入的验证阶段——全部卡分片开发集 cohort、all_gather 特征、ledger 落盘、早停在验证边界评估;替代持续单卡 sidecar。dev watch/select 保留离线形态(对任意 run 已存 checkpoint 跑验证),ledger 与候选选择合同不变。
+_Avoid_: 训练期单卡 sidecar 串行验证、验证与训练争卡、改变 dev-eval 候选选择语义
 
 **Split manifest**:
 以 `split_id`、子挑战名和官方 subject ID 的 SHA-256 排序，按已定名额确定病例侧别的受控清单。名额由各子挑战可得全量按 70/10/20 以最大余额法取整导出，平手归终验持出侧。完整清单含受 DUA 约束的 ID，必须留在受控数据目录；ADR 仅记录算法、名额和 manifest 内容摘要。增量数据只能创建新版本 manifest，不得悄悄重排已冻结候选的病例归属。
@@ -179,8 +191,12 @@ _Avoid_: 把 Scheduler 作为跨运行/跨 checkpoint 的恒久身份、在同�
 
 ### 执行外壳
 
+**组合根(composition root)**:
+装配具体基础设施实现并注入应用用例的唯一住址——顶层 `ctmr.wiring`(与 CLI 并列、三层之外);CLI 纯分派不 import infrastructure,torchrun worker 入口复用同一装配。分层 import 依赖方向与守卫经 [ADR-0019](docs/adr/0019-layer-import-guard-ddp-topology.md) 钉板:application 零 infrastructure import。
+_Avoid_: 在 application 用例内构造具体实现、CLI 直接认识 infrastructure
+
 **阶段脚本外壳(PhaseHarness)**:
-训练/dev_eval/生成链驱动中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询、训练 provenance 写盘、dev watch/select 轮询骨架(WatchEngine:轮询去重、idle-exit、ledger 增量读、record 组装、早停写盘;SelectionEmitter:select argmin/argmax 契约发射;阶段差异经 sampler 工厂、scorer、可选 post-score 扩展注入)、幂等守卫——统一收敛于 `ctmr.application.shell`;各阶段仅以数据构成、条件张量构造与 checkpoint payload 的薄适配器组合领域实体,模型挂接与单 batch 参数更新归 DiffusionModel/ControlNetBypass,运行时精度策略以 GradientExecutor 注入。外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。checkpoint 原子发布与 latest.json 协议归 CheckpointRepository(仓储 b 档);「CLI 面保持不变」已被 ADR-0015 取代为统一 `ctmr` CLI 子命令(namespace 等价断言护航迁移)。
+训练/dev_eval/生成链驱动中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询、训练 provenance 写盘、周期验证阶段(每 `--val-every N` epoch 训练进程内全卡分片 dev cohort,早停在验证边界评估)与离线 watch/select(ledger 增量读、record 组装、早停写盘;SelectionEmitter:select argmin/argmax 契约发射;阶段差异经 sampler 工厂、scorer、可选 post-score 扩展注入)、幂等守卫——统一收敛于 `ctmr.application.shell`;各阶段仅以数据构成、条件张量构造与 checkpoint payload 的薄适配器组合领域实体,模型挂接与单 batch 参数更新归 DiffusionModel/ControlNetBypass,运行时精度策略以 GradientExecutor 注入。外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。checkpoint 原子发布与 latest.json 协议归 CheckpointRepository(仓储 b 档);「CLI 面保持不变」已被 ADR-0015 取代为统一 `ctmr` CLI 子命令(namespace 等价断言护航迁移)。
 _Avoid_: 在新用例中再抄外壳骨架(应注入内核)、把配方值下沉进外壳、把 launcher/nohup/sidecar 类编排能力写成 bash 或放入 deploy/(编排属应用层)
 
 **历史运行器(legacy run orchestrator)**:
