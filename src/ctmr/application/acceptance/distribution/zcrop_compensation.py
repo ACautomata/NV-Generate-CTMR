@@ -30,13 +30,13 @@ formal acceptance surface (parent decision). The sugon host recipe lives at
 area (controlled storage), never in git, ready for the read-out ticket to
 transcribe.
 
-Physical coordinate convention (the instrument's own, see measurement_run
-``MaskMeasurer.centroid_mm``): centroids are array voxel indices on the 1 mm
-grid with no origin added. The generated array index z therefore sits
-``crop_start`` mm below the physical z of the same tissue -- the coordinate
-artefact job A removes: compensated centroids are reported in physical mm
-(generated side shifted by +crop_start) so both sides compare inside the same
-window.
+Physical coordinate convention (the instrument's own, see the canonical
+``InstrumentMeasurer`` centroid in ctmr.domain.measurement): centroids are
+array voxel indices on the 1 mm grid with no origin added. The generated array
+index z therefore sits ``crop_start`` mm below the physical z of the same
+tissue -- the coordinate artefact job A removes: compensated centroids are
+reported in physical mm (generated side shifted by +crop_start) so both sides
+compare inside the same window.
 
 Usage:
     python -m ctmr.application.acceptance.distribution.zcrop_compensation \
@@ -110,10 +110,11 @@ class OverlapWindow:
 class ZCropCompensation:
     """Overlap-window geometry and mask re-measurement (pure functions).
 
-    The re-measurement mirrors the frozen instrument's own rules (measurement_run
-    ``MaskMeasurer``: volumes in ml at 0.001 ml/voxel, centroids as 1 mm-grid
-    array indices) restricted to the window, with the generated side shifted
-    into physical mm so both sides compare inside one window.
+    The re-measurement mirrors the frozen instrument's own rules (the canonical
+    ``InstrumentMeasurer`` in ctmr.domain.measurement: volumes in ml at
+    0.001 ml/voxel, centroids as 1 mm-grid array indices) restricted to the
+    window, with the generated side shifted into physical mm so both sides
+    compare inside one window.
     """
 
     @staticmethod

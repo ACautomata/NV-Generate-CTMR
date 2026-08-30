@@ -11,12 +11,14 @@ Every judgement rule lives in ``final_acceptance`` (stdlib-only). Two commands:
                      instrument contract). One file per observation and channel:
                      ``{obs_id}_{suffix}.nii.gz``.
   measure            plan + predictions -> measurement CSV (schema shared with
-                     the judge). Semantics copied from the calibration mother
-                     implementation (issue #36 ``measure_case``), with the
-                     GT columns dropped -- final acceptance has no GT. Failure
-                     flags (input_fail / run_fail / hier_viol) are checked on
-                     BOTH sides; empty predictions are measurement results,
-                     not failures.
+                     the judge). Measurement logic is the canonical
+                     ``InstrumentMeasurer`` (ADR-0010, #224); this shell keeps
+                     the caller-owned execution concerns -- input_fail/run_fail
+                     policies, failure placeholder rows and their sentinels,
+                     the P2 combined-mask remap, the DM-RAS->LPS flip and all
+                     file IO. Failure flags (input_fail / run_fail / hier_viol)
+                     are checked on BOTH sides; empty predictions are
+                     measurement results, not failures.
 
 The z-axis geometry fact (resampled 241x241x174 centred-cropped to 155 slices,
 ~19 slices dropped on the generated side only) is registered in the protocol
@@ -31,15 +33,10 @@ from pathlib import Path
 
 import numpy as np
 import SimpleITK as sitk
-from scipy import ndimage
 
-from ctmr.application.acceptance.distribution.final_acceptance import (
-    CHANNEL_SUFFIXES,
-    REGION_LABELS,
-    REGIONS,
-    MeasurementTable,
-)
+from ctmr.application.acceptance.distribution.final_acceptance import CHANNEL_SUFFIXES, MeasurementTable
 from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter  # noqa: E402
+from ctmr.domain.measurement import InstrumentMeasurer
 
 NNUNET_TARGET_SIZE = INSTRUMENT_GRID.size
 PREDICTION_SHAPE = tuple(reversed(NNUNET_TARGET_SIZE))  # array layout is zyx
@@ -165,40 +162,23 @@ class InstrumentFailureChecker:
             return None
         return array.astype(np.uint8, copy=False)
 
-    @staticmethod
-    def hierarchy_violation(pred):
-        wt = np.isin(pred, (1, 2, 3))
-        tc = np.isin(pred, (1, 3))
-        et = pred == 3
-        outside_domain = not np.isin(pred, (0, 1, 2, 3)).all()
-        return bool(outside_domain or (et & ~tc).any() or (tc & ~wt).any())
 
+class MeasurementRunner:
+    """Runs every plan observation through the canonical measurer into the judgement CSV.
 
-class MaskMeasurer:
-    """Region volumes, centroids, WT/brain, ET/WT and P2 condition round-trip dice."""
+    Measurement is ``InstrumentMeasurer.measure`` + the wide serialization
+    (ADR-0010); the caller-owned execution concerns stay here -- the
+    input_fail/run_fail policies, the failure placeholder row with its
+    sentinels, the P2 combined-mask remap, the brain-channel file reads.
+    """
 
-    @staticmethod
-    def volumes_ml(pred):
-        return {region: float(np.isin(pred, labels).sum()) * 0.001 for region, labels in REGION_LABELS.items()}
-
-    @staticmethod
-    def centroid_mm(pred, region):
-        """Physical SRI24 centroid (x, y, z) mm; None when the region mask is empty."""
-        mask = np.isin(pred, REGION_LABELS[region])
-        if not mask.any():
-            return None
-        cz, cy, cx = ndimage.center_of_mass(mask)  # voxel indices on the 1mm grid
-        return (float(cx), float(cy), float(cz))
-
-    @staticmethod
-    def brain_ml(input_dir, obs_id):
-        """Four-channel union of non-zero voxels (protocol §3, rule pinned there)."""
-        union = None
-        for suffix in sorted(CHANNEL_SUFFIXES.values()):
-            array = sitk.GetArrayFromImage(sitk.ReadImage(str(input_dir / f"{obs_id}_{suffix}.nii.gz")))
-            nonzero = array > 0
-            union = nonzero if union is None else (union | nonzero)
-        return float(union.sum()) * 0.001
+    def __init__(self, plan, input_root, pred_root):
+        self._plan = plan
+        self._input_root = Path(input_root)
+        self._pred_root = Path(pred_root)
+        self._checker = InstrumentFailureChecker()
+        self._measurer = InstrumentMeasurer()
+        self._resampler = GeneratedVolumeResampler()
 
     @staticmethod
     def remap_condition(combined):
@@ -208,35 +188,14 @@ class MaskMeasurer:
             out[combined == src] = dst
         return out
 
-    @staticmethod
-    def condition_dice(pred, condition, region):
-        """Round-trip dice of the instrument prediction against the P2 condition mask.
-
-        ``condition`` is already on the instrument grid (see label_to_grid):
-        a condition mask that cannot be aligned is an input-contract failure of
-        the observation, handled by the runner -- never a silent dice."""
-        gt_mask = np.isin(condition, REGION_LABELS[region])
-        pred_mask = np.isin(pred, REGION_LABELS[region])
-        denom = int(gt_mask.sum()) + int(pred_mask.sum())
-        if denom == 0:
-            return None
-        return float(2 * np.logical_and(gt_mask, pred_mask).sum() / denom)
-
-
-class MeasurementRunner:
-    """Runs every plan observation through the measurers into the judgement CSV."""
-
-    def __init__(self, plan, input_root, pred_root):
-        self._plan = plan
-        self._input_root = Path(input_root)
-        self._pred_root = Path(pred_root)
-        self._checker = InstrumentFailureChecker()
-        self._measurer = MaskMeasurer()
-        self._resampler = GeneratedVolumeResampler()
+    def _brain_channels(self, challenge_dir, obs_id):
+        """Reads the four input channels for the brain column family (file IO stays with the caller)."""
+        return [
+            sitk.GetArrayFromImage(sitk.ReadImage(str(challenge_dir / f"{obs_id}_{suffix}.nii.gz"))) for suffix in sorted(CHANNEL_SUFFIXES.values())
+        ]
 
     def measure_observation(self, observation):
         challenge_dir = self._input_root / observation["challenge"]
-        row = {}
         input_fail = self._checker.input_fail(observation, challenge_dir)
         condition = None
         if observation.get("condition_mask"):
@@ -246,10 +205,24 @@ class MeasurementRunner:
             if condition is None:
                 input_fail = True
             else:
-                condition = self._measurer.remap_condition(condition)
+                condition = self.remap_condition(condition)
         pred = None if input_fail else self._checker.read_prediction(observation, self._pred_root / observation["challenge"])
         run_fail = pred is None
-        row.update(
+        if pred is None:
+            # failure placeholder: counts in R_fail, quantities undefined (caller-owned sentinels)
+            return {
+                "obs_id": observation["obs_id"],
+                "challenge": observation["challenge"],
+                "case": observation["case"],
+                "side": observation["side"],
+                "anchor": observation["anchor"] or "",
+                "input_fail": int(input_fail),
+                "run_fail": int(run_fail),
+                "hier_viol": 0,
+                "pred_empty": "",
+            }
+        measurement = self._measurer.measure(pred, condition=condition, brain=self._brain_channels(challenge_dir, observation["obs_id"]))
+        return measurement.to_wide_row(
             obs_id=observation["obs_id"],
             challenge=observation["challenge"],
             case=observation["case"],
@@ -257,23 +230,7 @@ class MeasurementRunner:
             anchor=observation["anchor"] or "",
             input_fail=int(input_fail),
             run_fail=int(run_fail),
-            hier_viol=0 if pred is None else int(self._checker.hierarchy_violation(pred)),
-            pred_empty="" if pred is None else int(not np.isin(pred, (1, 2, 3)).any()),
         )
-        if pred is None:
-            return row  # failure placeholder: counts in R_fail, quantities undefined
-        volumes = self._measurer.volumes_ml(pred)
-        brain = self._measurer.brain_ml(challenge_dir, observation["obs_id"])
-        row.update(vol_wt_ml=volumes["WT"], vol_tc_ml=volumes["TC"], vol_et_ml=volumes["ET"], brain_ml=brain)
-        row["wt_brain"] = volumes["WT"] / brain if brain > 0 else None
-        row["et_wt"] = volumes["ET"] / volumes["WT"] if volumes["WT"] > 0 else None
-        for region in REGIONS:
-            centroid = self._measurer.centroid_mm(pred, region)
-            values = {f"c{axis}_{region.lower()}_mm": (None if centroid is None else centroid[i]) for i, axis in enumerate("xyz")}
-            row.update(values)
-        if condition is not None:
-            row.update({f"cond_dice_{region.lower()}": self._measurer.condition_dice(pred, condition, region) for region in REGIONS})
-        return row
 
     def run(self):
         rows = [self.measure_observation(observation) for observation in self._plan["observations"]]
