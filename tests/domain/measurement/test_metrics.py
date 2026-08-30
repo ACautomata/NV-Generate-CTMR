@@ -16,10 +16,11 @@ with the frozen terminal-acceptance semantics (``MaskMeasurer.condition_dice``
 returns None; the calibration mother's ``math.nan`` is the registered
 divergence, collapse onto this module in #110). ``WilsonUpper`` is the single
 ``n == 0``-guarded formula: the reference snapshots are the two frozen copies
-verbatim (calibration ``wilson_upper`` and the judge's ``FailureGate``), and
-the module must reproduce them on the shared domain -- at ``n == 0`` the
-frozen judge call site keeps its own ``None`` guard, so its behaviour is
-unchanged by this module's return value.
+verbatim (calibration ``wilson_upper`` and the judge's former ``FailureGate``
+copy, which converged onto the leaf in #231), and the module must reproduce
+them on the shared domain -- at ``n == 0`` the frozen judge call site keeps
+its own ``None`` guard, so its behaviour is unchanged by this module's return
+value.
 """
 
 import math
