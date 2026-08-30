@@ -9,27 +9,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""BraTS region label sets -- the single source of truth (ADR-0010, issue #109).
+"""BraTS region label sets -- re-exported from the stdlib-only leaf (ADR-0017 decision 3, issue #222).
 
-The seven drifted ``REGIONS`` literals (calibration mother, synthetic-domain
-eval, P1/P2 dev eval, terminal-acceptance judge tuple + labels dict) collapse
-onto this one dict: instrumentation session masks are BraTS-2023 label arrays
-(background 0, non-enhancing core 1, peritumoral oedema 2, enhancing tumour 3)
-whose region projections are WT = {1,2,3}, TC = {1,3} and ET = {3}. The judge's
-tuple-of-names form derives from this dict (``REGION_NAMES``), never a second
-literal; ``LABEL_DOMAIN`` pins every value a well-formed mask may carry.
+``REGIONS`` / ``REGION_NAMES`` / ``LABEL_DOMAIN`` are defined once in
+``ctmr.domain.vocabulary`` (stdlib-only, shared with the terminal-acceptance
+judge) and re-exported here unchanged -- the measurement package's import
+surface stays as ADR-0010 pinned it. What lives in this numpy-side module:
+the instrument-grid constants (``VOXEL_ML`` / ``SPACING_MM``, ADR-0008) and
+``RegionMasks``, the only place ``np.isin(..., REGIONS[...])`` lives for mask
+extraction -- every volume, centroid and Dice in this package draws its
+region masks there, so the region projection rule is applied exactly once
+(its definition sits one import away, in the leaf).
 """
 
 import numpy as np
 
-REGIONS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
-"""Per-region label tuples, keyed in canonical WT / TC / ET order (dict order)."""
-
-REGION_NAMES = tuple(REGIONS)
-"""The judge's tuple-of-names form, derived -- not a second literal (ADR-0010 decision 1)."""
-
-LABEL_DOMAIN = (0, 1, 2, 3)
-"""Every label value a well-formed instrument mask may carry (0 = background)."""
+from ctmr.domain.vocabulary import LABEL_DOMAIN, REGION_NAMES, REGIONS  # noqa: F401  (re-export, ADR-0017 decision 3)
 
 VOXEL_ML = 0.001
 """Millilitres per voxel: the instrument grid is 1 mm isotropic (ADR-0008), 1mm^3 = 0.001 mL."""
