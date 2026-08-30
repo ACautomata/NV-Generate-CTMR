@@ -57,7 +57,7 @@ source /root/private_data/.ai_user_info/ai_proxy   # 平台 squid 代理（网�
 | MONAI | 1.6.0 |
 | nnunetv2 | 2.8.1 |
 
-来源：`/root/private_data/ENVIRONMENT_LOCK.md`（冻结口径见 ADR-0002）。DCU 兼容性分析与踩坑清单见 [docs/research/dcu-compatibility.md](../docs/research/dcu-compatibility.md)。
+来源：`/root/private_data/ctmr/ENVIRONMENT_LOCK.md`（冻结口径见 ADR-0002）。DCU 兼容性分析与踩坑清单见 [docs/research/dcu-compatibility.md](../docs/research/dcu-compatibility.md)。
 
 常见坑速查：
 

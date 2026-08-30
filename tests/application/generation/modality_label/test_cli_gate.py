@@ -147,8 +147,8 @@ def _reference_dev_eval_parser():
     p.add_argument("--poll-seconds", type=float, default=60.0)
     p.add_argument("--skip-l2", action="store_true", help="FID-only trend (instruments unavailable)")
     p.add_argument("--instrument-results", action="append", default=[], help="CHALLENGE=nnUNet_results path")
-    p.add_argument("--nnunet-raw", default="/root/private_data/brats2023_nnunet")
-    p.add_argument("--nnunet-preprocessed", default="/root/private_data/nnUNet_preprocessed")
+    p.add_argument("--nnunet-raw", default="/root/private_data/ctmr/brats2023_nnunet")
+    p.add_argument("--nnunet-preprocessed", default="/root/private_data/ctmr/nnUNet_preprocessed")
     p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
