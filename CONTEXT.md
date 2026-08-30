@@ -130,7 +130,7 @@ _Avoid_: 以线性插值喂仪器(已统一收敛为 B-spline)、非居中裁剪
 _Avoid_: 在各脚本散落手写 `nnUNetv2_predict` 命令、用非标准入口名 `nnUNetv2_predict_from_raw_data`、写 `--disable_tta False` token、import 时 `add_safe_globals` 改全局状态
 
 **仪器读数(InstrumentMeasurement)**:
-把仪器网格(240×240×155)上的分割掩码派生为 WT/TC/ET 体积、质心位置、强化比等逐病例测量行的纯测量逻辑——`ctmr.domain.measurement` 唯一入口 `InstrumentMeasurer.measure(pred, *, gt, condition, brain) -> CaseMeasurement`,校准列(vs GT)/生成列/回切 Dice 三列族按提供的可选 reference 显式门控,canonical 对象配 long(校准)/wide(终验)双序列化。REGIONS/Wilson/Dice 在此各唯一定义;cohort 聚合(R_fail/bootstrap/TOST/verdict)留在判定层、不属本测量。实现已落地(`ctmr.domain.measurement`,#109),6 处调用点收编归 #110;口径经 ADR-0010 钉板,与 ADR-0002/0004 冻结读数一致。
+把仪器网格(240×240×155)上的分割掩码派生为 WT/TC/ET 体积、质心位置、强化比等逐病例测量行的纯测量逻辑——`ctmr.domain.measurement` 唯一入口 `InstrumentMeasurer.measure(pred, *, gt, condition, brain) -> CaseMeasurement`,校准列(vs GT)/生成列/回切 Dice 三列族按提供的可选 reference 显式门控,canonical 对象配 long(校准)/wide(终验)双序列化。REGIONS/Wilson/Dice 唯一定义于 stdlib 词汇叶、本模块再导出([ADR-0017](docs/adr/0017-l2-shared-vocab-diagnostic-support.md) 住址级修订 ADR-0010 决定 4);cohort 聚合(R_fail/bootstrap/TOST/verdict)留在判定层、不属本测量。实现已落地(`ctmr.domain.measurement`,#109),6 处调用点收编归 #110;口径经 ADR-0010 钉板,与 ADR-0002/0004 冻结读数一致。
 _Avoid_: 在各脚本散落重写掩码→测量行逻辑、把 cohort 聚合混入测量层、掩码不经仪器网格直接测量
 
 **层级违反(hierarchy_violation)**:
@@ -151,6 +151,21 @@ _Avoid_: 生产侧重写五键提取、frozen 门禁留在各调用点、以共�
 
 **weighted_loss(肿瘤区加权)**:
 以 label 构造的图像体素损失加权(作用于肿瘤亚区),与条件模态无关——label 进 loss 与验收,不进 P3 条件。
+
+**L2 共享词汇(L2 shared vocabulary)**:
+distribution 包内判官与执行/诊断侧共用的非判定件——测量表 CSV 协议(wide 27 列/long 24 列)、五挑战/名额/统一种子注册表、纯统计原语(rel_diff、分位/分布读出)与 cluster bootstrap。stdlib-only 是其注册性质:判官与共享词汇零三方依赖、任意机器可裁,以 import 面测试守护。区域/标签词汇与冻结常数(REGIONS/LABEL_DOMAIN/WilsonUpper/Z95)唯一定义于 stdlib 词汇叶,`ctmr.domain.measurement` 再导出。诊断作业可消费共享词汇;判官不 import 任何诊断件,gate 常量镜像不并入(ADR-0006)。
+落地名:`ctmr.application.acceptance.distribution.{measurement_table,statistics,challenge_registry}` + 词汇叶 `ctmr.domain.vocabulary`;经 [ADR-0017](docs/adr/0017-l2-shared-vocab-diagnostic-support.md) 钉板。
+_Avoid_: 往判官 final_acceptance 继续添共享件、判官 import 诊断件、把 gate 常量并进共享词汇、以 numpy 依赖破坏 stdlib-only
+
+**诊断读数(diagnostic reading)**:
+以 `variant=diagnostic` 标记、独立于 `ctmr accept` 动词面的一次性/在途分析运行——回答指定甄别问题(如 z-crop 补偿归因、ET 甄别),读数只进实验记录,不构成 L1/L2/L3 正式证据、不可 conclude、不进终验裁决。诊断面与正式验收面的分离是有意裁决:诊断件不经 ctmr CLI 暴露。
+落地名:`ctmr.application.acceptance.distribution.{zcrop_compensation,et_discrimination,…}` + 共享机械 `diagnostic_support`([ADR-0017](docs/adr/0017-l2-shared-vocab-diagnostic-support.md))。
+_Avoid_: 把诊断读数当正式验收证据、给诊断作业开 ctmr accept 动词、无 variant 标记的裸诊断 run
+
+**诊断种子命名空间(diagnostic seed namespace)**:
+L2 统一种子注册表中划归诊断读数的专用段——基 900,000,000、每挑战 1000 宽带;槽位由 `challenge_registry` 显式分配,与判官 bootstrap 种子带全域无碰撞,不变量由单测承载。作业取种子经分配器,不自写裸常量;既有槽位(作业 A:0/1/100/101、作业 B:200)逐字节复现。
+落地名:`ctmr.application.acceptance.distribution.challenge_registry`(注册表)+ `diagnostic_support`(分配机制)([ADR-0017](docs/adr/0017-l2-shared-vocab-diagnostic-support.md))。
+_Avoid_: 在作业文件散写 seed 常量、越过注册表取种子、诊断种子落入判官带
 
 ### 生成内核
 
