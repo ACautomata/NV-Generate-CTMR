@@ -4,8 +4,9 @@
 # 用途:把「t1c 亮核在编码/输出域是否存活」变成定量读数,三个裁决一次做完:
 #   ① real / VAE 重建(既有 fp32 训练 embedding 直接 decode,现网协议臂)/ 生成
 #     三方直方图,按瘤内(WT) vs 全脑分层读 P99/P99.9/top-0.5% 均值;
-#   ② VAE 重建误差按「输入 >1.0 vs [0,1]」体素分层算条件 MAE,clip=True 归一化
-#     编码对照臂复用同掩码,直接裁决归一化 clip 取舍(需要 DCU 或 CPU 跑一遍 encode);
+#   ② VAE 重建误差按「输入 >1.0 vs [0,1]」体素分层算条件 MAE:各臂对本臂输入
+#     的读数 + clip=True 编码对共同 noclip 目标的读数(信号损失直接度量);
+#     归一化 clip 取舍据此裁决(需要 DCU 或 CPU 跑一遍 encode);
 #   ③ 生成 t1c 输出 >1000 的 int16 体素占比(全脑/瘤内/ET),检验「亮核在 >1.0
 #     输出域、被评估 clip 掉」假说的材料基础。
 #   variant=diagnostic:不产生任何验收判定,不动冻结仪器与包络。
@@ -26,10 +27,8 @@
 #   REAL_ROOT         holdout real 根(默认 $PHASE_ROOT/raw/ASNR-MICCAI-BraTS2023)
 #   PRED_ROOT         L2 仪器预测根(默认 $P1_ROOT/l2_acceptance/plan_v1/predictions)
 #   ENV_CONFIG        环境 json(默认 $P1_ROOT/environment_brats_p1_train.json)
-#   MODEL_CONFIG      模型配置(默认 /root/nv-phase-57/configs/config_brats_p1_train.json)
-#   MODEL_DEF         网络定义(默认 /root/nv-phase-57/configs/config_network_rflow.json)
-#   SCALE_FACTOR_PATH 基座 DM checkpoint(复用其 scale_factor;
-#                     默认 /root/private_data/nv-dcu-smoke/NV-Generate-CTMR/models/diff_unet_3d_rflow-mr-brain_v1.pt)
+#   MODEL_CONFIG      模型配置(默认 <repo checkout>/configs/config_brats_p1_train.json)
+#   MODEL_DEF         网络定义(默认 <repo checkout>/configs/config_network_rflow.json)
 #   DEVICE            VAE 臂设备(cpu 或 cuda:0;DCU 上用 cuda:0)
 #   LIMIT             每池均匀抽样例数(空=全量)
 #   GEN_LIMIT         覆盖 gen 池抽样例数(空=跟随 LIMIT;gen 池纯 CPU,建议全量)
@@ -60,19 +59,18 @@ SAMPLES_JSON="${SAMPLES_JSON:-$P1_ROOT/holdout_generated/samples.json}"
 REAL_ROOT="${REAL_ROOT:-$PHASE_ROOT/raw/ASNR-MICCAI-BraTS2023}"
 PRED_ROOT="${PRED_ROOT:-$P1_ROOT/l2_acceptance/plan_v1/predictions}"
 ENV_CONFIG="${ENV_CONFIG:-$P1_ROOT/environment_brats_p1_train.json}"
-MODEL_CONFIG="${MODEL_CONFIG:-/root/nv-phase-57/configs/config_brats_p1_train.json}"
-MODEL_DEF="${MODEL_DEF:-/root/nv-phase-57/configs/config_network_rflow.json}"
-SCALE_FACTOR_PATH="${SCALE_FACTOR_PATH:-/root/private_data/nv-dcu-smoke/NV-Generate-CTMR/models/diff_unet_3d_rflow-mr-brain_v1.pt}"
+MODEL_CONFIG="${MODEL_CONFIG:-$PROJECT_ROOT/configs/config_brats_p1_train.json}"
+MODEL_DEF="${MODEL_DEF:-$PROJECT_ROOT/configs/config_network_rflow.json}"
 DEVICE="${DEVICE:-cpu}"
 OUTPUT_DIR="${OUTPUT_DIR:-$P1_ROOT/l2_acceptance/diagnostics/intensity_domain}"
 
 ARGS=()
 if [ -z "${SKIP_EMB_POOL:-}" ]; then
-    for f in "$TRAIN_LIST" "$ENV_CONFIG" "$MODEL_CONFIG" "$MODEL_DEF" "$SCALE_FACTOR_PATH"; do
+    for f in "$TRAIN_LIST" "$ENV_CONFIG" "$MODEL_CONFIG" "$MODEL_DEF"; do
         [ -f "$f" ] || { echo "[FATAL] emb 池输入缺失: $f (或以 SKIP_EMB_POOL=1 只跑 gen 池)" >&2; exit 1; }
     done
     ARGS+=(--train-list "$TRAIN_LIST" --data-root "$DATA_ROOT" --emb-root "$EMB_ROOT"
-        -e "$ENV_CONFIG" -c "$MODEL_CONFIG" -t "$MODEL_DEF" --scale-factor-path "$SCALE_FACTOR_PATH"
+        -e "$ENV_CONFIG" -c "$MODEL_CONFIG" -t "$MODEL_DEF"
         --device "$DEVICE")
 fi
 [ -f "$SAMPLES_JSON" ] || { echo "[FATAL] 生成清单不存在: $SAMPLES_JSON" >&2; exit 1; }

@@ -45,8 +45,10 @@ from ctmr.application.acceptance.distribution.intensity_domain import (
     EmbPool,
     GenPool,
     IntensityDomainReport,
+    NiftiGenCaseRepository,
     TieredIntensityStats,
     TrainingPreprocessing,
+    VaeReconstructor,
 )
 
 # ------------------------------------------------------------------ normalisation arms
@@ -151,10 +153,11 @@ def test_over_threshold_counts_empty_tier_is_zero_over_zero():
 # --------------------------------------------------------------------- histogram & align
 
 
-def test_histogram_counts_use_fixed_edges_with_one_overflow_bucket():
-    counts, overflow = TieredIntensityStats.histogram_counts(np.array([0.5, 1.5, 2.5, 0.0]), edges=np.array([0.0, 1.0, 2.0]))
-    assert list(counts) == [2, 1]  # 0.0 and 0.5 in the first bin, 1.5 in the second
+def test_histogram_counts_use_fixed_edges_with_overflow_and_underflow_buckets():
+    counts, overflow, underflow = TieredIntensityStats.histogram_counts(np.array([0.5, 1.5, 2.5, -0.5]), edges=np.array([0.0, 1.0, 2.0]))
+    assert list(counts) == [1, 1]  # 0.5 in the first bin, 1.5 in the second
     assert overflow == 1  # 2.5 lands in the overflow bucket, never silently dropped
+    assert underflow == 1  # -0.5: decoder outputs can be negative inside a WT mask
 
 
 def test_align_pred_to_generated_grid_is_the_center_crop_pad_inverse():
@@ -267,7 +270,8 @@ def test_emb_pool_reads_both_arms_and_splits_mae_by_input_domain():
     # the 1 and 2 voxels), so exactly one voxel (2/1.985 > 1) lands above 1.0; the
     # identity decode keeps a 0.5 offset everywhere.
     mae = ok["mae"]
-    assert mae["upper_noclip"] == pytest.approx(1.985)
+    assert mae["raw_percentile_upper"] == pytest.approx(1.985)
+    assert mae["extrapolation_max"] == pytest.approx(2.0 / 1.985)  # the resized input's actual >1.0 height
     assert mae["n_over"] == 1
     assert mae["n_within"] == 3
     assert mae["noclip_over"] == pytest.approx(2.0 / 1.985 - 0.5, abs=1e-12)
@@ -275,6 +279,11 @@ def test_emb_pool_reads_both_arms_and_splits_mae_by_input_domain():
     # the clip arm reconstructs its own (capped) input exactly under the identity fake
     assert mae["clip_over"] == pytest.approx(0.0, abs=1e-12)
     assert mae["clip_within"] == pytest.approx(0.0, abs=1e-12)
+    # the third reading pins the clip-encoded reconstruction to the SHARED noclip
+    # target: the over-tier error becomes the clipped-away signal itself, visible
+    # instead of assumed away; the within tier sees the same target on both sides
+    assert mae["clip_over_shared"] == pytest.approx(2.0 / 1.985 - 1.0, abs=1e-12)
+    assert mae["clip_within_shared"] == pytest.approx(0.0, abs=1e-12)
 
     missing = rows[1]
     assert missing["excluded"] == "missing_embedding"
@@ -423,8 +432,6 @@ def test_cli_end_to_end_writes_json_and_markdown(tmp_path):
             "mc.json",
             "-t",
             "md.json",
-            "--scale-factor-path",
-            "base.pt",
             "--output-dir",
             str(out),
             "--run-id",
@@ -471,3 +478,65 @@ def test_normalize_and_resize_match_the_training_monai_transforms():
     d_resize = Resized(keys="image", spatial_size=(8, 8, 8), mode="trilinear")
     expected = d_resize({"image": volume[None]})["image"].numpy()[0]  # channel-first like create_transforms
     assert np.allclose(TrainingPreprocessing.resize_image(volume, (8, 8, 8), "trilinear"), expected, atol=1e-6)
+
+
+# --------------------------------------------------------------- #216 review triage
+
+
+def test_mets_real_companion_resolves_through_the_official_met_dir_suffix(tmp_path):
+    """METS ships as "...-MET-..." in the official BraTS tree (dataset_prep
+    DIR_SUFFIX is the canonical mapping); the real companion must resolve
+    through it, not the literal challenge code. The committed run read 482
+    real cases for 530 generated -- exactly the 48 METS companions missing."""
+    import nibabel as nib
+
+    from ctmr.infrastructure.provisioning.dataset_prep import DIR_SUFFIX
+
+    assert DIR_SUFFIX["METS"] == "MET"  # canonical source of the mapping
+    root = tmp_path / "official"
+    case_dir = root / "ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData" / "BraTS-MET-00001-000"
+    case_dir.mkdir(parents=True)
+    affine = np.diag([1.0, 1.0, 1.0, 1.0])
+    nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.float32), affine=affine), case_dir / "BraTS-MET-00001-000-t1c.nii.gz")
+    nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.uint8), affine=affine), case_dir / "BraTS-MET-00001-000-seg.nii.gz")
+    repo = NiftiGenCaseRepository(root, tmp_path / "pred")
+    data = repo.gen_case({"case_id": "BraTS-MET-00001-000", "challenge": "METS", "samples": {"t1c": {"path": str(tmp_path / "missing.nii.gz")}}})
+    assert data["real"] is not None and data["seg"] is not None
+
+
+def test_decode_hands_the_raw_encoder_output_to_the_decoder_unchanged():
+    """The stored embeddings are raw encode_stage_2_inputs outputs
+    (create_training_data); the diffusion scaling (raw * scale_factor,
+    domain/generation/model.py) never touches them, so decode must feed them
+    to decode_stage_2_outputs as-is. ReconModel's ``z / scale_factor``
+    convention applies to diffusion-domain latents, not to this input."""
+    recon = VaeReconstructor("e", "c", "t", device="cpu")
+    recorded = {}
+
+    class _RecordingAutoencoder:
+        def decode_stage_2_outputs(self, z):
+            recorded["z"] = z
+            return z
+
+    recon._autoencoder = _RecordingAutoencoder()  # skips _ensure_loaded
+    recon.decode(np.full((2, 2, 2, 1), 0.5, dtype=np.float32))
+    assert recorded["z"].mean().item() == pytest.approx(0.5)  # /0.9697 would read 0.5156
+
+
+def test_report_labels_the_bootstrap_envelope_as_a_distribution_envelope_not_a_median_ci(tmp_path):
+    """ClusterBootstrap.ci90 bootstraps the pooled distribution's q05/q95, not
+    the median: the markdown must not present it as ``median (CI90)``."""
+    rows = [
+        {
+            "case": "c1",
+            "sub": "GLI",
+            "excluded": None,
+            "real_native": {"brain": None, "tumour": None},
+            "recon": {"brain": None, "tumour": None},
+            "mae": None,
+            "histograms": {"real_native": {"brain": None, "tumour": None}, "recon": {"brain": None, "tumour": None}},
+        }
+    ]
+    report = IntensityDomainReport("t.json", "s.json")
+    _json_path, md_path = report.write(rows, [], tmp_path)
+    assert "median (CI90)" not in md_path.read_text()

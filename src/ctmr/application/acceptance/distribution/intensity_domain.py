@@ -24,7 +24,8 @@ three verdicts into numbers, all read-only, no acceptance verdict:
    Real volumes live in the training normalisation domain (per-volume 0-99.5
    percentile -> [0, 1], ``clip=False`` -- the training protocol arm); the VAE
    reconstruction is the existing fp32 training embedding decoded straight back
-   (``z / scale_factor -> decode_stage_2_outputs``, the ReconModel semantics);
+   (the embeddings are raw encoder outputs, fed to ``decode_stage_2_outputs``
+   as-is -- the diffusion scaling ``raw * scale_factor`` never touches them);
    the generated volume is the retained int16 artifact divided by 1000 (the
    writer's own "[0,1] -> MR 0..1000" convention). Each side is measured on its
    own native grid -- top-tail statistics are domain scalars, so no resampling
@@ -32,8 +33,10 @@ three verdicts into numbers, all read-only, no acceptance verdict:
 2. Conditioned MAE of the VAE reconstruction with voxels split by the training
    input domain: >1.0 (the extrapolated band) vs within [0, 1]. The clip=True
    normalisation arm (same frozen VAE, same resize, only the tail truncated)
-   reuses the noclip arm's tier masks so the two arms share voxel support and
-   the clip policy can be decided head-to-head.
+   reuses the noclip arm's tier masks. Three readings: each arm against its own
+   input (reconstruction fidelity per input domain) plus the clip-encoded
+   reconstruction against the SHARED noclip target -- the clip policy's signal
+   loss measured, not assumed away (#216 review).
 3. The share of generated int16 voxels above 1000 -- i.e. above 1.0 in the
    generator's own output domain (the writer only down-clips) -- split by whole
    brain / WT / ET, the material-basis probe for the "bright core lives above
@@ -52,7 +55,7 @@ re-litigate job A's registered geometry.
 
 This module is ``variant=diagnostic``: no acceptance verdict, bootstrap seeds
 kept far from the formal judge chain (diagnostic base shared with jobs A/B, job
-C occupying slots 300..303). The sugon host recipe lives at
+C occupying slots 300..307). The sugon host recipe lives at
 ``deploy/jobs/run_intensity_domain_c.sh``; reports land in the sugon artifact
 area (controlled storage), never in git.
 
@@ -63,17 +66,17 @@ without a deep-learning stack so the numpy-only unit tests carry no torch weight
 
 P3 candidate reuse (#205 series-③ merge point): the emb-pool surface is the
 MONAI training list plus the shared fp32 embeddings -- phase-agnostic, so a P3
-run re-points ``--train-list``/``--emb-root``; the gen-pool surface is the
-retained ``samples.json`` + instrument predictions, likewise phase-agnostic.
-Whether P3 needs a clip-arm re-run is a series-③ decision, recorded here as the
-reuse hook, not pre-decided.
+run re-points ``--train-list``/``--emb-root``; the gen-pool surface is the P1
+holdout ``samples.json`` layout (case_id/challenge/samples) + instrument
+predictions -- P3 carries a different manifest layout (anchors-keyed) and is
+NOT supported by this reader. Whether P3 needs a clip-arm re-run is a series-③
+decision, recorded here as the reuse hook, not pre-decided.
 
 Usage:
     python -m ctmr.application.acceptance.distribution.intensity_domain \
         --train-list <p1_image_only.json> --data-root <raw> --emb-root <embeddings> \
         --samples <samples.json> --real-root <holdout raw> --pred-root <predictions> \
         -e <env json> -c <model config json> -t <network def json> \
-        --scale-factor-path <base DM ckpt> \
         --output-dir <artifact area>/intensity_domain [--run-id <run>] [--limit N]
 """
 
@@ -92,11 +95,27 @@ from ctmr.domain.measurement import WilsonUpper
 # Diagnostic bootstrap seeds share jobs A/B's namespace (zcrop_compensation.py /
 # et_discrimination.py DIAGNOSTIC_SEED_BASE): far away from the formal judge
 # chain's GLOBAL_SEED (20260821). Job A occupies slots 0/1 and 100/101, job B
-# slot 200 of each challenge band; job C's MAE blocks take 300..303 -- the emb
-# pool is not challenge-stratified, so the slots ride the base directly.
+# slot 200 of each challenge band; job C's MAE blocks and input-domain scalars
+# take 300..307 -- the emb pool is not challenge-stratified, so the slots ride
+# the base directly.
 DIAGNOSTIC_SEED_BASE = 900_000_000
 JOB_C_SEED_SLOT = 300
-MAE_SEED_SLOTS = {"noclip_over": 0, "noclip_within": 1, "clip_over": 2, "clip_within": 3}
+MAE_SEED_SLOTS = {
+    "noclip_over": 0,
+    "noclip_within": 1,
+    "clip_over": 2,
+    "clip_within": 3,
+    "clip_over_shared": 4,
+    "clip_within_shared": 5,
+    "extrapolation_max": 6,
+    "raw_percentile_upper": 7,
+}
+
+# The official BraTS release tree names challenges by their release suffix,
+# which diverges from the pinned challenge code for METS ("...-MET-..."; the
+# canonical mapping is dataset_prep.DIR_SUFFIX). Matching the literal code
+# finds nothing and silently drops all 48 METS real companions (#216 review).
+OFFICIAL_TREE_SUFFIX = {"METS": "MET"}
 
 # The training resize target (create_training_data round_number: multiples of
 # 128); the generated grid is the same voxel count. Array axes are zyx.
@@ -203,7 +222,8 @@ class TieredIntensityStats:
         values = np.asarray(values, dtype=np.float64).ravel()
         counts, _ = np.histogram(values, bins=edges)
         overflow = int((values > edges[-1]).sum())
-        return counts.astype(int), overflow
+        underflow = int((values < edges[0]).sum())  # decoder outputs can be negative inside a WT mask
+        return counts.astype(int), overflow, underflow
 
     @staticmethod
     def conditioned_mae(input_vol, recon, *, hi_mask, lo_mask):
@@ -311,12 +331,19 @@ class EmbPool:
         lo = (input_noclip >= 0.0) & (input_noclip <= EXTRAPOLATION_THRESHOLD)
         arm_noclip = TieredIntensityStats.conditioned_mae(input_noclip, recon_noclip, hi_mask=hi, lo_mask=lo)
         arm_clip = TieredIntensityStats.conditioned_mae(input_clip, recon_clip, hi_mask=hi, lo_mask=lo)
+        # the third reading: the clip-encoded reconstruction against the SHARED
+        # noclip target, so the clip policy's signal loss is measured instead of
+        # assumed away by each arm scoring its own input (#216 review)
+        arm_clip_shared = TieredIntensityStats.conditioned_mae(input_noclip, recon_clip, hi_mask=hi, lo_mask=lo)
         row["mae"] = {
-            "upper_noclip": upper,
+            "raw_percentile_upper": upper,
+            "extrapolation_max": float(input_noclip.max()),
             "noclip_over": arm_noclip["mae_over"],
             "noclip_within": arm_noclip["mae_within"],
             "clip_over": arm_clip["mae_over"],
             "clip_within": arm_clip["mae_within"],
+            "clip_over_shared": arm_clip_shared["mae_over"],
+            "clip_within_shared": arm_clip_shared["mae_within"],
             "n_over": arm_noclip["n_over"],
             "n_within": arm_noclip["n_within"],
         }
@@ -422,20 +449,22 @@ class GenPool:
 
 
 class VaeReconstructor:
-    """The frozen autoencoder_v1 encode/decode adapter (both arms share it).
+    """The frozen autoencoder_v1 encode/decode adapter (all arms share it).
 
     Encoding mirrors ``create_training_data`` (single sliding window -- the
     320x320x160 roi covers the whole training grid, so the windowed call
     degenerates to one forward -- under the chain's own autocast context, see
-    ``_autocast``); decoding mirrors the ReconModel semantics
-    (``z / scale_factor -> decode_stage_2_outputs``). Latents keep the training
-    artifacts' channels-last fp32 layout. The scale factor is read from the
-    base DM checkpoint -- training reused it and never recomputed it.
+    ``_autocast``); decoding feeds the raw latent straight to
+    ``decode_stage_2_outputs``: the stored embeddings are raw encoder outputs
+    (create_training_data saves ``encode_stage_2_inputs`` unscaled) and the
+    diffusion scaling (``raw * scale_factor``, domain/generation/model.py)
+    never touches them -- ReconModel's ``z / scale_factor`` convention applies
+    to diffusion-domain latents, not to this input (#216 review). Latents keep
+    the training artifacts' channels-last fp32 layout.
     """
 
-    def __init__(self, env_config, model_config, model_def, scale_factor_path, device="cpu"):
+    def __init__(self, env_config, model_config, model_def, device="cpu"):
         self._paths = (env_config, model_config, model_def)
-        self._scale_factor_path = scale_factor_path
         self._device = device
         self._autoencoder = None
         self._scale = None
@@ -459,8 +488,6 @@ class VaeReconstructor:
             checkpoint = checkpoint["unet_state_dict"]
         autoencoder.load_state_dict(checkpoint)
         autoencoder.eval()
-        base = torch.load(self._scale_factor_path, map_location="cpu", weights_only=False)
-        self._scale = float(base["scale_factor"])
         self._autoencoder = autoencoder
 
     def _autocast(self):
@@ -494,7 +521,7 @@ class VaeReconstructor:
         self._ensure_loaded()
         z = torch.from_numpy(np.ascontiguousarray(latent, dtype=np.float32)).permute(3, 0, 1, 2)[None].to(self._device)
         with torch.inference_mode(), self._autocast():
-            recon = self._autoencoder.decode_stage_2_outputs(z / self._scale)
+            recon = self._autoencoder.decode_stage_2_outputs(z)
         return recon.squeeze().cpu().numpy().astype(np.float32)
 
 
@@ -542,16 +569,18 @@ class NiftiGenCaseRepository:
 
     def _challenge_dir(self, challenge):
         """The real-tree challenge directory: the L2 layout (<real-root>/<CH>)
-        first, then the official BraTS tree naming
-        (<real-root>/ASNR-MICCAI-BraTS2023-<CH>-Challenge-TrainingData)."""
+        first, then the official BraTS tree naming via the canonical release
+        suffix (dataset_prep DIR_SUFFIX: METS ships as "...-MET-..." -- the
+        literal challenge code matches nothing there, #216 review)."""
         if challenge not in self._challenge_dirs:
             direct = self._real_root / challenge
             if direct.is_dir():
                 self._challenge_dirs[challenge] = direct
             else:
+                suffix = OFFICIAL_TREE_SUFFIX.get(challenge, challenge)
                 match = None
                 for child in sorted(self._real_root.iterdir()):
-                    if child.is_dir() and f"-{challenge}-" in child.name:
+                    if child.is_dir() and f"-{suffix}-" in child.name:
                         match = child
                         break
                 self._challenge_dirs[challenge] = match
@@ -611,18 +640,19 @@ class IntensityDomainReport:
     def _reading_conventions():
         return {
             "domains": "real 侧为训练归一化域(逐例 0-99.5 百分位→[0,1],clip=False,顶部外推 >1.0);"
-            "VAE 重建=既有 fp32 训练 embedding 直接 decode(z/scale_factor→decode_stage_2_outputs),不再归一化;"
+            "VAE 重建=既有 fp32 训练 embedding(raw encoder 输出)直接 decode,不做扩散域缩放,不再归一化;"
             "生成=保留 int16 工件 ÷1000(写出方「[0,1]→MR 0..1000」约定,只下截不上截),不再归一化",
             "tiers": "全脑=强度 >0 体素;瘤内=WT(标签 1/2/3)。real/重建用 BraTS seg(重建侧经 nearest resize 到训练栅格),"
             "生成用冻结仪器 pred 经仪器居中 crop/pad 的精确逆映射(gen[z,y,x]=pred[z+13,y-8,x-8],纯数组索引,零插值)",
             "top_stats": "P99/P99.9 为线性分位;top-0.5% 均值=最亮 ceil(0.5%·n) 个体素的均值(至少 1 个)",
             "conditioned_mae": "现网臂分层掩码=clip=False 归一化输入的 >1.0 与 [0,1] 体素;clip=True 对照臂(同 VAE/同 resize,"
-            "仅归一化截尾)复用同掩码,双臂同体素支撑,可直接裁决 clip 取舍",
+            "仅归一化截尾)复用同掩码。三组读数:各臂对本臂输入的重建保真,外加 clip 编码对共同 noclip 目标的读数"
+            "(clip 造成的信号损失被直接度量,不被各臂自评抵消);CI90=池分布 q05/q95 的 cluster-bootstrap 包络,非 median 的置信区间",
             "over_1000": "生成 int16 >1000 即输出域 >1.0;分母为该层体素数;Wilson 95% 上界为域唯一定义",
             "geometry": "工件事实:holdout 生成 NIfTI 携带单位 1mm affine(sidecar 写出约定),故仪器 1mm 重采样为 no-op、"
             "z 向 128→155 为 pad 而非 crop;本作业按工件现状读数,不回改作业 A 的注册几何",
-            "p3_reuse_hook": "emb 池输入面=MONAI 训练 list+共享 fp32 embedding(phase 无关);gen 池=保留 samples.json+仪器 pred;"
-            "P3 是否重跑 clip 对照臂由 #205 序列③拍板",
+            "p3_reuse_hook": "emb 池输入面=MONAI 训练 list+共享 fp32 embedding(phase 无关);gen 池=P1 holdout samples.json 布局"
+            "(case_id/challenge/samples)+仪器 pred,P3 anchors 布局不支持;P3 是否重跑 clip 对照臂由 #205 序列③拍板",
         }
 
     def write(self, emb_rows, gen_rows, output_dir):
@@ -636,7 +666,7 @@ class IntensityDomainReport:
             "variant": "diagnostic",
             "disclaimer": (
                 f"诊断读数,不产生任何验收判定;与正式 L2 验收面严格分离(#205 作业 C)。bootstrap 种子独立于正式判定链"
-                f"(诊断基 {DIAGNOSTIC_SEED_BASE},作业 C 占槽 {JOB_C_SEED_SLOT}..{JOB_C_SEED_SLOT + 3})。"
+                f"(诊断基 {DIAGNOSTIC_SEED_BASE},作业 C 占槽 {JOB_C_SEED_SLOT}..{JOB_C_SEED_SLOT + 7})。"
             ),
             "run_id": self._run_id,
             "generated_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -698,6 +728,7 @@ class IntensityDomainReport:
             per_metric = {"p99": [], "p99_9": [], "top05_mean": []}
             pooled = np.zeros(HIST_BINS, dtype=np.int64)
             overflow = 0
+            underflow = 0
             n_cases = 0
             for row in rows:
                 block = row[side][tier]
@@ -707,12 +738,13 @@ class IntensityDomainReport:
                 for metric in per_metric:
                     per_metric[metric].append(block[metric])
                 if row["histograms"][side][tier] is not None:
-                    counts, over = row["histograms"][side][tier]
+                    counts, over, under = row["histograms"][side][tier]
                     pooled += counts
                     overflow += over
+                    underflow += under
             out[tier] = {metric: TieredIntensityStats.distribution_stats(values) for metric, values in per_metric.items()}
             out[tier]["n_cases"] = n_cases
-            hist[tier] = {"counts": pooled.tolist(), "overflow": overflow}
+            hist[tier] = {"counts": pooled.tolist(), "overflow": overflow, "underflow": underflow}
         return out, hist
 
     def _aggregate_emb_pool(self, rows):
@@ -732,8 +764,6 @@ class IntensityDomainReport:
             values = [row["mae"][metric] for row in kept if row["mae"] and row["mae"][metric] is not None]
             seed = DIAGNOSTIC_SEED_BASE + JOB_C_SEED_SLOT + slot
             out["mae"][metric] = TieredIntensityStats.distribution_stats(values, bootstrap_b=self._bootstrap_b, seed=seed)
-        uppers = [row["mae"]["upper_noclip"] for row in kept if row["mae"]]
-        out["mae"]["upper_noclip"] = TieredIntensityStats.distribution_stats(uppers)
         return out
 
     @staticmethod
@@ -802,25 +832,37 @@ class IntensityDomainReport:
                     )
             lines += [
                 "",
-                "## ② VAE 条件 MAE(输入域分层双臂)",
+                "## ② VAE 条件 MAE(输入域分层;各臂目标见「层(目标)」列)",
                 "",
-                "| 臂 | 层 | n_cases | MAE median (CI90) | MAE mean |",
-                "|---|---|---:|---|---:|",
+                "| 臂 | 层(目标) | n_cases | MAE median (q05, q95) | 分布包络 CI90 [low, high] | MAE mean |",
+                "|---|---|---:|---|---|---:|",
             ]
             mae = emb["mae"]
             for metric, label, tier in (
-                ("noclip_over", "clip=False 现网臂", ">1.0 外推"),
-                ("noclip_within", "clip=False 现网臂", "[0,1] 域内"),
-                ("clip_over", "clip=True 对照臂", ">1.0 外推(现网掩码)"),
-                ("clip_within", "clip=True 对照臂", "[0,1] 域内"),
+                ("noclip_over", "clip=False 现网臂", ">1.0 外推 → 本臂输入"),
+                ("noclip_within", "clip=False 现网臂", "[0,1] 域内 → 本臂输入"),
+                ("clip_over", "clip=True 对照臂", ">1.0 外推 → clip 后输入"),
+                ("clip_within", "clip=True 对照臂", "[0,1] 域内 → clip 后输入"),
+                ("clip_over_shared", "clip=True 对照臂", ">1.0 外推 → 共同 noclip 目标"),
+                ("clip_within_shared", "clip=True 对照臂", "[0,1] 域内 → 共同 noclip 目标"),
             ):
                 block = mae[metric]
-                lines.append(f"| {label} | {tier} | {block['n_cases']} | {self._ci(block)} | {self._fmt(block['mean'])} |")
-            upper = mae["upper_noclip"]
+                lines.append(
+                    f"| {label} | {tier} | {block['n_cases']} | {self._ci(block)} "
+                    f"| [{self._fmt(block['ci90_low'])}, {self._fmt(block['ci90_high'])}] | {self._fmt(block['mean'])} |"
+                )
+            ext = mae["extrapolation_max"]
+            raw = mae["raw_percentile_upper"]
             lines += [
                 "",
-                f"现网臂输入的外推上界(0-99.5 百分位)跨例 median **{self._fmt(upper['median'])}**"
-                f"(q05 {self._fmt(upper['q05'])}, q95 {self._fmt(upper['q95'])})——1.0 之上的外推应力每例可见。",
+                f"现网臂 resize 后输入在 1.0 之上的最大外推高度跨例 median **{self._fmt(ext['median'])}**"
+                f"(q05 {self._fmt(ext['q05'])}, q95 {self._fmt(ext['q95'])});"
+                f"raw 99.5 百分位锚点(归一化分母,raw 值域)median {self._fmt(raw['median'])}"
+                f"(q05 {self._fmt(raw['q05'])}, q95 {self._fmt(raw['q95'])})——1.0 之上的外推应力每例可见。",
+                "",
+                "注:各臂对本臂输入的读数衡量「该输入域上的重建保真」;clip 后输入可被高保真重建说明截尾输入落在 VAE 重建域内,"
+                "但「对照臂更低」≠「clip 保留信号」——信号损失由「共同 noclip 目标」两行直接度量(CI90 为池分布 q05/q95 的"
+                "cluster-bootstrap 包络,不是 median 的置信区间)。",
             ]
         if payload["gen_pool"]:
             gen = payload["gen_pool"]["aggregate"]
@@ -865,15 +907,17 @@ class IntensityDomainReport:
             lines += [
                 "### emb 池",
                 "",
-                "| case | sub | upper(99.5p) | MAE noclip >1.0 | MAE noclip [0,1] | MAE clip >1.0 | MAE clip [0,1] | n_over/n_within | 排除 |",
-                "|---|---|---:|---|---|---|---|---|---|",
+                "| case | sub | raw 99.5p | 外推高 max | MAE noclip >1.0 | MAE noclip [0,1] | MAE clip >1.0 | MAE clip [0,1] | MAE clip 共同目标 >1.0 | MAE clip 共同目标 [0,1] | n_over/n_within | 排除 |",
+                "|---|---|---:|---:|---|---|---|---|---|---|---|---|",
             ]
             for row in payload["emb_pool"]["per_case"]:
                 mae = row["mae"] or {}
                 lines.append(
-                    f"| {row['case']} | {row['sub'] or ''} | {self._fmt(mae.get('upper_noclip'))} "
+                    f"| {row['case']} | {row['sub'] or ''} | {self._fmt(mae.get('raw_percentile_upper'))} "
+                    f"| {self._fmt(mae.get('extrapolation_max'))} "
                     f"| {self._fmt(mae.get('noclip_over'))} | {self._fmt(mae.get('noclip_within'))} "
                     f"| {self._fmt(mae.get('clip_over'))} | {self._fmt(mae.get('clip_within'))} "
+                    f"| {self._fmt(mae.get('clip_over_shared'))} | {self._fmt(mae.get('clip_within_shared'))} "
                     f"| {mae.get('n_over') if mae else ''}/{mae.get('n_within') if mae else ''} | {row['excluded'] or ''} |"
                 )
         if payload["gen_pool"]:
@@ -901,7 +945,7 @@ class IntensityDomainReport:
                 )
         lines += [
             "",
-            "直方图数据(固定边 [0, 2],50 桶+溢出桶,池级计数累加)见同名 json 的"
+            "直方图数据(固定边 [0, 2],50 桶+溢出/下溢桶,池级计数累加;下溢承接 decode 负值)见同名 json 的"
             " `emb_pool.aggregate.*_histograms` / `gen_pool.aggregate.*_histograms`。",
             "",
             ">1000 输出域假说(「亮核在 >1.0 输出域、被评估 clip 掉」)的对照读数见 json `hypothesis_over_1000`;gen 池未运行时无读数。",
@@ -918,13 +962,12 @@ def main(argv=None, *, reconstructor_factory=None, grid=TRAINING_GRID, align=Non
     parser.add_argument("--train-list", default=None, help="MONAI training list JSON; its t1c entries form the emb pool")
     parser.add_argument("--data-root", default=None, help="data_base_dir the list's image paths resolve against")
     parser.add_argument("--emb-root", default=None, help="embedding_base_dir holding the fp32 <case>_emb.nii.gz artifacts")
-    parser.add_argument("--samples", default=None, help="the retained generation samples.json (P1 four-anchor layout)")
+    parser.add_argument("--samples", default=None, help="the retained generation samples.json (P1 holdout layout: case_id/challenge/samples)")
     parser.add_argument("--real-root", default=None, help="holdout real root (<real-root>/<CH>/<case>/<case>-t1c.nii.gz)")
     parser.add_argument("--pred-root", default=None, help="frozen-instrument prediction root (<pred-root>/<CH>/<case>__gen.nii.gz)")
     parser.add_argument("-e", "--env-config", default=None, help="environment json (trained_autoencoder_path)")
     parser.add_argument("-c", "--model-config", default=None, help="model config json")
     parser.add_argument("-t", "--model-def", default=None, help="network def json (autoencoder_def)")
-    parser.add_argument("--scale-factor-path", default=None, help="base DM checkpoint carrying the reused scale_factor")
     parser.add_argument("--device", default="cpu", help="torch device for the VAE arms (cpu / cuda:0)")
     parser.add_argument("--limit", type=int, default=None, help="uniform stride subsample per pool (diagnostic scale)")
     parser.add_argument(
@@ -960,13 +1003,12 @@ def main(argv=None, *, reconstructor_factory=None, grid=TRAINING_GRID, align=Non
             "-e/--env-config": args.env_config,
             "-c/--model-config": args.model_config,
             "-t/--model-def": args.model_def,
-            "--scale-factor-path": args.scale_factor_path,
         }
         missing = [flag for flag, value in required.items() if value is None]
         if missing:
             raise DiagnosticError(f"the emb pool needs {', '.join(missing)}")
         entries = [entry for entry in json.loads(Path(args.train_list).read_text())["training"] if "t1c" in entry["image"]]
-        recon = factory(args.env_config, args.model_config, args.model_def, args.scale_factor_path, args.device)
+        recon = factory(args.env_config, args.model_config, args.model_def, args.device)
         repo = NiftiTrainCaseRepository(args.data_root, args.emb_root)
         emb_rows = EmbPool().read_cases(stride(entries, args.limit), repo, recon, TrainingPreprocessing.resize_image, grid)
         print(f"[OK] emb pool: {len(emb_rows)} cases -> aggregating")
