@@ -39,7 +39,7 @@ from ctmr.application.acceptance.quantitative.fid import FidScoreCalculator
 from ctmr.application.shell import COHORT_QUOTAS, TARGET_MODALITIES
 from ctmr.domain.grid import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler, InstrumentGridAdapter
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
-from ctmr.domain.measurement import LABEL_DOMAIN, REGIONS
+from ctmr.domain.measurement import REGIONS, HierarchyChecker
 
 PLANES = ("xy", "yz", "zx")
 TREND_PREPROCESSING = "percentile_0_99.5_to_0_1_ras_1mm_zero_pad_240x240x160"
@@ -267,8 +267,9 @@ class L2TrendRunner:
                 rows.append(row)
                 continue
             arr = sitk.GetArrayFromImage(sitk.ReadImage(str(pred)))
-            labels = set(int(v) for v in np.unique(arr)) - {0}
-            row["hier_viol"] = not labels <= set(LABEL_DOMAIN)
+            # the canonical containment single expression (ctmr.domain.measurement,
+            # #223) -- the dev trend shares the terminal-acceptance semantics
+            row["hier_viol"] = HierarchyChecker.violates(arr)
             volumes = {}
             voxel_ml = 1e-3  # 1 mm iso
             for region, members in REGIONS.items():  # the canonical projections (ctmr.domain.measurement, ADR-0010)

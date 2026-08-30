@@ -81,11 +81,11 @@ from ctmr.application.shell import (
     TrendLedger,
 )
 from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter
+from ctmr.domain.measurement import REGIONS, DiceScore, RegionMasks
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
 
 # Mask condition combined mask -> instrument label space (REGION_LABELS = {1,2,3}).
 COMBINED_TO_INSTRUMENT = {22: 0, 129: 1, 130: 2, 131: 3}
-INSTRUMENT_REGION_LABELS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
 # The terminal-acceptance-only DM RAS->LPS axis flip (zyx array axes y=1, x=2);
 # the round-trip condition alignment must track the final-acceptance resampler
 # path -- the parity is machine-guarded in tests/application/generation/mask.
@@ -180,12 +180,9 @@ class RoundTripDice:
 
     @staticmethod
     def dice(pred, condition, region):
-        gt = np.isin(condition, INSTRUMENT_REGION_LABELS[region])
-        pm = np.isin(pred, INSTRUMENT_REGION_LABELS[region])
-        denom = int(gt.sum()) + int(pm.sum())
-        if denom == 0:
-            return None
-        return float(2 * np.logical_and(gt, pm).sum() / denom)
+        """The canonical DiceScore on canonical region projections (#223): the
+        empty-denominator sentinel is ``None`` (spec #51 decision 11)."""
+        return DiceScore.of(RegionMasks(condition).of(region), RegionMasks(pred).of(region))
 
     def align_condition(self, condition_path):
         """Aligns the combined mask onto the instrument grid (the L2 final-acceptance resampler path)."""
@@ -206,7 +203,7 @@ class RoundTripDice:
         import SimpleITK as sitk  # deferred: execution-side only (sugon system env)
 
         rows = []
-        region_medians = {region: [] for region in INSTRUMENT_REGION_LABELS}
+        region_medians = {region: [] for region in REGIONS}
         for item in cohort:
             pred_path = Path(predictions_root) / item["sub"] / f"{item['case']}.nii.gz"
             row = {"sub": item["sub"], "case": item["case"]}
@@ -225,7 +222,7 @@ class RoundTripDice:
                 row["run_fail"] = True
                 rows.append(row)
                 continue
-            for region in INSTRUMENT_REGION_LABELS:
+            for region in REGIONS:
                 value = self.dice(pred_arr, condition, region)
                 row[f"cond_dice_{region.lower()}"] = value
                 if value is not None:
