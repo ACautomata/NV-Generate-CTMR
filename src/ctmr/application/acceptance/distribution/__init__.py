@@ -22,10 +22,14 @@ ADR-0002/0003/0004 -- this package changes addresses only.
 
 The shared vocabulary the judge no longer hosts lives here too
 (ADR-0017 decision 1, issue #229): ``measurement_table`` (measurement-face
-words + the wide 27-column CSV protocol), ``statistics`` (quantile read-out +
-cluster bootstrap) and ``challenge_registry`` (challenges / holdout quotas /
-unified seed band / ADR-0002 envelope literals). All three are stdlib-only --
-registered by the import-face probe in
+words + the wide 27-column CSV protocol), ``statistics`` (the rel-diff
+primitive ``RelativeDifference``, the quantile/mean read-out + cluster
+bootstrap) and ``challenge_registry`` (challenges / holdout quotas /
+unified seed band -- judge bootstrap band + diagnostic namespace, ADR-0017
+decision 5 #232 -- / ADR-0002 envelope literals), plus the diagnostic support
+pieces (``diagnostic_support``: the one DiagnosticError, the variant=
+diagnostic report writer, the seed allocator; ADR-0017 decision 6). All four
+are stdlib-only -- registered by the import-face probe in
 ``tests/application/acceptance/distribution/test_shared_vocab.py`` -- and the
 execution/diagnostic modules import them directly, never through the judge.
 """

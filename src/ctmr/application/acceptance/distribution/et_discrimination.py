@@ -45,33 +45,23 @@ Usage:
 """
 
 import argparse
-import json
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 from ctmr.application.acceptance.distribution.challenge_registry import (
     BOOTSTRAP_B,
-    CHALLENGE_SEED_OFFSET,
     CHALLENGES,
+    DIAGNOSTIC_SEED_SLOTS,
     HOLDOUT_QUOTAS,
 )
+from ctmr.application.acceptance.distribution.diagnostic_support import (
+    DiagnosticError,
+    DiagnosticReportWriter,
+    DiagnosticSeedAllocator,
+)
 from ctmr.application.acceptance.distribution.measurement_table import AcceptanceError, MeasurementTable
-from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap, RelativeDifference
+from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap, DistributionReadout, RelativeDifference
 from ctmr.domain.measurement import WilsonUpper
-
-# Diagnostic bootstrap seeds share job A's namespace discipline (zcrop_
-# compensation.py DIAGNOSTIC_SEED_BASE): far away from the formal judge chain's
-# GLOBAL_SEED (20260821) so a diagnostic CI can never be mistaken for the
-# registered TOST bit-stream. Job A occupies slots 0/1 (uncompensated) and
-# 100/101 (compensated) of each challenge's 1000-wide band; job B takes the
-# next free slot so no two diagnostic quantities ever draw one seed.
-DIAGNOSTIC_SEED_BASE = 900_000_000
-JOB_B_SEED_SLOT = 200
-
-
-class DiagnosticError(Exception):
-    """Raised when the diagnostic inputs cannot support an ET discrimination run."""
 
 
 class EtDiscrimination:
@@ -112,18 +102,6 @@ class EtDiscrimination:
         if gen_detected:
             return "gen_only"
         return "neither"
-
-    @staticmethod
-    def _distribution(values):
-        """Quantile/mean read-out of one value list (ClusterBootstrap linear rule)."""
-        if not values:
-            return {"median": None, "mean": None, "q05": None, "q95": None}
-        return {
-            "median": ClusterBootstrap.quantile(values, 0.5),
-            "mean": sum(values) / len(values),
-            "q05": ClusterBootstrap.quantile(values, 0.05),
-            "q95": ClusterBootstrap.quantile(values, 0.95),
-        }
 
     def __init__(self, bootstrap_b: int = BOOTSTRAP_B):
         self._bootstrap_b = bootstrap_b
@@ -196,7 +174,7 @@ class EtDiscrimination:
             "k_detected": len(detected),
             "rate": len(detected) / len(rows) if rows else None,
             "wilson_95_upper": self.wilson_95_upper(len(detected), len(rows)),
-            "vol_ml": self._distribution([volume for volume in vols if volume is not None]),
+            "vol_ml": DistributionReadout.of([volume for volume in vols if volume is not None]),
         }
 
     @staticmethod
@@ -230,10 +208,10 @@ class EtDiscrimination:
 
     def _rel_diff_stats(self, rel_values, challenge):
         """Distribution read-out of the per-case relative differences, diagnostic-seed CI90."""
-        stats = self._distribution(rel_values)
+        stats = DistributionReadout.of(rel_values)
         stats.update({"ci90_low": None, "ci90_high": None, "n_cases": len(rel_values)})
         if rel_values:
-            seed = DIAGNOSTIC_SEED_BASE + CHALLENGE_SEED_OFFSET[challenge] * 1000 + JOB_B_SEED_SLOT
+            seed = DiagnosticSeedAllocator.seed(challenge, DIAGNOSTIC_SEED_SLOTS["et_rel_diff"])
             ci = ClusterBootstrap(self._bootstrap_b).ci90([[value] for value in rel_values], seed)
             stats["ci90_low"], stats["ci90_high"] = ci["low"], ci["high"]
         return stats
@@ -252,38 +230,35 @@ class EtDiscriminationReport:
         self._measurements_path = Path(measurements_path)
         self._bootstrap_b = bootstrap_b
         self._run_id = run_id
+        self._writer = DiagnosticReportWriter(
+            schema=self.SCHEMA,
+            title=self.TITLE,
+            issue=207,
+            job_label="作业 B",
+            stem="et_discrimination_diagnostic",
+            inputs={"measurements": str(self._measurements_path)},
+            run_id=self._run_id,
+        )
 
     def write(self, readings, output_dir):
-        payload = {
-            "schema": self.SCHEMA,
-            "title": self.TITLE,
-            "issue": 207,
-            "variant": "diagnostic",
-            "disclaimer": (
-                f"诊断读数,不产生任何验收判定;与正式 L2 验收面严格分离(#205 作业 B)。bootstrap 种子独立于正式判定链(诊断基 {DIAGNOSTIC_SEED_BASE})。"
-            ),
-            "run_id": self._run_id,
-            "generated_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "inputs": {"measurements": str(self._measurements_path)},
-            "reading_conventions": {
-                "detection": "检出 = vol_et_ml > 0(仪器测量结果);分母为 input_fail/run_fail 之外的有效观测",
-                "empty_pred": "空 pred = 仪器 argmax 全 0(整例未检出),测量结果而非失败(#38 口径)",
-                "real_only": "real 侧 ET 检出而 gen 侧未检出——ET 缺失定量读数(本作业的核心甄别量)",
-                "rel_diff": "(gen - real)/real;gen 侧 ET 空保留 -1.0(协议 §4),real 侧空不定义",
-                "p3_reuse_hook": "输入面为逐观测测量 CSV(measurement_table.MEASUREMENT_FIELDS 契约),phase 无关;"
-                "P3 四锚轮的分子分母口径(逐观测 vs 逐 case 聚合)由 #205 序列③拍板",
-            },
-            "per_challenge": {reading["challenge"]: {key: value for key, value in reading.items() if key != "per_case_rows"} for reading in readings},
-            "cross_challenge": self._cross_challenge(readings),
-            "per_case": self._per_case(readings),
-        }
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        json_path = output_dir / "et_discrimination_diagnostic.json"
-        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-        md_path = output_dir / "et_discrimination_diagnostic.md"
-        md_path.write_text(self._markdown(payload))
-        return json_path, md_path
+        payload = self._writer.payload(
+            {
+                "reading_conventions": {
+                    "detection": "检出 = vol_et_ml > 0(仪器测量结果);分母为 input_fail/run_fail 之外的有效观测",
+                    "empty_pred": "空 pred = 仪器 argmax 全 0(整例未检出),测量结果而非失败(#38 口径)",
+                    "real_only": "real 侧 ET 检出而 gen 侧未检出——ET 缺失定量读数(本作业的核心甄别量)",
+                    "rel_diff": "(gen - real)/real;gen 侧 ET 空保留 -1.0(协议 §4),real 侧空不定义",
+                    "p3_reuse_hook": "输入面为逐观测测量 CSV(measurement_table.MEASUREMENT_FIELDS 契约),phase 无关;"
+                    "P3 四锚轮的分子分母口径(逐观测 vs 逐 case 聚合)由 #205 序列③拍板",
+                },
+                "per_challenge": {
+                    reading["challenge"]: {key: value for key, value in reading.items() if key != "per_case_rows"} for reading in readings
+                },
+                "cross_challenge": self._cross_challenge(readings),
+                "per_case": self._per_case(readings),
+            }
+        )
+        return self._writer.write(payload, self._markdown(payload), output_dir)
 
     @staticmethod
     def _cross_challenge(readings):
@@ -304,13 +279,7 @@ class EtDiscriminationReport:
         return "n/a" if value is None else f"{value:.4f}"
 
     def _markdown(self, payload):
-        lines = [
-            f"# {payload['title']}",
-            "",
-            f"**Issue**: [#207](https://github.com/ACautomata/NV-Generate-CTMR/issues/207)(父 #205 作业 B)"
-            f" · **run**: `{payload['run_id'] or '未绑定'}`",
-            f"**variant: diagnostic —— {payload['disclaimer']}**",
-            "",
+        lines = self._writer.markdown_preamble(payload) + [
             "## 读数口径",
             "",
             f"- 输入:measurements `{payload['inputs']['measurements']}`(逐观测仪器读数,只读)",

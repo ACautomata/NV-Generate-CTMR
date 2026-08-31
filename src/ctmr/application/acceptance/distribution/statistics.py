@@ -18,11 +18,13 @@ which now imports this module. ``RelativeDifference.of`` is the shared
 ``(gen - real) / real`` read-out -- the judge's relative TOST quantity families
 and the ET-discrimination job draw it from here, while the exclusion/pairing
 policies stay with the callers (the judge's ``real_denominator_zero``
-exclusion, the diagnostic job's pairing classes). ``ClusterBootstrap.quantile``
-is the shared quantile read-out (linear interpolation, ``index = q*(n-1)`` --
-the same rule as the calibration side's ``numpy.quantile`` defaults); the
-bootstrap itself resamples cases as clusters. RNG / bit-stream discipline is
-registered on the class below.
+exclusion, the diagnostic job's pairing classes). ``DistributionReadout.of``
+is the quantile/mean block over one value list, the diagnostic jobs' shared
+read-out (issue #232). ``ClusterBootstrap.quantile`` is the shared quantile
+read-out (linear interpolation, ``index = q*(n-1)`` -- the same rule as the
+calibration side's ``numpy.quantile`` defaults); the bootstrap itself
+resamples cases as clusters. RNG / bit-stream discipline is registered on the
+class below.
 
 The dependency closure is third-party-free -- stdlib only, numpy/scipy/torch
 unreachable -- registered by the import-face probe in
@@ -49,6 +51,27 @@ class RelativeDifference:
         if gen_vol is None or real_vol is None or real_vol <= 0:
             return None
         return (gen_vol - real_vol) / real_vol
+
+
+class DistributionReadout:
+    """Quantile/mean read-out over one value list (ADR-0017 decision 1, issue #232).
+
+    The linear ``q*(n-1)`` rule of ``ClusterBootstrap.quantile`` with a
+    ``None``-sentinel for an empty list (json has no NaN). Moved verbatim from
+    the diagnostic jobs' shared copies (#232); the paired ``(gen - real) /
+    real`` difference lives next door in ``RelativeDifference``.
+    """
+
+    @classmethod
+    def of(cls, values):
+        if not values:
+            return {"median": None, "mean": None, "q05": None, "q95": None}
+        return {
+            "median": ClusterBootstrap.quantile(values, 0.5),
+            "mean": sum(values) / len(values),
+            "q05": ClusterBootstrap.quantile(values, 0.05),
+            "q95": ClusterBootstrap.quantile(values, 0.95),
+        }
 
 
 class ClusterBootstrap:

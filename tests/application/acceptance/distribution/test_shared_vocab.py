@@ -38,9 +38,12 @@ import sys
 from pathlib import Path
 
 import ctmr.application.acceptance.distribution.challenge_registry as challenge_registry
+import ctmr.application.acceptance.distribution.diagnostic_support as diagnostic_support
+import ctmr.application.acceptance.distribution.et_discrimination as et_discrimination
 import ctmr.application.acceptance.distribution.final_acceptance as final_acceptance
 import ctmr.application.acceptance.distribution.measurement_table as measurement_table
 import ctmr.application.acceptance.distribution.statistics as statistics
+import ctmr.application.acceptance.distribution.zcrop_compensation as zcrop_compensation
 import ctmr.domain.vocabulary as vocabulary
 
 PACKAGE_DIR = Path(final_acceptance.__file__).parent
@@ -92,6 +95,7 @@ def test_shared_vocabulary_dependency_closures_are_third_party_free():
         "ctmr.application.acceptance.distribution.statistics",
         "ctmr.application.acceptance.distribution.challenge_registry",
         "ctmr.application.acceptance.distribution.final_acceptance",  # the judge itself (ADR-0017 decision 2)
+        "ctmr.application.acceptance.distribution.diagnostic_support",  # the diagnostic support pieces (#232)
     ):
         probe = run_closure_probe(module_name)
         assert probe.returncode == 0, probe.stderr
@@ -130,6 +134,17 @@ def test_shared_registry_pins_the_frozen_values():
     assert challenge_registry.BOOTSTRAP_B == 10_000
     assert challenge_registry.GLOBAL_SEED == 20260821
     assert challenge_registry.CHALLENGE_SEED_OFFSET == {"GLI": 1, "SSA": 2, "MEN": 3, "METS": 4, "PED": 5}
+    # the diagnostic seed namespace (ADR-0017 decision 5, #232): base, band
+    # width and the job A/B slot table, byte-exact against the pre-#232 modules
+    assert challenge_registry.DIAGNOSTIC_SEED_BASE == 900_000_000
+    assert challenge_registry.DIAGNOSTIC_SEED_BAND == 1000
+    assert challenge_registry.DIAGNOSTIC_SEED_SLOTS == {
+        "zcrop_vol_uncomp": 0,
+        "zcrop_centroid_uncomp": 1,
+        "zcrop_vol_comp": 100,
+        "zcrop_centroid_comp": 101,
+        "et_rel_diff": 200,
+    }
     # the ADR-0002 published 4-dp literals, verbatim (spot anchors; the full
     # table is pinned by the judge's own envelope tests)
     assert challenge_registry.FROZEN_ENVELOPES["GLI"]["WT"] == (0.8053, 0.2802, 5.38)
@@ -140,6 +155,18 @@ def test_shared_registry_pins_the_frozen_values():
 def test_judge_region_tuple_derives_from_the_vocabulary_leaf():
     assert final_acceptance.REGIONS is vocabulary.REGION_NAMES
     assert not hasattr(final_acceptance, "REGION_LABELS")  # the mirror literal lost its reason to exist
+
+
+def test_diagnostic_jobs_import_the_support_pieces_instead_of_copies():
+    """ADR-0017 decision 6 / issue #232: the diagnostic jobs hold no local
+    DiagnosticError or seed constants any more -- the support module and the
+    registry are the single homes."""
+    assert zcrop_compensation.DiagnosticError is diagnostic_support.DiagnosticError
+    assert et_discrimination.DiagnosticError is diagnostic_support.DiagnosticError
+    assert not hasattr(zcrop_compensation, "DIAGNOSTIC_SEED_BASE")
+    assert not hasattr(zcrop_compensation, "COMPENSATED_SEED_STRIDE")
+    assert not hasattr(et_discrimination, "DIAGNOSTIC_SEED_BASE")
+    assert not hasattr(et_discrimination, "JOB_B_SEED_SLOT")
 
 
 # ── the judge hosts no private statistics primitive (#231, ADR-0017 decision 4) ──

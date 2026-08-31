@@ -65,16 +65,17 @@ from ctmr.application.acceptance.distribution.challenge_registry import (
     BOOTSTRAP_B,
     CHALLENGE_SEED_OFFSET,
     CHALLENGES,
+    DIAGNOSTIC_SEED_BAND,
+    DIAGNOSTIC_SEED_BASE,
+    DIAGNOSTIC_SEED_SLOTS,
     FROZEN_ENVELOPES,
 )
+from ctmr.application.acceptance.distribution.diagnostic_support import DiagnosticError
 from ctmr.application.acceptance.distribution.measurement_table import MeasurementTable
 from ctmr.application.acceptance.distribution.zcrop_compensation import (
-    COMPENSATED_SEED_STRIDE,
-    DIAGNOSTIC_SEED_BASE,
     GEN_RESAMPLED_Z,
     INSTRUMENT_Z,
     AttributionJudge,
-    DiagnosticError,
     NiftiMaskRepository,
     OverlapWindow,
     PairedCompensation,
@@ -86,12 +87,13 @@ from ctmr.domain.vocabulary import REGIONS as REGION_LABELS
 # monitor): 256x256x128 voxels declared at unit 1 mm spacing.
 GEN_WORKPIECE_Z = 128
 
-# Diagnostic bootstrap seeds share job A's namespace discipline: job A occupies
-# slots 0/1 (uncompensated) and 100/101 (compensated) of each challenge's
-# 1000-wide band; job B takes 200; this audit takes the next free slot so no
-# two diagnostic quantities ever draw one seed. The comp_crop block re-draws
-# job A's compensated seed bit-stream EXACTLY (slot 1 + stride 100), so its CI
-# is bit-identical to the recorded job A report for the same cases.
+# Diagnostic bootstrap seeds draw the unified registry's diagnostic namespace
+# (challenge_registry): job A holds slots 0/1 (uncompensated) and 100/101
+# (compensated) of each challenge's 1000-wide band, job B takes 200; this audit
+# takes the next free slot so no two diagnostic quantities ever draw one seed.
+# The comp_crop block re-draws job A's compensated seed bit-stream EXACTLY (the
+# registered zcrop_centroid_comp slot), so its CI is bit-identical to the
+# recorded job A report for the same cases.
 JOB_AUDIT_SEED_SLOT = 300
 
 # In-window cases satisfy comp_pad - (uncomp - 13) == 0 exactly; anything
@@ -333,11 +335,12 @@ class GeometryAuditReport:
     @staticmethod
     def centroid_seeds(challenge: str) -> dict:
         """The audit's diagnostic seed formula: job A's bit-stream for the crop
-        blocks (uncomp slot 1, comp slot 1+stride), the next free slot for pad."""
-        band = DIAGNOSTIC_SEED_BASE + CHALLENGE_SEED_OFFSET[challenge] * 1000
+        blocks (the registered zcrop_centroid_uncomp/comp slots), the next free
+        slot for pad."""
+        band = DIAGNOSTIC_SEED_BASE + CHALLENGE_SEED_OFFSET[challenge] * DIAGNOSTIC_SEED_BAND
         return {
-            "uncomp": band + 1,
-            "comp_crop": band + 1 + COMPENSATED_SEED_STRIDE,
+            "uncomp": band + DIAGNOSTIC_SEED_SLOTS["zcrop_centroid_uncomp"],
+            "comp_crop": band + DIAGNOSTIC_SEED_SLOTS["zcrop_centroid_comp"],
             "comp_pad": band + JOB_AUDIT_SEED_SLOT,
         }
 
