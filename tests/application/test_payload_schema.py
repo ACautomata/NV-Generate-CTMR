@@ -42,7 +42,8 @@ def _kernel_args(noise_timesteps=1000):
 
 
 def test_p1_payload_key_set_is_kept():
-    kernel = ModalityLabelTrainKernel(_kernel_args(), device=None, logger=None, local_rank=0)
+    # payload schema only: the injected ports (engine, base_checkpoints) stay unused here
+    kernel = ModalityLabelTrainKernel(_kernel_args(), device=None, logger=None, local_rank=0, engine=None, base_checkpoints=None)
     kernel._unet = FakeStateModule()
     payload = kernel.checkpoint_payload(3, 0.25, 1.0)
     assert list(payload) == P1_PAYLOAD_KEYS
@@ -56,7 +57,7 @@ def test_p2_payload_key_set_is_kept():
         noise_scheduler={"num_train_timesteps": 1000},
         controlnet_train={"weighted_loss": 100, "weighted_loss_label": [129, 130, 131]},
     )
-    kernel = MaskTrainKernel(args, device=None, logger=None, local_rank=0)
+    kernel = MaskTrainKernel(args, device=None, logger=None, local_rank=0, mounting=BypassMounting(args, device=None, logger=None))
     kernel._controlnet = FakeStateModule()
     payload = kernel.checkpoint_payload(5, 0.5, 1.0)
     assert list(payload) == P2_PAYLOAD_KEYS
@@ -68,7 +69,7 @@ def test_p3_payload_key_set_is_kept():
         noise_scheduler={"num_train_timesteps": 1000},
         controlnet_train={"weighted_loss": 100, "weighted_loss_label": [129, 130, 131]},
     )
-    kernel = CrossModalTrainKernel(args, device=None, logger=None, local_rank=0, mounting=BypassMounting(args, None, None))
+    kernel = CrossModalTrainKernel(args, device=None, logger=None, local_rank=0, mounting=BypassMounting(args, device=None, logger=None))
     kernel._controlnet = FakeStateModule()
     payload = kernel.checkpoint_payload(7, 0.75, 1.0)
     assert list(payload) == P3_PAYLOAD_KEYS

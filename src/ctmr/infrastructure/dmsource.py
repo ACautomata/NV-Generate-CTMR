@@ -10,28 +10,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""dm_source.json ledger adapter (ADR-0015 §4, ADR-0019 §3, issues #135/#269).
+"""dm_source.json ledger adapter (ADR-0015 §4, ADR-0019 §3, issues #135/#269/#271).
 
 The ledger's rules and violation live in ``ctmr.domain.dmsource`` (the domain
 face); this module mounts them onto ``dm_source.json``: ``JsonDmSourceStore``
 is the entry-store adapter (json read/write) and ``DmSourceLedger`` composes
 it with the domain rules plus the two impurities -- the run-record file
 digest (``weights_ref_of_file``, the single file-read point of checkpoint
-identity) and the wall clock. The re-exports keep the historical import face
-(``from ctmr.infrastructure.dmsource import DmSourceViolationError``) spelling
-the domain types while the application contract family still imports from
-here (the ratchet pins those edges until the family migration, #271).
+identity) and the wall clock. Since #271 the application contract family
+receives this class only as the composition root's injected port factory
+(``ctmr.wiring.contract``): no module above infrastructure imports this
+address, and the former exception re-export face is retired with the alias
+hack it fed.
 """
 
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ctmr.domain.dmsource import DM_SOURCE_SCHEMA, DmSourceLedgerRules, DmSourceViolationError
+from ctmr.domain.dmsource import DmSourceLedgerRules
 from ctmr.domain.identity import WeightsRef
 from ctmr.infrastructure.weightsref import weights_ref_of_file
 
-__all__ = ["DM_SOURCE_SCHEMA", "DmSourceLedger", "DmSourceViolationError", "JsonDmSourceStore", "WeightsRef"]
+__all__ = ["DmSourceLedger", "JsonDmSourceStore"]
 
 
 class JsonDmSourceStore:

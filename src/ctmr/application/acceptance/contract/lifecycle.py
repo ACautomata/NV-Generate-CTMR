@@ -45,17 +45,25 @@ from ctmr.application.acceptance.contract.record import (
     ContractViolationError,
 )
 from ctmr.application.acceptance.contract.registry import ATTACH_KINDS, FORMAL_LAYER_KINDS, LAYER_BY_KIND
+from ctmr.domain.dmsource import DmSourceLedgerFactory, DmSourceViolationError
 from ctmr.domain.identity import WeightsRef
-from ctmr.infrastructure.dmsource import DmSourceLedger
 
 
 class RunInitializer:
-    """Opens a run record, fingerprinting inputs and enforcing the phase chain."""
+    """Opens a run record, fingerprinting inputs and enforcing the phase chain.
 
-    def __init__(self, store, fingerprinter, sides):
+    ``ledger_factory`` is the injected ``(record_root) -> DmSourceLedger`` port
+    (ADR-0019 §2/§3): the phase-chain gate consults the DM-source ledger
+    through it, and a domain ledger violation translates into the contract's
+    own violation type at this boundary. The concrete adapter is the
+    composition root's choice (``ctmr.wiring.contract``), never this module's.
+    """
+
+    def __init__(self, store, fingerprinter, sides, ledger_factory: DmSourceLedgerFactory):
         self._store = store
         self._fingerprinter = fingerprinter
         self._sides = sides
+        self._ledger_factory = ledger_factory
 
     def derive_upstream(self, upstream_run_path):
         """The P2/P3 DM comes from a frozen P1 run's selection, never from a free-form path."""
@@ -77,7 +85,10 @@ class RunInitializer:
         on_disk = self._fingerprinter.must_fingerprint(checkpoint["path"], "upstream candidate checkpoint")
         if on_disk["sha256"] != checkpoint["sha256"]:
             raise ContractViolationError(f"upstream checkpoint changed on disk: {checkpoint['path']}")
-        DmSourceLedger(self._store.root()).check_upstream(upstream["run_id"], WeightsRef(sha256=checkpoint["sha256"]))
+        try:
+            self._ledger_factory(self._store.root()).check_upstream(upstream["run_id"], WeightsRef(sha256=checkpoint["sha256"]))
+        except DmSourceViolationError as violation:
+            raise ContractViolationError(str(violation)) from violation
         return {
             "run_id": upstream["run_id"],
             "run_record": str(Path(upstream_run_path).resolve()),
@@ -176,7 +187,7 @@ class RunInitializer:
             "status": STATUS_OPEN,
             "created_utc": self._store.now_utc(),
             "frozen_utc": None,
-            "code_version": CodeVersion(Path(__file__)).snapshot(),
+            "code_version": CodeVersion(Path(__file__), self._fingerprinter).snapshot(),
             "manifest": manifest_entry,
             "configs": config_entries,
             "data_lists": list_entries,

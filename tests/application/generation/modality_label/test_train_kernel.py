@@ -40,8 +40,10 @@ from ctmr.application.generation.modality_label.train import (
     ScaleFactorPolicy,
     TrainKernel,
 )
+from ctmr.infrastructure.engine import MaisiEngine
 from ctmr.infrastructure.gradient_executors import PlainGradientExecutor
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
+from ctmr.wiring.generate import MonaiCheckpointArchive
 
 pytestmark = pytest.mark.torch
 
@@ -132,7 +134,16 @@ def _fixture(tmp_path, brats_entries=1, replay_entries=1):
 
 
 def _kernel(args):
-    return TrainKernel(args, device=CPU, logger=logging.getLogger("test-kernel"), local_rank=0)
+    # the ports the composition root injects in production (issue #272): the
+    # engine adapter and the base-checkpoint archive, driven here for real
+    return TrainKernel(
+        args,
+        device=CPU,
+        logger=logging.getLogger("test-kernel"),
+        local_rank=0,
+        engine=MaisiEngine(),
+        base_checkpoints=MonaiCheckpointArchive(CPU),
+    )
 
 
 def _loaded_kernel(tmp_path):

@@ -2,6 +2,10 @@
 
 The tumor-* elastic helpers route through hardcoded ``.cuda()`` calls (GPU-only paths, out of the
 "any machine" test line per ADR-0015 §6); everything tested here is the CPU-safe surface.
+
+The tumor-removal chain moved to ``ctmr.domain.generation.tumor_removal``
+(#269) and its re-export alias retired with the mask-family migration (#273):
+those behavior gates live in tests/domain/generation/test_tumor_removal.py.
 """
 
 import os
@@ -19,9 +23,6 @@ from ctmr.infrastructure.dataio.augmentation import (
     dilate3d,
     erode3d,
     finalize_tumor_mask,
-    remap_labels,
-    remove_tumors,
-    remove_tumors_majority_vote,
 )
 
 pytestmark = pytest.mark.torch
@@ -50,52 +51,6 @@ def test_dilate3d_grows_single_voxel_to_kernel_cube():
     grown = dilate3d(seed, erosion=3)
     assert torch.equal(grown[5:8, 5:8, 5:8], torch.ones(3, 3, 3))
     assert grown[2, 2, 2] == 0.0  # far from seed and outside the boundary band
-
-
-def test_remove_tumors_majority_vote_replaces_tumor_with_organ_ring_mode():
-    # upstream contracts on a 4D volume ([1, D, H, W]) for boolean indexing
-    volume = torch.full((1, 5, 5, 5), 28)
-    tumor_mask = torch.zeros(1, 5, 5, 5)
-    tumor_mask[0, 2, 2, 2] = 1
-    out = remove_tumors_majority_vote(tumor_mask, volume, organ_label_lists=(28, 29, 30, 31, 32))
-    assert out[0, 2, 2, 2] == 28
-
-
-def test_remove_tumors_majority_vote_falls_back_to_most_common_organ_when_ring_empty():
-    volume = torch.zeros(1, 5, 5, 5)
-    volume[0, 1:4, 1:4, 1:4] = 32  # only a distant organ, no ring around the tumor
-    tumor_mask = torch.zeros(1, 5, 5, 5)
-    tumor_mask[0, 0, 0, 0] = 1
-    out = remove_tumors_majority_vote(tumor_mask, volume, organ_label_lists=(28, 29, 30, 31, 32))
-    assert out[0, 0, 0, 0] == 32
-
-
-def test_remove_tumors_maps_organ_tumors_to_organs():
-    labels = torch.zeros(1, 4, 4, 4, dtype=torch.long)
-    labels[0, 1, 1, 1] = 26  # hepatic tumor
-    labels[0, 2, 2, 2] = 24  # pancreatic tumor
-    out = remove_tumors(labels)
-    assert out[0, 1, 1, 1] == 1
-    assert out[0, 2, 2, 2] == 4
-
-
-def test_remove_tumors_with_pseudo_labels_replaces_lesions():
-    labels = torch.zeros(1, 4, 4, 4, dtype=torch.long)
-    labels[0, 1, 1, 1] = 23  # lung tumor
-    pseudo = torch.ones_like(labels) * 29  # every voxel offers a plausible lung label
-    out = remove_tumors(labels, pseudo_labels=pseudo)
-    assert out[0, 1, 1, 1] == 29
-
-
-def test_remove_tumors_rejects_2d_input():
-    with pytest.raises(ValueError, match="3D/4D"):
-        remove_tumors(torch.zeros(2, 2))
-
-
-def test_remap_labels_applies_mapping():
-    x = torch.tensor([[[[3, 1]]]], dtype=torch.long)
-    out = remap_labels(x, {3: 200})
-    assert out.tolist() == [[[[200, 1]]]]
 
 
 def test_finalize_tumor_mask_accepts_large_enough_mask_and_rejects_small():

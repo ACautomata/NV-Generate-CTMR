@@ -110,7 +110,7 @@ def test_accept_routes_each_layer_to_its_module():
     assert route.module == "ctmr.application.acceptance.expert_review.aggregate"
     assert list(rest) == ["--seed", "7"]
     route, rest = cli.CtmrCli().route(["accept", "contract", "conclude", "--run", "run.json"])
-    assert route.module == "ctmr.application.acceptance.contract.cli"
+    assert route.module == "ctmr.wiring.contract"  # the composition root owns the contract assembly (ADR-0019 §2)
     assert list(rest) == ["conclude", "--run", "run.json"]
 
 

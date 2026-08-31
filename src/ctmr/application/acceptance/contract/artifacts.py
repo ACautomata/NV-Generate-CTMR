@@ -17,19 +17,16 @@ the run-contract orchestration face shares with the distribution judge chain:
 SHA-256 fingerprints linking record entries to bytes on disk, and the pinned
 phase manifest viewed as a ``(challenge, case) -> side`` map. A missing
 fingerprint target is a contract violation (the legacy script's semantics,
-normalized here at its retirement). The raised type is the dm_source ledger
-violation per issue #135 -- since #269 the domain class of
-``ctmr.domain.dmsource`` (re-exported by the infrastructure import face) -- the
-same class object the record module aliases as ``ContractViolationError`` --
-raised directly so the record module can import ``ArtifactFingerprinter``
-(CodeVersion) without an import cycle.
+normalized here at its retirement) -- since #271 raised as the contract's own
+``ContractViolationError`` (a missing artifact is no DM-source matter; the
+pre-#271 spelling rode the alias hack that made the two types one object).
 """
 
 import hashlib
 import json
 from pathlib import Path
 
-from ctmr.infrastructure.dmsource import DmSourceViolationError
+from ctmr.application.acceptance.contract.record import ContractViolationError
 
 
 class ArtifactFingerprinter:
@@ -45,7 +42,7 @@ class ArtifactFingerprinter:
     def must_fingerprint(self, path, label):
         resolved = Path(path)
         if not resolved.is_file():
-            raise DmSourceViolationError(f"{label} not found: {resolved}")
+            raise ContractViolationError(f"{label} not found: {resolved}")
         return {"path": str(resolved.resolve()), "sha256": self.file_sha256(resolved)}
 
     def content_sha256(self, text):

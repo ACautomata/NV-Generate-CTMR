@@ -44,8 +44,11 @@ Migrated from the retired modality-label dev-eval script entry (ticket 10,
 ADR-0015 §2); its ``selftest`` subcommand retired with it — its assertions
 live as pytest functions. Per ADR-0016 the denoising loop runs on the domain
 ``DiffusionModel`` through a fresh ``DiffusionScheduler`` per sample call
-(CFG / timestep / RF advance semantics unchanged); the VAE reconstruction and
-the trend machinery stay application adapters.
+(CFG / timestep / RF advance semantics unchanged); the trend machinery stays
+application collaborators. Since #272 (ADR-0019 §2-§3) the model loading and
+inference primitives ride the injected ``GenerationEngine`` port -- the
+concrete adapter is assembled by the composition root (``ctmr.wiring.generate``),
+which this entry reuses as its dispatch face.
 
 Usage (sugon, one reserved GPU):
     ctmr generate modality-label dev-eval reference --dev-list ... --raw-root ... --eval-root DIR
@@ -76,11 +79,10 @@ from ctmr.application.shell import (
     SelectionEmitter,
     WatchEngine,
 )
+from ctmr.domain.dm_output_grid import V1_DM_OUTPUT_GRID
+from ctmr.domain.engine import GenerationEngine
 from ctmr.domain.generation.model import DiffusionModel
-from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
-from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
-from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
-from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
+from ctmr.wiring.generate import modality_label_engine
 
 
 class CohortSpacingSource:
@@ -99,12 +101,18 @@ class CohortSpacingSource:
 
 
 class CandidateSampler:
-    """Generates the fixed dev cohort samples with a candidate checkpoint (cfg=10, 30 steps)."""
+    """Generates the fixed dev cohort samples with a candidate checkpoint (cfg=10, 30 steps).
 
-    def __init__(self, args, device, logger):
+    The model-loading and inference faces ride the injected ``GenerationEngine``
+    port (ADR-0019 §3, #272): define_instance for both networks, the frozen
+    sliding-window primitive for the VAE decode, and the recon wrapper factory.
+    """
+
+    def __init__(self, args, device, logger, engine: GenerationEngine):
         self._args = args
         self._device = device
         self._logger = logger
+        self._engine = engine
 
     @staticmethod
     def seed_of(case, modality):
@@ -115,12 +123,12 @@ class CandidateSampler:
         # shared bank payload); the checkpoint loads here keep the same exposure
         # at their load point instead (never an import-time global mutation).
         torch.serialization.add_safe_globals([np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.Float64DType])
-        autoencoder = define_instance(self._args, "autoencoder_def").to(self._device)
+        autoencoder = self._engine.define_instance(self._args, "autoencoder_def").to(self._device)
         ae_ckpt = torch.load(self._args.trained_autoencoder_path, map_location=self._device, weights_only=True)
         if "unet_state_dict" in ae_ckpt:
             ae_ckpt = ae_ckpt["unet_state_dict"]
         autoencoder.load_state_dict(ae_ckpt)
-        unet = define_instance(self._args, "diffusion_unet_def").to(self._device)
+        unet = self._engine.define_instance(self._args, "diffusion_unet_def").to(self._device)
         ckpt = torch.load(checkpoint_path, map_location=self._device, weights_only=True)
         unet.load_state_dict(ckpt["unet_state_dict"], strict=False)
         autoencoder.eval()
@@ -133,14 +141,14 @@ class CandidateSampler:
         scale = float(ckpt["scale_factor"])
         # The domain entity carries the sampling rules: the RF scheduler shape
         # and the denoising loop (CFG composition, fresh DiffusionScheduler per
-        # sample call, ADR-0016). The VAE reconstruction stays an application
-        # adapter (ReconModel) below the latent the entity produces.
+        # sample call, ADR-0016). The VAE decode wrapper comes from the injected
+        # engine port's recon primitive.
         model = DiffusionModel(
             unet=unet,
             scale_factor=torch.tensor(scale, device=self._device),
             noise_scheduler=RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"}),
         )
-        return model, ReconModel(autoencoder=autoencoder, scale_factor=scale).to(self._device).half()
+        return model, self._engine.recon_model(autoencoder, scale).to(self._device).half()
 
     @torch.inference_mode()
     def sample_one(self, model, recon_model, modality_token, spacing, seed, output_size=(256, 256, 128)):
@@ -158,7 +166,7 @@ class CandidateSampler:
                 image = model.denoise(scheduler, image, spacing_tensor, modality_tensor, cfg)
         inferer = SlidingWindowInferer(roi_size=[96, 96, 96], sw_batch_size=1, overlap=0.25, sw_device=self._device, device=torch.device("cpu"))
         with torch.amp.autocast("cuda", enabled=True, dtype=torch.float16):
-            synthetic = dynamic_infer(inferer, recon_model, image).squeeze().float().cpu().numpy()
+            synthetic = self._engine.dynamic_infer(inferer, recon_model, image).squeeze().float().cpu().numpy()
         data = synthetic * 1000.0  # [0,1] -> MR 0..1000 scale, upstream int16 convention
         return np.clip(data, 0, None).astype(np.int16)
 
@@ -172,7 +180,9 @@ class CandidateSampler:
                 if not out.is_file():
                     out.parent.mkdir(parents=True, exist_ok=True)
                     data = self.sample_one(model, recon, MODALITY_TOKENS[modality], spacings.spacing_of(item["case"]), seed)
-                    image = nib.Nifti1Image(data, affine=np.diag([1.0, 1.0, 1.0, 1.0]))
+                    # Ruling #6: declare the v1 DM's real sampling spacing, not unit 1 mm,
+                    # so the instrument chain's 1 mm resample is no longer a no-op.
+                    image = nib.Nifti1Image(data, affine=V1_DM_OUTPUT_GRID.affine())
                     nib.save(image, out)
                 samples.append({"sub": item["sub"], "case": item["case"], "modality": modality, "path": str(out)})
         del model, recon
@@ -288,12 +298,13 @@ def main(argv=None):
     (eval_root / "early_stop_rule.json").write_text(
         json.dumps({"rule": rule.rule_text(), "patience": args.patience, "min_epoch": args.min_epoch, "max_epoch": args.max_epoch}, indent=2) + "\n"
     )
-    merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    engine = modality_label_engine()  # the composition root's engine assembly (ADR-0019 §2)
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
     merged.cfg_guidance_scale = 10.0
     features = MrTrendFeatures(device)
     bank = RealReferenceBank(args.dev_list, args.raw_root, features, eval_root / "reference").build()
-    sampler = CandidateSampler(merged, device, None)
+    sampler = CandidateSampler(merged, device, None, engine)
     instrument_results = dict(item.split("=", 1) for item in args.instrument_results)
     l2 = L2TrendRunner(instrument_results, args.nnunet_raw, args.nnunet_preprocessed)
     return WatchEngine(
