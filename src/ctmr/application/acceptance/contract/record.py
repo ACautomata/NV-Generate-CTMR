@@ -44,6 +44,11 @@ FINAL_ACCEPTANCE_SCHEMA = "brats-final-acceptance/1"
 
 # Issue #135: the ledger's violation type IS the contract-violation type, so
 # ``except ContractViolationError`` keeps catching ledger gates unchanged.
+# Since #269 (ADR-0019 §3) that violation's canonical home is
+# ``ctmr.domain.dmsource`` -- the name imported below is the domain class, the
+# infrastructure spelling being the re-export face the ratchet pins until the
+# contract-family migration (#271) retires the alias in favor of a
+# contract-owned type.
 ContractViolationError = DmSourceViolationError
 
 

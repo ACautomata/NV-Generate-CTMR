@@ -1,9 +1,9 @@
-"""CPU numerical behavior tests for ctmr.infrastructure.dataio.morphology (migrated verbatim from the retired scripts layer (git history; ``utils``))."""
+"""CPU numerical behavior tests for ctmr.domain.morphology (migrated verbatim from the retired scripts layer (git history; ``utils``)); the module moved to domain with #269 (ADR-0019 §3)."""
 
 import pytest
 import torch
 
-from ctmr.infrastructure.dataio.morphology import dilate_one_img, erode_one_img
+from ctmr.domain.morphology import dilate_one_img, erode_one_img
 
 pytestmark = pytest.mark.torch
 

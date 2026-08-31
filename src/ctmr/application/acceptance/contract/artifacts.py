@@ -18,9 +18,11 @@ SHA-256 fingerprints linking record entries to bytes on disk, and the pinned
 phase manifest viewed as a ``(challenge, case) -> side`` map. A missing
 fingerprint target is a contract violation (the legacy script's semantics,
 normalized here at its retirement). The raised type is the dm_source ledger
-violation per issue #135 -- the same class object the record module aliases
-as ``ContractViolationError`` -- raised directly so the record module can
-import ``ArtifactFingerprinter`` (CodeVersion) without an import cycle.
+violation per issue #135 -- since #269 the domain class of
+``ctmr.domain.dmsource`` (re-exported by the infrastructure import face) -- the
+same class object the record module aliases as ``ContractViolationError`` --
+raised directly so the record module can import ``ArtifactFingerprinter``
+(CodeVersion) without an import cycle.
 """
 
 import hashlib
