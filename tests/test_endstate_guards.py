@@ -10,9 +10,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-state guard suite (issue #144 / ADR-0015 §9-§10, batch M7; issue #175 / ADR-0016 M4-M5; issue #230 / ADR-0018 gate 5).
+"""End-state guard suite (issue #144 / ADR-0015 §9-§10, batch M7; issue #175 / ADR-0016 M4-M5; issue #230 / ADR-0018 gate 5; issue #268 / ADR-0019 §1).
 
-Five terminal-state gates pin the post-migration repository shape:
+Six terminal-state gates pin the post-migration repository shape:
 
 1. live code and live docs carry zero references into the retired scripts
    layer (git history is the reproduction anchor); frozen historical corpora
@@ -30,7 +30,11 @@ Five terminal-state gates pin the post-migration repository shape:
    explicitly registered on the orphan whitelist (issue #230 / ADR-0018
    decision 5: the eleven provisioning/dataio retirees were alive in name --
    tested, green, yet called by nothing; orphan status becomes a declared
-   state, never a silent one).
+   state, never a silent one);
+6. imports between the three layers run only in the ADR-0019 §1 admitted
+   directions; the cross-layer edges frozen alive at guard birth are pinned
+   by a violation ratchet that may only shrink during the B1 migration
+   (issue #268).
 
 Each gate runs two ways: a positive probe over the real repository (must be
 clean) and a negative probe over a synthetic tree (a seeded violation must be
@@ -279,23 +283,14 @@ def package_modules(package_root):
     return modules
 
 
-def import_reaches(tree, containing_package, modules):
-    """Module names in ``modules`` that the AST's import statements reach.
-
-    ``from pkg import name`` hits ``pkg.name`` only when that submodule
-    spelling exists in the tree -- an attribute import is not a module reach.
-    Relative imports resolve against ``containing_package`` (the containing
-    package for a module file, the package itself for ``__init__``).
-    """
-    reaches = set()
-
-    def hit(name):
-        reaches.update(prefix_reaches(name, modules))
-
+def import_bases(tree, containing_package):
+    """(absolute base, statement) for every import statement in the AST,
+    relative imports resolved against ``containing_package`` (the parent
+    package for a module file, the package itself for ``__init__``)."""
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                hit(alias.name)
+                yield alias.name, node
         elif isinstance(node, ast.ImportFrom):
             base = [] if node.module is None else node.module.split(".")
             if node.level:
@@ -304,9 +299,27 @@ def import_reaches(tree, containing_package, modules):
                     parts = parts[:-1]
                 base = [*parts, *base]
             if base:
-                hit(".".join(base))
-                for alias in node.names:
-                    hit(".".join([*base, alias.name]))
+                yield ".".join(base), node
+
+
+def import_reaches(tree, containing_package, modules):
+    """Module names in ``modules`` that the AST's import statements reach.
+
+    ``from pkg import name`` hits ``pkg.name`` only when that submodule
+    spelling exists in the tree -- an attribute import is not a module reach.
+    Relative imports resolve against ``containing_package`` (see
+    ``import_bases``).
+    """
+    reaches = set()
+
+    def hit(name):
+        reaches.update(prefix_reaches(name, modules))
+
+    for base, statement in import_bases(tree, containing_package):
+        hit(base)
+        if isinstance(statement, ast.ImportFrom):
+            for alias in statement.names:
+                hit(".".join([base, alias.name]))
     return reaches
 
 
@@ -381,3 +394,181 @@ def test_orphan_gate_detects_a_seeded_orphan(tmp_path):
     )
     (pkg / "orphan_mod.py").write_text("UNUSED = 2\n", encoding="utf-8")
     assert orphan_modules(tmp_path / "src" / "ctmr") == {"ctmr.orphan_mod"}
+
+
+# Gate 6: the layer-direction guard and its violation ratchet (issue #268 /
+# ADR-0019 §1).  Between the three layers exactly one direction is admitted:
+# application -> domain (ports), infrastructure -> domain (implementing the
+# ports), every layer -> itself.  Forbidden: application -> infrastructure,
+# domain -> any upper layer (application / wiring / interface),
+# infrastructure -> application.  The composition root (``ctmr.wiring``, the
+# address the frozen edges' construction is being hoisted to) and the tests
+# are exempt by construction -- the scan surface is the package tree only.
+# During the B1 migration the gate runs as a ratchet:
+# FROZEN_VIOLATION_RATCHET pins the application -> infrastructure edges alive
+# at guard birth (2026-08 audit: 46 edges across 21 files, every one
+# application -> infrastructure).  A violation outside the frozen list goes
+# red immediately; an entry that no longer violates is stale and must be
+# removed -- the list may only shrink, never grow (same self-stabilizing
+# pair as the orphan whitelist above).  When the ratchet reaches zero the
+# list is deleted and the gate turns purely terminal-state (issue #10).
+FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
+    {
+        "ctmr.application.acceptance.contract.artifacts -> ctmr.infrastructure.dmsource",
+        "ctmr.application.acceptance.contract.conclude -> ctmr.infrastructure.dmsource",
+        "ctmr.application.acceptance.contract.lifecycle -> ctmr.infrastructure.dmsource",
+        "ctmr.application.acceptance.contract.record -> ctmr.infrastructure.dmsource",
+        "ctmr.application.acceptance.contract.verify -> ctmr.infrastructure.dmsource",
+        "ctmr.application.acceptance.distribution.closing -> ctmr.infrastructure.nnunet_runner",
+        "ctmr.application.acceptance.distribution.instrument_training -> ctmr.infrastructure.nnunet_runner",
+        "ctmr.application.acceptance.distribution.intensity_domain -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.acceptance.distribution.intensity_domain -> ctmr.infrastructure.maisi_engine.instance_definition",
+        "ctmr.application.generation.cross_modal.anchor -> ctmr.infrastructure.maisi_engine.inference_primitives",
+        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.diff_model_infer",
+        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.inference_primitives",
+        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.utils_infer",
+        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.weightsref",
+        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.maisi_engine.inference_primitives",
+        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.maisi_engine.utils_infer",
+        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.weightsref",
+        "ctmr.application.generation.cross_modal.monitor -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.generation.cross_modal.monitor -> ctmr.infrastructure.maisi_engine.inference_primitives",
+        "ctmr.application.generation.cross_modal.monitor -> ctmr.infrastructure.maisi_engine.utils_infer",
+        "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.bypass_mounting",
+        "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.gradient_executors",
+        "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.generation.mask.monitor -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.generation.mask.sample -> ctmr.infrastructure.dataio.augmentation",
+        "ctmr.application.generation.mask.sample -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.generation.mask.sample -> ctmr.infrastructure.maisi_engine.inference_primitives",
+        "ctmr.application.generation.mask.sample -> ctmr.infrastructure.maisi_engine.instance_definition",
+        "ctmr.application.generation.mask.sample -> ctmr.infrastructure.maisi_engine.utils_infer",
+        "ctmr.application.generation.mask.train -> ctmr.infrastructure.bypass_mounting",
+        "ctmr.application.generation.mask.train -> ctmr.infrastructure.gradient_executors",
+        "ctmr.application.generation.mask.train -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.inference_primitives",
+        "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.instance_definition",
+        "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.utils_infer",
+        "ctmr.application.generation.modality_label.token_swap_sampling -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.generation.modality_label.train -> ctmr.infrastructure.bypass_mounting",
+        "ctmr.application.generation.modality_label.train -> ctmr.infrastructure.gradient_executors",
+        "ctmr.application.generation.modality_label.train -> ctmr.infrastructure.maisi_engine.diff_model_setting",
+        "ctmr.application.generation.modality_label.train -> ctmr.infrastructure.maisi_engine.instance_definition",
+        "ctmr.application.generation.train_loader -> ctmr.infrastructure.dataio.list_assembly",
+        "ctmr.application.shell -> ctmr.infrastructure.checkpoints",
+        "ctmr.application.shell -> ctmr.infrastructure.gradient_executors",
+    }
+)
+
+# The layers above domain -- the targets a domain import is forbidden to
+# reach (ADR-0019 §1: domain -> any upper layer).
+DOMAIN_UPPER_LAYERS = ("application", "infrastructure", "wiring", "interface")
+
+
+def layer_of(module_name):
+    """The architecture layer of a dotted ctmr module name (``None`` for
+    stdlib / third-party names).  The layer set is a closed enumeration
+    (ADR-0019 §1): an unknown top-level name is an architecture change and
+    must be registered here with its admitted directions."""
+    parts = module_name.split(".")
+    if parts[0] != "ctmr":
+        return None
+    if len(parts) == 1:
+        return "root"
+    if parts[1] in ("application", "domain", "infrastructure", "wiring"):
+        return parts[1]
+    # the remaining top-level names are the interface layer (cli / __main__).
+    # §1 lays no forbidden family on an interface source -- its pure-dispatch
+    # discipline is §2's, landing with the B1 composition root, not this gate.
+    return "interface"
+
+
+def is_forbidden_direction(source_layer, target_layer):
+    """True when the (source, target) layer pair breaks an ADR-0019 §1
+    direction."""
+    return (
+        (source_layer == "application" and target_layer == "infrastructure")
+        or (source_layer == "domain" and target_layer in DOMAIN_UPPER_LAYERS)
+        or (source_layer == "infrastructure" and target_layer == "application")
+    )
+
+
+def layered_import_violations(package_root):
+    """``"source -> target"`` edges in the package tree that break the
+    ADR-0019 §1 directions.  The target is spelled as the imported base
+    module exactly as written: a pure respelling of an unchanged edge reads
+    as one stale ratchet entry plus one fresh violation and is resolved by
+    the only-shrink rule, never silently."""
+    violations = set()
+    for path in sorted(package_root.rglob("*.py")):
+        rel = path.relative_to(package_root.parent).with_suffix("")
+        parts = rel.parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        module_name = ".".join(parts)
+        containing = module_name if path.name == "__init__.py" else module_name.rsplit(".", 1)[0]
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for base, _statement in import_bases(tree, containing):
+            if base.split(".")[0] != "ctmr":
+                continue
+            if is_forbidden_direction(layer_of(module_name), layer_of(base)):
+                violations.add(f"{module_name} -> {base}")
+    return violations
+
+
+def test_layered_imports_stay_within_the_frozen_ratchet():
+    fresh = layered_import_violations(PACKAGE_ROOT) - FROZEN_VIOLATION_RATCHET
+    assert not fresh, f"new layer-direction violations outside the frozen ratchet: {sorted(fresh)}"
+
+
+def test_ratchet_entries_are_current_violations():
+    stale = FROZEN_VIOLATION_RATCHET - layered_import_violations(PACKAGE_ROOT)
+    assert not stale, f"ratchet entries that no longer violate (shrink the ratchet): {sorted(stale)}"
+
+
+def test_layer_gate_detects_seeded_violations_and_admits_the_legal_directions(tmp_path):
+    pkg = tmp_path / "src" / "ctmr"
+    application = pkg / "application"
+    domain = pkg / "domain"
+    infrastructure = pkg / "infrastructure"
+    wiring = pkg / "wiring"
+    for package in (pkg, application, domain, infrastructure, wiring):
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    (infrastructure / "checkpoint_adapter.py").write_text(
+        "import ctmr.domain.vocabulary\n", encoding="utf-8"
+    )  # infrastructure -> domain: the one admitted cross-layer direction
+    (application / "use_case.py").write_text(
+        "import ctmr.domain.vocabulary\nimport ctmr.infrastructure.checkpoints\n",
+        encoding="utf-8",
+    )  # application -> domain fine, application -> infrastructure forbidden
+    (domain / "entity.py").write_text(
+        "import ctmr.application.shell\nimport ctmr.infrastructure.checkpoints\nimport ctmr.cli\nimport ctmr.wiring\n",
+        encoding="utf-8",
+    )  # domain -> any upper layer, forbidden in all three spellings
+    (infrastructure / "ledger.py").write_text("import ctmr.application.shell\n", encoding="utf-8")  # infrastructure -> application forbidden
+    (wiring / "composition.py").write_text(
+        "import ctmr.application.shell\nimport ctmr.infrastructure.checkpoints\n",
+        encoding="utf-8",
+    )  # the composition root reaches everything
+    (pkg / "cli.py").write_text(
+        "import ctmr.application.shell\nimport ctmr.infrastructure.checkpoints\n",
+        encoding="utf-8",
+    )  # an interface source carries no §1 forbidden family (its pure-dispatch
+    # discipline is §2's, landing at the B1 composition root) -- seeded here
+    # so the gate's silence on it is pinned, not accidental
+    seeded = layered_import_violations(pkg)
+    assert seeded == {
+        "ctmr.application.use_case -> ctmr.infrastructure.checkpoints",
+        "ctmr.domain.entity -> ctmr.application.shell",
+        "ctmr.domain.entity -> ctmr.infrastructure.checkpoints",
+        "ctmr.domain.entity -> ctmr.cli",
+        "ctmr.domain.entity -> ctmr.wiring",
+        "ctmr.infrastructure.ledger -> ctmr.application.shell",
+    }
+    # and every seed sits outside the frozen ratchet: growth of exactly this
+    # shape is what turns the real-repository probe red
+    assert seeded - FROZEN_VIOLATION_RATCHET == seeded
