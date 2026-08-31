@@ -59,10 +59,13 @@ C occupying slots 300..307). The sugon host recipe lives at
 ``deploy/jobs/run_intensity_domain_c.sh``; reports land in the sugon artifact
 area (controlled storage), never in git.
 
-Heavy dependencies (torch / monai / nibabel) are imported lazily inside the
-adapters on purpose: unlike the sibling diagnostic jobs (which top-import
-SimpleITK or stay stdlib), this module's statistics core must stay importable
-without a deep-learning stack so the numpy-only unit tests carry no torch weight.
+Torch / nibabel are imported lazily inside the adapters on purpose: unlike the
+sibling diagnostic jobs (which top-import SimpleITK or stay stdlib), this
+module's statistics core must stay importable without a deep-learning stack so
+the numpy-only unit tests carry no torch weight. The VAE config parsing and
+instance definition reach the frozen engine only through the injected
+``GenerationEngine`` port (ADR-0019 §3, #275) -- the real adapter assembles at
+the ``python -m`` process entry, never inside this module.
 
 P3 candidate reuse (#205 series-③ merge point): the emb-pool surface is the
 MONAI training list plus the shared fp32 embeddings -- phase-agnostic, so a P3
@@ -86,6 +89,7 @@ import sys
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -93,6 +97,10 @@ from ctmr.application.acceptance.distribution.challenge_registry import DIAGNOST
 from ctmr.application.acceptance.distribution.diagnostic_support import DiagnosticError
 from ctmr.application.acceptance.distribution.statistics import ClusterBootstrap
 from ctmr.domain.measurement import WilsonUpper
+from ctmr.wiring.distribution import intensity_domain_engine
+
+if TYPE_CHECKING:
+    from ctmr.domain.engine import GenerationEngine
 
 # Diagnostic bootstrap seeds draw the unified registry's diagnostic namespace
 # (challenge_registry.DIAGNOSTIC_SEED_BASE): far away from the formal judge
@@ -464,9 +472,10 @@ class VaeReconstructor:
     the training artifacts' channels-last fp32 layout.
     """
 
-    def __init__(self, env_config, model_config, model_def, device="cpu"):
+    def __init__(self, env_config, model_config, model_def, device="cpu", *, engine: "GenerationEngine"):
         self._paths = (env_config, model_config, model_def)
         self._device = device
+        self._engine = engine
         self._autoencoder = None
         self._scale = None
 
@@ -475,12 +484,9 @@ class VaeReconstructor:
             return
         import torch
 
-        from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
-        from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
-
         env_config, model_config, model_def = self._paths
-        args = load_config(env_config, model_config, model_def)
-        autoencoder = define_instance(args, "autoencoder_def").to(self._device)
+        args = self._engine.load_config(env_config, model_config, model_def)
+        autoencoder = self._engine.define_instance(args, "autoencoder_def").to(self._device)
         checkpoint = torch.load(args.trained_autoencoder_path, map_location=self._device, weights_only=True)  # monitor.py precedent
         # The base DM checkpoint is the one file that needs weights_only=False:
         # the published release carries monai metadata (TraceKeys) that the
@@ -958,7 +964,7 @@ class IntensityDomainReport:
 # ── CLI ─────────────────────────────────────────────────────────────────
 
 
-def main(argv=None, *, reconstructor_factory=None, grid=TRAINING_GRID, align=None):
+def main(argv=None, *, reconstructor_factory=None, engine: "GenerationEngine | None" = None, grid=TRAINING_GRID, align=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--train-list", default=None, help="MONAI training list JSON; its t1c entries form the emb pool")
     parser.add_argument("--data-root", default=None, help="data_base_dir the list's image paths resolve against")
@@ -1009,7 +1015,11 @@ def main(argv=None, *, reconstructor_factory=None, grid=TRAINING_GRID, align=Non
         if missing:
             raise DiagnosticError(f"the emb pool needs {', '.join(missing)}")
         entries = [entry for entry in json.loads(Path(args.train_list).read_text())["training"] if "t1c" in entry["image"]]
-        recon = factory(args.env_config, args.model_config, args.model_def, args.device)
+        if engine is None:
+            # 进程级跨层收口(#275):进程入口经组合根装配函数取得真实引擎;
+            # 适配器知识唯一定居于 ctmr.wiring(ADR-0019 §2)。
+            engine = intensity_domain_engine()
+        recon = factory(args.env_config, args.model_config, args.model_def, args.device, engine=engine)
         repo = NiftiTrainCaseRepository(args.data_root, args.emb_root)
         emb_rows = EmbPool().read_cases(stride(entries, args.limit), repo, recon, TrainingPreprocessing.resize_image, grid)
         print(f"[OK] emb pool: {len(emb_rows)} cases -> aggregating")

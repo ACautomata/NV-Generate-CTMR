@@ -517,7 +517,9 @@ def test_decode_hands_the_raw_encoder_output_to_the_decoder_unchanged():
     domain/generation/model.py) never touches them, so decode must feed them
     to decode_stage_2_outputs as-is. ReconModel's ``z / scale_factor``
     convention applies to diffusion-domain latents, not to this input."""
-    recon = VaeReconstructor("e", "c", "t", device="cpu")
+    # engine=None is safe on this decode-only path: the injected _autoencoder
+    # skips _ensure_loaded, so the engine port is never reached.
+    recon = VaeReconstructor("e", "c", "t", device="cpu", engine=None)
     recorded = {}
 
     class _RecordingAutoencoder:
@@ -528,6 +530,49 @@ def test_decode_hands_the_raw_encoder_output_to_the_decoder_unchanged():
     recon._autoencoder = _RecordingAutoencoder()  # skips _ensure_loaded
     recon.decode(np.full((2, 2, 2, 1), 0.5, dtype=np.float32))
     assert recorded["z"].mean().item() == pytest.approx(0.5)  # /0.9697 would read 0.5156
+
+
+@pytest.mark.torch
+def test_ensure_loaded_builds_the_autoencoder_through_the_injected_engine(tmp_path):
+    """The config parsing and instance definition are the injected engine
+    port's to answer (#275): ``_ensure_loaded`` drives load_config /
+    define_instance off the port (the real MaisiEngine adapter takes over at
+    the process entry), never an in-module infrastructure import."""
+    import torch
+
+    checkpoint = tmp_path / "autoencoder_v1.pt"
+    torch.save({}, checkpoint)  # a bare state_dict (monitor.py precedent): loads verbatim, no unet_state_dict key
+    recorded = {}
+
+    class _RecordingAutoencoder:
+        def to(self, device):
+            recorded["device"] = device
+            return self
+
+        def load_state_dict(self, state_dict):
+            recorded["state_dict"] = state_dict
+
+        def eval(self):
+            return self
+
+    class _RecordingEngine:
+        def load_config(self, env_config, model_config, model_def):
+            recorded["paths"] = (env_config, model_config, model_def)
+            from argparse import Namespace
+
+            return Namespace(trained_autoencoder_path=str(checkpoint))
+
+        def define_instance(self, args, instance_def_key):
+            recorded["instance_def_key"] = instance_def_key
+            return _RecordingAutoencoder()
+
+    recon = VaeReconstructor("e", "c", "t", device="cpu", engine=_RecordingEngine())
+    recon._ensure_loaded()
+    assert recorded["paths"] == ("e", "c", "t")
+    assert recorded["instance_def_key"] == "autoencoder_def"
+    assert recorded["device"] == "cpu"
+    assert recorded["state_dict"] == {}
+    assert recon._autoencoder is not None
 
 
 def test_report_labels_the_bootstrap_envelope_as_a_distribution_envelope_not_a_median_ci(tmp_path):

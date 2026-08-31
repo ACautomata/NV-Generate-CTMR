@@ -28,4 +28,4 @@ pin the structure only.
 
 
 def test_wiring_imports_pull_no_third_party_dependency(light_import_probe):
-    assert light_import_probe("ctmr.wiring, ctmr.wiring.generate, ctmr.wiring.measure") == "[]"
+    assert light_import_probe("ctmr.wiring, ctmr.wiring.generate, ctmr.wiring.measure, ctmr.wiring.distribution") == "[]"
