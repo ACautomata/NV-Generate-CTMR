@@ -15,19 +15,19 @@
 The one home of concrete implementation knowledge, outside the three layers
 and parallel to ``cli.py``: which adapter stands behind which verb and how
 the runtime topology is assembled is decided here and nowhere else. One
-module per subcommand family (``generate`` / ``measure`` today; ``accept``
-arrives with its family's migration ticket) -- ``cli.py`` stays a pure
-dispatcher that imports no infrastructure and assembles nothing, it only
-calls into this package. The layer gate (ADR-0019 §1) exempts
-``ctmr.wiring`` from the direction rules because the composition root is
-admitted to everything.
+module per subcommand family (``generate`` / ``measure`` / ``contract``;
+the remaining generate-case port assemblies arrive with their migration
+tickets) -- ``cli.py`` stays a pure dispatcher that imports no infrastructure
+and assembles nothing, it only calls into this package. The layer gate
+(ADR-0019 §1) exempts ``ctmr.wiring`` from the direction rules because the
+composition root is admitted to everything.
 
 Family modules compose lazily (importlib on dispatch -- the ``cli.py``
 discipline): torch / monai / nnunetv2 load only when a verb actually runs,
 and the dispatch-fake seeding in the tests relies on ``sys.modules`` being
-consulted first. Only stdlib-light collaborator classes (the launcher) are
-imported at module top. The family assemblies land with their migration
-tickets (#271-#275): this skeleton hosts exactly the concrete knowledge that
-used to live at the interface layer, called in the existing construction
-manner -- behavior unchanged.
+consulted first. Only stdlib-light collaborators are imported at module top.
+The contract family's assembly (#271) injects the json-backed DM-source
+ledger port factory into the application verb face; the per-case generate
+port assemblies (gradient executors, checkpoint repository, engine loading,
+logging) land with the family migration tickets #272-#274.
 """

@@ -17,6 +17,10 @@ legacy ``selftest`` verb died in the move -- its assertions live as pytest
 functions under tests/application/acceptance/contract). Reached as
 ``ctmr accept contract <verb> ...``; the argparse surface and every exit code
 (0 ok / 1 blocked-or-failed / 2 contract violation) are the legacy ones.
+
+Since #271 (ADR-0019 §2) the composition root routes this face and injects
+the ``ledger_factory`` -- the concrete DM-source ledger is wiring's choice,
+not this module's; a bare ``python -m`` here is not an entry.
 """
 
 import argparse
@@ -37,8 +41,9 @@ from ctmr.application.acceptance.contract.registry import ATTACH_KINDS
 from ctmr.application.acceptance.contract.verify import RunVerifier
 
 
-def main(argv=None):
-    """Run one contract verb; returns the process exit code."""
+def main(argv=None, *, ledger_factory):
+    """Run one contract verb; returns the process exit code. The composition
+    root injects the ``(record_root) -> DmSourceLedger`` port factory."""
     parser = argparse.ArgumentParser(
         prog="ctmr accept contract",
         description="Run-contract orchestration: open/select/freeze a candidate, attach evidence, conclude and verify.",
@@ -106,7 +111,7 @@ def main(argv=None):
     try:
         if args.handler == "init":
             sides = ManifestSides.from_path(args.manifest)
-            path = RunInitializer(RunRecordStore(args.record_root), fingerprinter, sides).init(
+            path = RunInitializer(RunRecordStore(args.record_root), fingerprinter, sides, ledger_factory).init(
                 args.phase,
                 args.run_id,
                 args.manifest,
@@ -134,7 +139,7 @@ def main(argv=None):
             print(f"{args.kind} attached -> {path}")
             return 0
         if args.handler == "conclude":
-            entry, verdict_path = FinalAcceptanceJudge(RunRecordStore.for_run(args.run), fingerprinter).conclude(args.run)
+            entry, verdict_path = FinalAcceptanceJudge(RunRecordStore.for_run(args.run), fingerprinter, ledger_factory).conclude(args.run)
             layers = ", ".join(f"{name}={layer['verdict']}" for name, layer in entry["layers"].items())
             print(f"FINAL ACCEPTANCE {entry['verdict'].upper()} ({layers}) -> {verdict_path}")
             for reason in entry["blocked_reasons"]:
@@ -144,7 +149,7 @@ def main(argv=None):
         failures = []
         for record_path in paths:
             record = RunRecordStore(record_path.parent.parent).load_by_path(record_path)
-            run_failures = RunVerifier(fingerprinter).verify(record, record_path=record_path)
+            run_failures = RunVerifier(fingerprinter, ledger_factory).verify(record, record_path=record_path)
             failures += [f"{record.get('run_id', record_path.parent.name)}: {f}" for f in run_failures]
         for failure in failures:
             print("FAIL " + failure, file=sys.stderr)
@@ -155,7 +160,3 @@ def main(argv=None):
     except ContractViolationError as violation:
         print(f"CONTRACT VIOLATION: {violation}", file=sys.stderr)
         return 2
-
-
-if __name__ == "__main__":
-    sys.exit(main())
