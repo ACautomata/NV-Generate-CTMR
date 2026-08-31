@@ -196,7 +196,7 @@ _Avoid_: 把 Scheduler 作为跨运行/跨 checkpoint 的恒久身份、在同�
 _Avoid_: 在 application 用例内构造具体实现、CLI 直接认识 infrastructure
 
 **阶段脚本外壳(PhaseHarness)**:
-训练/dev_eval/生成链驱动中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询(跨 rank 一致收尾:本地观测只置 sticky 标志,epoch 尾每 rank 一次 MAX 共识,全 rank 一致跳过发布并退出)、训练 provenance 写盘、周期验证阶段(每 `--val-every N` epoch 训练进程内全卡分片 dev cohort,早停在验证边界评估)与离线 watch/select(ledger 增量读、record 组装、早停写盘;SelectionEmitter:select argmin/argmax 契约发射;阶段差异经 sampler 工厂、scorer、可选 post-score 扩展注入)、幂等守卫——统一收敛于 `ctmr.application.shell`;各阶段仅以数据构成、条件张量构造与 checkpoint payload 的薄适配器组合领域实体,模型挂接与单 batch 参数更新归 DiffusionModel/ControlNetBypass,运行时精度策略以 GradientExecutor 注入。外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。checkpoint 原子发布与 latest.json 协议归 CheckpointRepository(仓储 b 档);「CLI 面保持不变」已被 ADR-0015 取代为统一 `ctmr` CLI 子命令(namespace 等价断言护航迁移)。
+训练/dev_eval/生成链驱动中与阶段领域无关的机械骨架——公共 argparse 集与 torchrun 校验、epoch 循环与早停文件轮询(跨 rank 一致收尾:本地观测只置 sticky 标志、检测 rank 照跑 epoch 尾,epoch 前/尾 MAX 共识后全 rank 一致跳过发布并退出)、训练 provenance 写盘、周期验证阶段(每 `--val-every N` epoch 训练进程内全卡分片 dev cohort,早停在验证边界评估)与离线 watch/select(ledger 增量读、record 组装、早停写盘;SelectionEmitter:select argmin/argmax 契约发射;阶段差异经 sampler 工厂、scorer、可选 post-score 扩展注入)、幂等守卫——统一收敛于 `ctmr.application.shell`;各阶段仅以数据构成、条件张量构造与 checkpoint payload 的薄适配器组合领域实体,模型挂接与单 batch 参数更新归 DiffusionModel/ControlNetBypass,运行时精度策略以 GradientExecutor 注入。外壳不持任何配方值与领域判定,配方守卫(RecipeGuard)为其一等钩子。checkpoint 原子发布与 latest.json 协议归 CheckpointRepository(仓储 b 档);「CLI 面保持不变」已被 ADR-0015 取代为统一 `ctmr` CLI 子命令(namespace 等价断言护航迁移)。
 _Avoid_: 在新用例中再抄外壳骨架(应注入内核)、把配方值下沉进外壳、把 launcher/nohup/sidecar 类编排能力写成 bash 或放入 deploy/(编排属应用层)
 
 **历史运行器(legacy run orchestrator)**:

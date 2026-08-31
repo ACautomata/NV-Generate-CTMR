@@ -15,24 +15,29 @@ Pre-#277 the mid-epoch halt made the detecting rank ``return`` straight out of
 the epoch, skipping the epoch-end ``loss_totals`` all_reduce -- a rank that
 had not observed the stop file yet kept training and then blocked forever on
 that all_reduce (or failed on the process-group timeout), because ranks with
-different detection timing no longer issued the same collectives.  The fix
-pinned here: the local observation only sets a sticky flag, an epoch-end MAX
-all_reduce consensus on every rank makes the exit unanimous before the loss
-all_reduce, and every rank breaks out of the run loop together.
+different detection timing no longer issued the same collectives.  The first
+fix pinned here: the local observation only sets a sticky flag, the detecting
+rank stays in the batch stream and trains the epoch tail (the production
+kernels wrap their trainables in DDP, so every batch's backward issues a
+gradient collective -- leaving the loop early pairs a peer's gradient
+all_reduce with the detector's unrelated consensus collective), and start/end
+MAX all_reduce consensuses make the exit unanimous: the start consensus skips
+the epoch before any batch, the end consensus skips the loss all_reduce and
+the checkpoint publish on every rank together.  The fake kernel below is
+DDP-wrapped for exactly this reason -- a non-DDP fake would hide the desync.
 
 Two tiers mirror ADR-0015 §6:
 
 - the torch-marked CPU tier (gloo backend, file:// init) runs for real in CI
   and locally; its staggered arm is the deterministic regression -- only one
   rank ever observes the stop, the other must still exit through the
-  consensus instead of hanging in the loss all_reduce.
+  consensus instead of hanging in the gradient stream.
 - the gpu-marked tier (nccl backend, env:// init, one CUDA device per rank)
   is the issue's server-side gate (``pytest --run-gpu``): no NCCL error and
   a clean all-rank exit under the same observation patterns.
 
-Each spawned worker drives the real ``PhaseHarness`` with a tiny fake kernel
-(the shell owns no recipe values, so a one-parameter Linear reproduces the
-full mechanical loop) and drops a ``worker_rank_<N>.json`` outcome file;
+Each spawned worker drives the real ``PhaseHarness`` with the DDP fake kernel
+and drops a ``worker_rank_<N>.json`` outcome file;
 ``torch.multiprocessing.spawn(join=True)`` re-raises any pre-outcome worker
 failure, a failure inside the run is recorded as an ``error`` key the parent
 asserts absent -- the clean return of every worker IS the "no NCCL error,
@@ -52,6 +57,7 @@ from pathlib import Path
 import pytest
 import torch
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 
 from ctmr.application.shell import STOP_FILE, PhaseHarness, TrainContext
 from ctmr.infrastructure.checkpoints import CheckpointRepository
@@ -67,23 +73,33 @@ GROUP_TIMEOUT_SECONDS = 60
 
 
 class RankKernel:
-    """Tiny fake PhaseTrainKernel per rank: counts batches, holds one trainable parameter."""
+    """Tiny fake PhaseTrainKernel per rank: a DDP-wrapped Linear.
+
+    The DDP wrapper is the point: each batch's backward then issues the real
+    per-batch gradient collective the production kernels issue (P1 DM + the
+    P2/P3 ControlNets are DDP-wrapped), so the shell's stop handling is gated
+    against the exact collective stream that the pre-fix code desynced.
+    """
 
     def __init__(self, device, on_batch=None):
         self.device = device
         self.on_batch = on_batch
         self.batches = 0
-        self.param = torch.nn.Parameter(torch.ones((), device=device))
-        self.optimizer = torch.optim.SGD([self.param], lr=0.1)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1)
+        self.trainable = None
+        self.optimizer = None
+        self.scheduler = None
         self.batch_list = [{"x": float(i)} for i in range(BATCHES_PER_EPOCH)]
 
     def build_loader(self):
         return self.batch_list
 
     def load_models(self, loader):
+        module = torch.nn.Linear(1, 1, bias=False).to(self.device)
+        self.trainable = DistributedDataParallel(module)
+        self.optimizer = torch.optim.SGD(self.trainable.parameters(), lr=0.1)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1)
         return TrainContext(
-            trainable=torch.nn.Linear(1, 1, bias=False).to(self.device),
+            trainable=self.trainable,
             optimizer=self.optimizer,
             scheduler=self.scheduler,
             scale=torch.tensor(1.0, device=self.device),
@@ -94,7 +110,8 @@ class RankKernel:
         self.batches += 1
         if self.on_batch is not None:
             self.on_batch(self.batches)
-        return self.param**2
+        x = torch.tensor([batch["x"]], device=self.device)
+        return self.trainable(x).sum() ** 2
 
     def checkpoint_payload(self, epoch, avg_loss, scale):
         return {"epoch": epoch, "loss": avg_loss, "scale_factor": scale, "fake_state_dict": {}}
@@ -109,9 +126,10 @@ def _dist_worker(rank, world_size, model_dir, scenario, backend):
     - ``boundary``: the stop file exists before the run; both ranks poll the
       real file and must halt before any batch.
     - ``uniform``: rank 1 writes the real stop file two batches into epoch 2;
-      every rank keeps polling the real file (natural per-rank timing skew).
+      every rank keeps polling the real file, trains the epoch tail and the
+      run halts at the epoch end without publishing it.
     - ``staggered``: only rank 1 ever observes the stop (rank 0's poll is
-      blind) -- the deterministic form of the pre-#277 hang.
+      blind) -- the deterministic form of the pre-#277 desync.
 
     A failure inside the run is recorded in the outcome file instead of dying
     with a bare traceback: the parent asserts the absence of an ``error``
@@ -208,12 +226,10 @@ def _assert_scenario(model_dir, scenario):
         assert [outcomes[rank]["batches"] for rank in range(WORLD)] == [0, 0]
         assert _published_epochs(model_dir) == []
     elif scenario == "uniform":
-        assert outcomes[1]["batches"] == STOP_AFTER_BATCH  # rank 1's own write lands on its next poll
-        assert BATCHES_PER_EPOCH <= outcomes[0]["batches"] <= 2 * BATCHES_PER_EPOCH  # rank 0 exits at whichever poll saw the file
-        assert _published_epochs(model_dir) == [1]  # epoch 1 complete; epoch 2 partial -> never published
+        assert [outcomes[rank]["batches"] for rank in range(WORLD)] == [8, 8]  # sticky flag: every rank trains the epoch tail
+        assert _published_epochs(model_dir) == [1]  # epoch 2 ran to the end but was never published
     else:  # staggered: only rank 1 ever observes the stop
-        assert outcomes[0]["batches"] == 2 * BATCHES_PER_EPOCH  # the blind rank completes epoch 2, exits through the consensus
-        assert outcomes[1]["batches"] == STOP_AFTER_BATCH
+        assert [outcomes[rank]["batches"] for rank in range(WORLD)] == [8, 8]  # the observing rank stays in the DDP batch stream
         assert _published_epochs(model_dir) == [1]
 
 
