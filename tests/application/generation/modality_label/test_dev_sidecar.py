@@ -33,7 +33,9 @@ import pytest
 import SimpleITK as sitk
 import torch
 
-from ctmr.application.generation.modality_label.monitor import FidTrendScorer, L2PostScore
+from ctmr.application.acceptance.distribution.token_dilution import ARM_ORDER
+from ctmr.application.generation.modality_label.monitor import CandidateSampler, FidTrendScorer, L2PostScore
+from ctmr.application.generation.modality_label.token_swap_sampling import TokenSwapSampler
 from ctmr.application.generation.trend import (
     DevCohortBuilder,
     L2TrendRunner,
@@ -302,3 +304,67 @@ def _trend_volume():
     image = sitk.GetImageFromArray((100.0 * np.exp(-(((xx - 100.0) ** 2 + (yy - 65.0) ** 2 + (zz - 40.0) ** 2) / 2.0e4))).astype(np.float32))
     image.SetSpacing((1.0, 2.0, 1.5))  # xyz mm
     return image
+
+
+# --------------------------------------------------- write-path affine (issue #249)
+
+# The real sampling spacing the v1 DM natively generates at (ruling #6 / #247). The
+# pre-fix sidecar writer declared unit 1 mm, which made the instrument chain's 1 mm
+# resample a no-op and produced the centroid pad-world artefacts the audit quantified.
+TRUE_DM_SPACING_AFFINE = np.diag([0.94, 0.94, 1.36, 1.0])
+
+
+class _StubSpacings:
+    """Stands in for CohortSpacingSource; the write path only reads spacing_of."""
+
+    def spacing_of(self, case):
+        return [0.94, 0.94, 1.36]
+
+
+def _stub_gpu_sampler(monkeypatch):
+    """Stub the GPU-bound model load / denoise so the write path runs CPU-only.
+
+    The seam under test is the on-disk affine, not the sampling, so the sampler
+    returns a synthetic volume and never touches a checkpoint or a device.
+    """
+    monkeypatch.setattr(CandidateSampler, "load_models", lambda self, checkpoint_path: (object(), object()))
+    monkeypatch.setattr(
+        CandidateSampler,
+        "sample_one",
+        lambda self, model, recon_model, modality_token, spacing, seed: np.zeros((256, 256, 128), dtype=np.int16),
+    )
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+
+
+def test_modality_label_write_stamps_the_true_dm_spacing(tmp_path, monkeypatch):
+    """The dev-sidecar write path declares the v1 DM's real spacing, not unit 1 mm.
+
+    Pin: a synthetic volume written through ``CandidateSampler.generate_cohort``
+    reads back with the true-spacing affine (never ``np.diag([1, 1, 1])``), so a
+    future write-path refactor cannot silently regress to the 1 mm convention.
+    """
+    _stub_gpu_sampler(monkeypatch)
+    cohort = [{"sub": "GLI", "case": "BraTS-GLI-0001-000"}]
+
+    samples = CandidateSampler(types.SimpleNamespace(), torch.device("cpu"), None).generate_cohort(
+        "/ckpt/epoch_20.pt", cohort, _StubSpacings(), tmp_path
+    )
+
+    assert samples  # one sample per target modality was written
+    for sample in samples:
+        affine = nib.load(sample["path"]).affine
+        assert np.allclose(affine, TRUE_DM_SPACING_AFFINE), sample["path"]
+        assert not np.allclose(np.diag(affine)[:3], (1.0, 1.0, 1.0)), sample["path"]  # the retired convention
+
+
+def test_token_swap_write_stamps_the_true_dm_spacing(tmp_path, monkeypatch):
+    """The job-D diagnostic arm shares the modality-label write path (#249): its
+    five per-case products carry the same true-spacing affine."""
+    _stub_gpu_sampler(monkeypatch)
+    sampler = TokenSwapSampler(types.SimpleNamespace(), torch.device("cpu"))
+
+    written = sampler.sample_cohort("/ckpt/epoch_20.pt", [{"case": "BraTS-GLI-0001-000"}], _StubSpacings(), tmp_path)
+
+    assert written == len(ARM_ORDER)
+    for path in tmp_path.glob("*.nii.gz"):
+        assert np.allclose(nib.load(str(path)).affine, TRUE_DM_SPACING_AFFINE), path.name
