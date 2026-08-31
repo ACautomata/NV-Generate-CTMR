@@ -116,6 +116,63 @@ def test_trend_ledger_roundtrip(tmp_path):
 # --------------------------------------------------- watch engine collaborators (issue #225)
 
 
+class _ToyVolumeNet(torch.nn.Module):
+    """One-conv stand-in for the sampler's load path (state roundtrip only)."""
+
+    def __init__(self):
+        super().__init__()
+        self.conv = torch.nn.Conv3d(4, 4, 3, padding=1)
+
+
+class _ScriptedSamplerEngine:
+    """Engine-port stand-in: hands back the prebuilt networks, counts the calls."""
+
+    def __init__(self, autoencoder, unet):
+        self._autoencoder = autoencoder
+        self._unet = unet
+        self.calls = []
+
+    def define_instance(self, args, instance_def_key):
+        self.calls.append(f"define_instance:{instance_def_key}")
+        return self._autoencoder if instance_def_key == "autoencoder_def" else self._unet
+
+    def recon_model(self, autoencoder, scale_factor):
+        self.calls.append("recon_model")
+        from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
+
+        return ReconModel(autoencoder=autoencoder, scale_factor=scale_factor)
+
+
+def test_candidate_sampler_loads_models_through_the_engine_port(tmp_path):
+    """The sidecar sampler reaches its networks only through the injected
+    GenerationEngine port (issue #272): define_instance for both networks,
+    recon_model for the VAE decode wrapper, checkpoints loaded verbatim."""
+    autoencoder, unet = _ToyVolumeNet(), _ToyVolumeNet()
+    with torch.no_grad():
+        autoencoder.conv.weight.fill_(0.25)
+    torch.save(autoencoder.state_dict(), tmp_path / "ae.pt")
+    torch.save({"unet_state_dict": unet.state_dict(), "scale_factor": 0.5}, tmp_path / "candidate.pt")
+    args = types.SimpleNamespace(
+        trained_autoencoder_path=str(tmp_path / "ae.pt"),
+        noise_scheduler={
+            "_target_": "monai.networks.schedulers.rectified_flow.RFlowScheduler",
+            "num_train_timesteps": 1000,
+            "use_discrete_timesteps": False,
+            "use_timestep_transform": True,
+            "sample_method": "uniform",
+            "scale": 1.4,
+        },
+    )
+    engine = _ScriptedSamplerEngine(autoencoder, unet)
+
+    model, recon = CandidateSampler(args, torch.device("cpu"), None, engine).load_models(tmp_path / "candidate.pt")
+
+    assert engine.calls == ["define_instance:autoencoder_def", "define_instance:diffusion_unet_def", "recon_model"]
+    assert recon.scale_factor == pytest.approx(0.5)
+    assert float(model.scale_factor) == pytest.approx(0.5)
+    assert torch.allclose(recon.autoencoder.conv.weight, torch.full_like(recon.autoencoder.conv.weight, 0.25))
+
+
 class _ScriptedFeatures:
     def volume_features(self, path):
         return {"xy": np.zeros(2), "yz": None, "zx": np.ones(2)}
@@ -346,7 +403,8 @@ def test_modality_label_write_stamps_the_true_dm_spacing(tmp_path, monkeypatch):
     _stub_gpu_sampler(monkeypatch)
     cohort = [{"sub": "GLI", "case": "BraTS-GLI-0001-000"}]
 
-    samples = CandidateSampler(types.SimpleNamespace(), torch.device("cpu"), None).generate_cohort(
+    # the injected engine port stays unused here: _stub_gpu_sampler replaced load_models wholesale
+    samples = CandidateSampler(types.SimpleNamespace(), torch.device("cpu"), None, None).generate_cohort(
         "/ckpt/epoch_20.pt", cohort, _StubSpacings(), tmp_path
     )
 
@@ -361,7 +419,7 @@ def test_token_swap_write_stamps_the_true_dm_spacing(tmp_path, monkeypatch):
     """The job-D diagnostic arm shares the modality-label write path (#249): its
     five per-case products carry the same true-spacing affine."""
     _stub_gpu_sampler(monkeypatch)
-    sampler = TokenSwapSampler(types.SimpleNamespace(), torch.device("cpu"))
+    sampler = TokenSwapSampler(types.SimpleNamespace(), torch.device("cpu"), None)
 
     written = sampler.sample_cohort("/ckpt/epoch_20.pt", [{"case": "BraTS-GLI-0001-000"}], _StubSpacings(), tmp_path)
 
