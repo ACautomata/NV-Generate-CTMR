@@ -10,7 +10,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The generate family's assembly (ADR-0019 §2, issues #270/#272/#273).
+"""The generate family's assembly (ADR-0019 §2, issues #270/#272/#273/#274).
 
 The train verbs' runtime topology: ``ctmr generate <case> train`` arrives
 WITHOUT torchrun and derives the ``torchrun --nproc_per_node=<num_gpus> -m
@@ -24,14 +24,20 @@ to; the train modules themselves load lazily on dispatch (they are the
 production torch entries).
 
 The per-case port assemblies land with the family migration tickets: the
-modality-label (#272) and mask (#273) families' are here -- the engine
-adapter, the distributed session + logger, the gradient executor chosen by
-the amp declaration, and the modality-label MONAI-checkpoint archive behind
-the ``CheckpointRepository`` load face (ADR-0019 §2: concrete knowledge
-settles nowhere else; §3: the family entries consume only domain ports). The
-torchrun worker entry reuses the same assembly: the family ``main`` imports
-it from here, so the worker process assembles through the composition root
-too. cross-modal follows with #274.
+modality-label (#272) and mask (#273) families' are the ``*_train_session``
+assemblies and the ``*_engine`` seams below -- the engine adapter, the
+distributed session + logger, the gradient executor chosen by the amp
+declaration, and the modality-label MONAI-checkpoint archive behind the
+``CheckpointRepository`` load face (ADR-0019 §2: concrete knowledge settles
+nowhere else; §3: the family entries consume only domain ports). The
+cross-modal family's (#274) is :class:`GenerateRuntime` -- the frozen engine
+adapter behind the ``GenerationEngine`` port, the distributed session
+bootstrap, the run logger, the ControlNet mounting, the pinned precision
+executor and the checkpoint file identity -- resolved lazily on dispatch
+(importing the composition root still pulls no third-party dependency). The
+torchrun worker entry reuses the same assemblies: the family ``main``s
+import them from here, so the worker process assembles through the
+composition root too.
 """
 
 from __future__ import annotations
@@ -52,6 +58,48 @@ if TYPE_CHECKING:
     from ctmr.domain.engine import GenerationEngine
     from ctmr.domain.generation import BypassMounting, GradientExecutor
     from ctmr.domain.logging import Logger
+
+
+class GenerateRuntime:
+    """The generate family's production runtime (ADR-0019 §2, #272-#274).
+
+    One method per collaborator the application entries receive at their
+    seams; each resolves its concrete adapter lazily (importlib on dispatch)
+    so the frozen maisi_engine functions, the precision executors, the
+    ControlNet mounting, the distributed session and the run logger load only
+    when a verb actually runs. The application entries see the domain port
+    faces (``GenerationEngine`` / ``Logger`` / ``GradientExecutor``) and the
+    injected collaborators -- never the concrete addresses.
+    """
+
+    def engine(self):
+        """The frozen maisi_engine adapter behind the GenerationEngine port."""
+        return importlib.import_module("ctmr.infrastructure.engine").MaisiEngine()
+
+    def logger(self, name):
+        """The run logger (the Logger port's stdlib realization)."""
+        return importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting").setup_logging(name)
+
+    def train_session(self, args):
+        """Bootstrap the distributed training session: (local_rank, world_size, device)."""
+        return importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting").initialize_distributed(args.num_gpus)
+
+    def bypass_mounting(self, args, device, logger):
+        """The ControlNet-only hook-up collaborator the bypass kernels drive."""
+        return importlib.import_module("ctmr.infrastructure.bypass_mounting").BypassMounting(args, device, logger)
+
+    def gradient_executor(self, amp, amp_dtype):
+        """The pinned precision strategy (ADR-0016): fp16 (scaler), bf16 (DCU default) or plain."""
+        executors = importlib.import_module("ctmr.infrastructure.gradient_executors")
+        if amp and amp_dtype == "fp16":
+            return executors.Fp16GradientExecutor()
+        if amp:
+            return executors.Bf16GradientExecutor()
+        return executors.PlainGradientExecutor()
+
+    def weights_ref_of_file(self):
+        """The checkpoint file identity callable (path -> domain WeightsRef)."""
+        return importlib.import_module("ctmr.infrastructure.weightsref").weights_ref_of_file
 
 
 class TrainDispatch:

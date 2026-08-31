@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from ctmr.application.generation.cross_modal.train import TrainKernel as CrossModalTrainKernel
 from ctmr.application.generation.mask.train import TrainKernel as MaskTrainKernel
 from ctmr.application.generation.modality_label.train import TrainKernel as ModalityLabelTrainKernel
-from ctmr.infrastructure.bypass_mounting import BypassMounting
+from ctmr.infrastructure.bypass_mounting import BypassMounting  # tests are exempt (ADR-0019 §1); the real mounting
 
 # The pre-#111 checkpoint payload key sets, verbatim (do not edit).
 P1_PAYLOAD_KEYS = ["epoch", "loss", "num_train_timesteps", "scale_factor", "unet_state_dict"]
@@ -69,7 +69,7 @@ def test_p3_payload_key_set_is_kept():
         noise_scheduler={"num_train_timesteps": 1000},
         controlnet_train={"weighted_loss": 100, "weighted_loss_label": [129, 130, 131]},
     )
-    kernel = CrossModalTrainKernel(args, device=None, logger=None, local_rank=0)
+    kernel = CrossModalTrainKernel(args, device=None, logger=None, local_rank=0, mounting=BypassMounting(args, device=None, logger=None))
     kernel._controlnet = FakeStateModule()
     payload = kernel.checkpoint_payload(7, 0.75, 1.0)
     assert list(payload) == P3_PAYLOAD_KEYS

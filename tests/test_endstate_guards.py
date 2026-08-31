@@ -411,10 +411,11 @@ def test_orphan_gate_detects_a_seeded_orphan(tmp_path):
 # red immediately; an entry that no longer violates is stale and must be
 # removed -- the list may only shrink, never grow (same self-stabilizing
 # pair as the orphan whitelist above).  Migrated so far: the contract
-# (#271, 5 edges), modality-label (#272, 9), mask (#273, 9) and distribution
-# (#275, 4) families.
-# When the ratchet reaches zero the list is deleted and the
-# gate turns purely terminal-state (issue #10).
+# pair as the orphan whitelist above).  Migrated so far: the contract
+# (#271, 5 edges), modality-label (#272, 9), mask (#273, 9), cross-modal
+# (#274, 16) and distribution (#275, 4) families.  When the ratchet reaches
+# zero the list is deleted and the gate turns purely terminal-state
+# (issue #10).
 FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
     {
         # issue #271 shrank the ratchet by the five contract-family edges:
@@ -423,25 +424,9 @@ FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
         # distribution-family edges (closing / instrument_training ->
         # nnunet_runner, intensity_domain -> diff_model_setting /
         # instance_definition) with the reader/engine port migration.
-        "ctmr.application.generation.cross_modal.anchor -> ctmr.infrastructure.maisi_engine.inference_primitives",
-        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.diff_model_infer",
-        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.inference_primitives",
-        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.utils_infer",
-        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.weightsref",
-        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.maisi_engine.inference_primitives",
-        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.maisi_engine.utils_infer",
-        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.weightsref",
-        "ctmr.application.generation.cross_modal.monitor -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.cross_modal.monitor -> ctmr.infrastructure.maisi_engine.inference_primitives",
-        "ctmr.application.generation.cross_modal.monitor -> ctmr.infrastructure.maisi_engine.utils_infer",
-        "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.bypass_mounting",
-        "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.gradient_executors",
-        "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        # the modality-label (#272) and mask (#273) families' eighteen frozen
-        # edges shrank to zero with their port migrations (composition-root
-        # assembly, ADR-0019 §2)
+        # the modality-label (#272), mask (#273) and cross-modal (#274)
+        # families' frozen edges -- nine + nine + sixteen -- shrank to zero
+        # with their port migrations (composition-root assembly, ADR-0019 §2)
         "ctmr.application.generation.train_loader -> ctmr.infrastructure.dataio.list_assembly",
         "ctmr.application.shell -> ctmr.infrastructure.checkpoints",
         "ctmr.application.shell -> ctmr.infrastructure.gradient_executors",

@@ -43,6 +43,7 @@ from monai.networks.schedulers import RFlowScheduler
 from ctmr.application.generation.cross_modal.train import TrainKernel
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
+from ctmr.infrastructure.bypass_mounting import BypassMounting  # tests are exempt (ADR-0019 §1); the real mounting
 from ctmr.infrastructure.gradient_executors import PlainGradientExecutor
 
 pytestmark = pytest.mark.torch
@@ -80,7 +81,12 @@ def _kernel():
         controlnet_train={"batch_size": 1, "n_epochs": 1, "lr": 1e-4, "weighted_loss": 1.0, "weighted_loss_label": [129, 130, 131]},
         noise_scheduler={"num_train_timesteps": 10},
     )
-    kernel = TrainKernel(args, device=CPU, logger=logging.getLogger("test-kernel"), local_rank=0)
+    # the real mounting collaborator rides in (production assembles it in the
+    # composition root, ADR-0019 §2); the mount seam itself is exercised by
+    # tests/infrastructure/test_bypass_mounting.py. The gate bypasses mount()
+    # -- the kernel receives the tiny fakes directly below.
+    logger = logging.getLogger("test-kernel")
+    kernel = TrainKernel(args, device=CPU, logger=logger, local_rank=0, mounting=BypassMounting(args, CPU, logger))
     kernel._controlnet = _TinyControlNet()
     unet = _TinyUNet()
     optimizer = torch.optim.AdamW(kernel._controlnet.parameters(), lr=1e-4)

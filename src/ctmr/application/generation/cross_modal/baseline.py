@@ -45,6 +45,13 @@ Per ADR-0016 the img2img chain runs on the domain ``DiffusionModel`` (issue
 entity's ``begin_img2img`` + ``denoise`` behaviour; the VAE encode/decode and
 the int16 post-processing stay application adapters.
 
+Layering (ADR-0019 §1-§3, issue #274): the module holds no infrastructure
+address -- model loading / config parsing / inference primitives ride the
+injected ``GenerationEngine`` port, the checkpoint file identity rides the
+injected ref-of-file callable (the dmsource ledger's injection precedent), and
+the concrete adapters are assembled by the composition root
+(``ctmr.wiring.generate``, which the main entry consults directly).
+
 Usage::
 
     ctmr generate cross-modal generate baseline \
@@ -78,11 +85,7 @@ from ctmr.application.generation.cross_modal.anchor import AnchorLatentEncoder
 from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.identity import WeightsRef
-from ctmr.infrastructure.maisi_engine.diff_model_infer import load_models
-from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config, setup_logging
-from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
-from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
-from ctmr.infrastructure.weightsref import weights_ref_of_file
+from ctmr.wiring.generate import GenerateRuntime
 
 INFER_SCHEMA = "brats-p3-stage0-infer/1"
 PAIRS_SCHEMA = "brats-p3-stage0-pairs/1"
@@ -164,12 +167,15 @@ class BaselineRunGuard:
     baseline variant, its selection must pin the upstream P1-DM checkpoint, and
     the inference config used on the command line must byte-match the
     ``role=inference`` config the run pinned at init — so every generated volume
-    traces back to the recorded official inference provenance.
+    traces back to the recorded official inference provenance. The checkpoint
+    file identity rides the injected ref-of-file callable (path -> domain
+    ``WeightsRef``, the dmsource ledger's injection precedent).
     """
 
-    def __init__(self, run_record, infer_config_path):
+    def __init__(self, run_record, infer_config_path, ref_of_file):
         self._record = run_record
         self._infer_config_path = Path(infer_config_path)
+        self._ref_of_file = ref_of_file
 
     def check(self):
         record = self._record
@@ -187,7 +193,7 @@ class BaselineRunGuard:
         checkpoint = Path(upstream["checkpoint"]["path"])
         if not checkpoint.is_file():
             raise BaselinePlanError(f"pinned P1-DM checkpoint missing: {checkpoint}")
-        if weights_ref_of_file(checkpoint) != WeightsRef(sha256=upstream["checkpoint"]["sha256"]):
+        if self._ref_of_file(checkpoint) != WeightsRef(sha256=upstream["checkpoint"]["sha256"]):
             raise BaselinePlanError(f"pinned P1-DM checkpoint changed on disk: {checkpoint}")
         inference_entries = [entry for entry in record.get("configs", []) if entry.get("role") == "inference"]
         if len(inference_entries) != 1:
@@ -195,16 +201,12 @@ class BaselineRunGuard:
                 "the baseline run must pin exactly one --config inference=<official baseline inference config> "
                 "(the recorded inference provenance, issue #60 acceptance criterion 1)"
             )
-        if weights_ref_of_file(self._infer_config_path).sha256 != inference_entries[0]["sha256"]:
+        if self._ref_of_file(self._infer_config_path).sha256 != inference_entries[0]["sha256"]:
             raise BaselinePlanError(
                 f"--infer-config sha256 does not match the config pinned by run {record['run_id']}; "
                 "regenerate with the recorded official inference config"
             )
         return checkpoint
-
-    @staticmethod
-    def file_sha256(path):
-        return weights_ref_of_file(path).sha256
 
 
 class BaselineSamplePlanBuilder:
@@ -381,7 +383,7 @@ class ReferenceGridWriter:
 class BaselineSampleWriter:
     """Generates the 12 ordered pairs per case and writes the distribution/quantitative manifests."""
 
-    def __init__(self, merged, run_record, side, config, device, out_root, logger):
+    def __init__(self, merged, run_record, side, config, device, out_root, logger, engine):
         self._merged = merged
         self._run_record = run_record
         self._side = side
@@ -389,13 +391,14 @@ class BaselineSampleWriter:
         self._device = device
         self._out_root = Path(out_root)
         self._logger = logger
+        self._engine = engine
 
     @torch.inference_mode()
     def write(self, cohort, layout):
         # the migrated chain's fast-fail: baseline img2img is RF-only (the interpolation start is the RFlow path)
         if not str(self._merged.noise_scheduler.get("_target_", "")).endswith("RFlowScheduler"):
             raise BaselinePlanError("baseline img2img only runs on the RFlow scheduler (rectified flow interpolation start)")
-        autoencoder, unet, scale_factor = load_models(self._merged, self._device, self._logger)
+        autoencoder, unet, scale_factor = self._engine.load_models(self._merged, self._device, self._logger)
         # The domain entity carries the img2img rules (strength truncation, RF
         # interpolation start, CFG denoising, ADR-0016); the VAE decode stays
         # the writer's render adapter below the latent the entity produces.
@@ -406,8 +409,8 @@ class BaselineSampleWriter:
             scale_factor=torch.tensor(float(scale_factor), device=self._device),
             noise_scheduler=RFlowScheduler(**{k: v for k, v in self._merged.noise_scheduler.items() if k != "_target_"}),
         )
-        recon_model = ReconModel(autoencoder=autoencoder, scale_factor=scale_factor).to(self._device)
-        anchor_encoder = AnchorLatentEncoder(autoencoder, self._device, GRID, self._logger)
+        recon_model = self._engine.recon_model(autoencoder, scale_factor).to(self._device)
+        anchor_encoder = AnchorLatentEncoder(autoencoder, self._device, GRID, self._logger, self._engine)
         builder = BaselineSamplePlanBuilder(
             self._run_record["run_id"],
             self._run_record["upstream"]["checkpoint"]["sha256"],
@@ -478,7 +481,7 @@ class BaselineSampleWriter:
             sw_device=self._device,
             device=torch.device("cpu"),
         )
-        synthetic = dynamic_infer(inferer, recon_model, latent).squeeze().cpu().detach().numpy()
+        synthetic = self._engine.dynamic_infer(inferer, recon_model, latent).squeeze().cpu().detach().numpy()
         token = int(modality_token)
         if token >= 8:  # MR: model output [0,1] -> [0,1000]
             synthetic = synthetic * 1000.0
@@ -517,16 +520,21 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
 
+    # The composition root assembles the concrete collaborators (ADR-0019 §2):
+    # the checkpoint file identity, the engine adapter behind the GenerationEngine
+    # port and the run logger.
+    runtime = GenerateRuntime()
     run_record = json.loads(Path(args.run).read_text())
     try:
-        checkpoint = BaselineRunGuard(run_record, args.infer_config).check()
+        checkpoint = BaselineRunGuard(run_record, args.infer_config, runtime.weights_ref_of_file()).check()
         config = BaselineInferenceConfig.from_path(args.infer_config)
         manifest = json.loads(Path(args.manifest).read_text())
     except (BaselineGenerateError, BaselinePlanError) as error:
         print(error, file=sys.stderr)
         return 1
 
-    merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    engine = runtime.engine()
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     # Point the #38 img2img chain at the frozen P1-DM checkpoint (same unet_state_dict + scale_factor layout).
     merged.model_dir = str(checkpoint.parent)
     merged.model_filename = checkpoint.name
@@ -543,8 +551,8 @@ def main(argv=None):
         return 1
     layout = RawCaseLayout(args.raw_root, manifest)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger = setup_logging("stage0")
-    writer = BaselineSampleWriter(merged, run_record, args.side, config, device, args.out_root, logger)
+    logger = runtime.logger("stage0")
+    writer = BaselineSampleWriter(merged, run_record, args.side, config, device, args.out_root, logger, engine)
     entries, pairs = writer.write(cohort, layout)
 
     suffix = f"_shard_{args.shard}" if args.num_shards > 1 else ""
