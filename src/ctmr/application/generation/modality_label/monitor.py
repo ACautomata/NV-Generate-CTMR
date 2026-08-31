@@ -79,6 +79,7 @@ from ctmr.application.shell import (
     SelectionEmitter,
     WatchEngine,
 )
+from ctmr.domain.dm_output_grid import V1_DM_OUTPUT_GRID
 from ctmr.domain.engine import GenerationEngine
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.wiring.generate import modality_label_engine
@@ -179,7 +180,9 @@ class CandidateSampler:
                 if not out.is_file():
                     out.parent.mkdir(parents=True, exist_ok=True)
                     data = self.sample_one(model, recon, MODALITY_TOKENS[modality], spacings.spacing_of(item["case"]), seed)
-                    image = nib.Nifti1Image(data, affine=np.diag([1.0, 1.0, 1.0, 1.0]))
+                    # Ruling #6: declare the v1 DM's real sampling spacing, not unit 1 mm,
+                    # so the instrument chain's 1 mm resample is no longer a no-op.
+                    image = nib.Nifti1Image(data, affine=V1_DM_OUTPUT_GRID.affine())
                     nib.save(image, out)
                 samples.append({"sub": item["sub"], "case": item["case"], "modality": modality, "path": str(out)})
         del model, recon
