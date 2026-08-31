@@ -43,7 +43,11 @@ uses only the fold=0 entries (matching the split manifest's dev side).
 
 Migrated from the retired mask dev-eval script entry (ticket 09, ADR-0015
 §2); its ``selftest`` subcommand retired with it — its assertions live as
-pytest functions in tests/application/generation/mask.
+pytest functions in tests/application/generation/mask. Since #273
+(ADR-0019 §2) the watch face locates the engine through the composition
+root's ``generation_engine`` lookup: the merged config comes from the
+``GenerationEngine`` port, handed on to the sampler; the family assembles no
+infrastructure itself.
 
 Usage (sugon, one reserved GPU):
     ctmr generate mask dev-eval reference --dev-list ... --raw-root ... --eval-root DIR
@@ -80,7 +84,7 @@ from ctmr.application.shell import (
 )
 from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter
 from ctmr.domain.measurement import REGIONS, DiceScore, RegionMasks
-from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
+from ctmr.wiring.generate import generation_engine
 
 # Mask condition combined mask -> instrument label space (REGION_LABELS = {1,2,3}).
 COMBINED_TO_INSTRUMENT = {22: 0, 129: 1, 130: 2, 131: 3}
@@ -348,12 +352,13 @@ def main(argv=None):
     (eval_root / "early_stop_rule.json").write_text(
         json.dumps({"rule": rule.rule_text(), "patience": args.patience, "min_epoch": args.min_epoch, "max_epoch": args.max_epoch}, indent=2) + "\n"
     )
-    merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    engine = generation_engine()
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
     merged.cfg_guidance_scale = 10.0
     features = MrTrendFeatures(device)
     bank = RealReferenceBank(dev_list, args.raw_root, features, eval_root / "reference").build()
-    sampler = CandidateSampler(merged, device, None)
+    sampler = CandidateSampler(merged, device, None, engine)
     instrument_results = dict(item.split("=", 1) for item in args.instrument_results)
     l2 = L2TrendRunner(instrument_results, args.nnunet_raw, args.nnunet_preprocessed)
     return WatchEngine(

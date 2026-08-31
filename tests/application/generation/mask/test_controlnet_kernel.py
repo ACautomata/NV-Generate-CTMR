@@ -10,7 +10,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Single-step execution and value-level gates of the mask train kernel on CPU (ticket 09).
+"""Single-step execution and value-level gates of the mask train kernel on CPU (ticket 09, #273).
 
 Acceptance criteria: the family's training kernel must execute one closed step
 on a synthetic mini fixture without a GPU, the weighted-target definition must
@@ -26,8 +26,15 @@ the closed-update gate asserts a finite scalar loss, that the bypass moved and
 the frozen DM stayed put. The weighted-target and training-step numerics are
 parity-locked in tests/domain/generation/test_controlnet_bypass.py. Two small
 ``torch.nn.Module`` fakes stand in for the real MONAI ControlNet /
-DiffusionModelUNet; the scheduler is the real ``RFlowScheduler``. Torch-marked,
-CPU: the CI full-dependency tier runs these for real (ADR-0015 §6).
+DiffusionModelUNet; the scheduler is the real ``RFlowScheduler``.
+
+Per ADR-0019 §2/#273 the kernel receives the bypass mounting as the injected
+domain port (the composition root assembles the concrete hook-up): the gates
+drive a stub mounting and pin the kernel's composition -- entity assembly from
+the mount, payload delegation -- not the mount sequence itself (the
+infrastructure gate is tests/infrastructure/test_bypass_mounting.py).
+Torch-marked, CPU: the CI full-dependency tier runs these for real
+(ADR-0015 §6).
 """
 
 from __future__ import annotations
@@ -49,6 +56,24 @@ from ctmr.infrastructure.gradient_executors import PlainGradientExecutor
 pytestmark = pytest.mark.torch
 
 CPU = torch.device("cpu")
+
+
+class _StubMounting:
+    """The injected mounting port: returns a canned mount, records the payload hand-off."""
+
+    def __init__(self, args, mounted=None):
+        self._args = args
+        self._mounted = mounted
+        self.payload_calls = []
+        self.mount_calls = []
+
+    def mount(self, dataset_size, *, lr, n_epochs, batch_size):
+        self.mount_calls.append((dataset_size, lr, n_epochs, batch_size))
+        return self._mounted
+
+    def checkpoint_payload(self, trainable, epoch, avg_loss, scale):
+        self.payload_calls.append((trainable, epoch, avg_loss, scale))
+        return {"epoch": epoch, "loss": avg_loss, "passed": True}
 
 
 class _TinyControlNet(torch.nn.Module):
@@ -87,7 +112,7 @@ def _kernel(weighted_loss=100, weighted_loss_label=(129, 130, 131)):
         },
         noise_scheduler={"num_train_timesteps": 10},
     )
-    kernel = TrainKernel(args, device=CPU, logger=logging.getLogger("test-mask-kernel"), local_rank=0)
+    kernel = TrainKernel(args, device=CPU, logger=logging.getLogger("test-mask-kernel"), local_rank=0, mounting=_StubMounting(args))
     kernel._controlnet = _TinyControlNet()
     unet = _TinyUNet()
     optimizer = torch.optim.AdamW(kernel._controlnet.parameters(), lr=1e-4)
@@ -219,16 +244,53 @@ def test_mask_recipe_guard_passes_the_pinned_config_and_blocks_deviations():
         MaskRecipeSpec(deviated, _QuietLogger()).check()
 
 
+def test_load_models_composes_the_domain_entity_from_the_mount():
+    """The kernel composes the DiffusionModel + TrainContext from the mount's
+    pieces -- recipe values injected, session members kept as the single
+    shared optimizer/scheduler pair."""
+    args = SimpleNamespace(
+        controlnet_train={"batch_size": 1, "n_epochs": 2, "lr": 1e-5, "weighted_loss": 100, "weighted_loss_label": [129, 130, 131]},
+        noise_scheduler={"num_train_timesteps": 10},
+    )
+    trainable = _TinyControlNet()
+    optimizer = torch.optim.AdamW(trainable.parameters(), lr=1e-5)
+    mounted = SimpleNamespace(
+        trainable=trainable,
+        dm=_TinyUNet(),
+        noise_scheduler=RFlowScheduler(num_train_timesteps=10),
+        scale=torch.tensor(0.5, device=CPU),
+        optimizer=optimizer,
+        scheduler=torch.optim.lr_scheduler.PolynomialLR(optimizer, total_iters=10, power=2.0),
+    )
+    mounting = _StubMounting(args, mounted)
+    kernel = TrainKernel(args, device=CPU, logger=logging.getLogger("test-mask-kernel"), local_rank=0, mounting=mounting)
+
+    ctx = kernel.load_models(SimpleNamespace(dataset=[1, 2, 3]))
+
+    assert mounting.mount_calls == [(3, 1e-5, 2, 1)]  # dataset size + the recipe values, verbatim
+    assert isinstance(kernel._model, DiffusionModel)
+    assert kernel._model.unet is mounted.dm
+    assert kernel._model._bypass.controlnet is mounted.trainable
+    assert ctx.trainable is mounted.trainable
+    assert ctx.optimizer is mounted.optimizer
+    assert ctx.scheduler is mounted.scheduler
+    assert ctx.scale is mounted.scale
+
+
 # ---------------------------------------------------------------- checkpoint payload
 
 
-def test_checkpoint_payload_carries_the_controlnet_key_set():
+def test_checkpoint_payload_delegates_to_the_mounting_port():
+    """The per-epoch payload hand-off rides the injected mounting; the payload
+    key-set contract itself is the infrastructure gate
+    (tests/infrastructure/test_bypass_mounting.py)."""
     kernel = _kernel()
     payload = kernel.checkpoint_payload(epoch=7, avg_loss=0.75, scale=0.5)
-    assert list(payload) == ["epoch", "loss", "num_train_timesteps", "scale_factor", "controlnet_state_dict"]
-    assert payload["num_train_timesteps"] == 10
-    assert payload["scale_factor"] == 0.5
-    assert set(payload["controlnet_state_dict"]) == {"gain"}
+
+    trainable, epoch, avg_loss, scale = kernel._mounting.payload_calls[0]
+    assert trainable is kernel._controlnet
+    assert (epoch, avg_loss, scale) == (7, 0.75, 0.5)
+    assert payload == {"epoch": 7, "loss": 0.75, "passed": True}
 
 
 def test_rflow_sampling_step_closes_on_cpu():

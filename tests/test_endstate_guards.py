@@ -410,8 +410,9 @@ def test_orphan_gate_detects_a_seeded_orphan(tmp_path):
 # application -> infrastructure).  A violation outside the frozen list goes
 # red immediately; an entry that no longer violates is stale and must be
 # removed -- the list may only shrink, never grow (same self-stabilizing
-# pair as the orphan whitelist above).  When the ratchet reaches zero the
-# list is deleted and the gate turns purely terminal-state (issue #10).
+# pair as the orphan whitelist above).  Migrated so far: the mask family
+# (#273, 9 edges).  When the ratchet reaches zero the list is deleted and the
+# gate turns purely terminal-state (issue #10).
 FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
     {
         "ctmr.application.acceptance.contract.artifacts -> ctmr.infrastructure.dmsource",
@@ -439,15 +440,6 @@ FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
         "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.bypass_mounting",
         "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.gradient_executors",
         "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.mask.monitor -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.mask.sample -> ctmr.infrastructure.dataio.augmentation",
-        "ctmr.application.generation.mask.sample -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.mask.sample -> ctmr.infrastructure.maisi_engine.inference_primitives",
-        "ctmr.application.generation.mask.sample -> ctmr.infrastructure.maisi_engine.instance_definition",
-        "ctmr.application.generation.mask.sample -> ctmr.infrastructure.maisi_engine.utils_infer",
-        "ctmr.application.generation.mask.train -> ctmr.infrastructure.bypass_mounting",
-        "ctmr.application.generation.mask.train -> ctmr.infrastructure.gradient_executors",
-        "ctmr.application.generation.mask.train -> ctmr.infrastructure.maisi_engine.diff_model_setting",
         "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.diff_model_setting",
         "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.inference_primitives",
         "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.instance_definition",

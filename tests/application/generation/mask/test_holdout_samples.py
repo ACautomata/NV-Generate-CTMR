@@ -158,7 +158,9 @@ def test_samples_manifest_entry_shape(tmp_path, monkeypatch):
 
     monkeypatch.setattr("ctmr.application.generation.mask.sample.CandidateSampler", _FakeSampler)
     run_record = {"selection": {"checkpoint": {"path": "/ckpt/epoch_30.pt", "epoch": 30}}}
-    writer = HoldoutSampleWriter(SimpleNamespace(), run_record, raw_root, tmp_path / "out", torch.device("cpu"), print)
+    # engine is carried but never touched here: the writer only hands it to the
+    # (faked) sampler constructor -- the engine's own face is the wiring gate
+    writer = HoldoutSampleWriter(SimpleNamespace(), run_record, raw_root, tmp_path / "out", torch.device("cpu"), print, engine=object())
     entries = writer.write([{"sub": challenge, "case": case}], HoldoutSpacingSource(raw_root, manifest), HoldoutMaskSource(tmp_path, manifest))
 
     assert len(entries) == 1
