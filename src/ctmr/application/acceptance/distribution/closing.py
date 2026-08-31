@@ -24,23 +24,36 @@ from ctmr.application.acceptance.distribution.instrument_training import (
     TrainerContract,
     TrainingProtocol,
 )
-
-# weights_only 白名单已收编到 ADR-0009 的单一 scoped 定义
-# (ctmr.infrastructure.nnunet_runner.nnunet_safe_globals)：load 处 `with` 包裹，
-# import 本模块不再改全局 torch 状态。
-from ctmr.infrastructure.nnunet_runner import nnunet_safe_globals
+from ctmr.domain.checkpoints import InstrumentCheckpointReader
+from ctmr.wiring.distribution import instrument_checkpoint_reader
 
 
 class ClosingVerifier:
-    """逐条重算一个受控 run 的 manifest 证据。"""
+    """逐条重算一个受控 run 的 manifest 证据。
 
-    def __init__(self, challenge: str, raw_root: Path, preprocessed_root: Path, results_root: Path, audit_dir: Path, ssa_exception: bool):
+    checkpoint 元数据的读取经注入的 ``InstrumentCheckpointReader`` 端口
+    (ADR-0019 §3, #275):weights_only 白名单作用域是适配器的保证,本类不触
+    torch 序列化状态。
+    """
+
+    def __init__(
+        self,
+        challenge: str,
+        raw_root: Path,
+        preprocessed_root: Path,
+        results_root: Path,
+        audit_dir: Path,
+        ssa_exception: bool,
+        *,
+        checkpoint_reader: InstrumentCheckpointReader,
+    ):
         self.spec = ChallengeRegistry().get(challenge)
         self.protocol = TrainingProtocol(self.spec, ssa_exception)
         self.dataset = DatasetContract(self.spec, raw_root, preprocessed_root)
         self.results_root = results_root
         self.audit_dir = audit_dir
         self.hasher = ArtifactHasher()
+        self.checkpoint_reader = checkpoint_reader
         self.checks: list[dict] = []
 
     def verify(self) -> dict:
@@ -135,8 +148,7 @@ class ClosingVerifier:
         ok = live_hash == completion["checkpoint_final"]["sha256"]
         self._record("checkpoint_final.hash", ok, f"live {live_hash[:16]}… vs completion {completion['checkpoint_final']['sha256'][:16]}…")
 
-        with nnunet_safe_globals():
-            data = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        data = self.checkpoint_reader.read(checkpoint)
         ok = data.get("current_epoch") == 250
         self._record("checkpoint_final.current_epoch", ok, str(data.get("current_epoch")))
         ok = data.get("trainer_name") == TRAINER_CLASS
@@ -169,6 +181,8 @@ def main() -> int:
     parser.add_argument("--audit-dir", type=Path, required=True)
     parser.add_argument("--ssa-batch16-exception", action="store_true")
     args = parser.parse_args()
+    # 进程级跨层收口(#275):进程入口经组合根装配函数取得真实 reader 适配器;
+    # 库路径只认注入的端口,适配器知识唯一定居于 ctmr.wiring(ADR-0019 §2)。
     verdict = ClosingVerifier(
         args.challenge,
         args.raw_root,
@@ -176,6 +190,7 @@ def main() -> int:
         args.results_root,
         args.audit_dir,
         args.ssa_batch16_exception,
+        checkpoint_reader=instrument_checkpoint_reader(),
     ).verify()
     print(json.dumps(verdict, indent=2, sort_keys=True))
     return 0 if verdict["all_passed"] else 1

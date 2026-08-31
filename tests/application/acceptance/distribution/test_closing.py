@@ -20,6 +20,7 @@ import torch
 
 from ctmr.application.acceptance.distribution import closing as closing_module
 from ctmr.application.acceptance.distribution.instrument_training import TRAINER_CLASS, TRAINER_MODULE
+from ctmr.infrastructure.nnunet_runner import InstrumentCheckpointReader, nnunet_safe_globals
 
 pytestmark = pytest.mark.torch
 
@@ -64,7 +65,7 @@ def tree(tmp_path, monkeypatch):
     fold_dir = results_root / "Dataset503_BraTS2023MEN" / f"{TRAINER_CLASS}__nnUNetPlans__3d_fullres" / "fold_0"
     fold_dir.mkdir(parents=True)
     checkpoint = fold_dir / "checkpoint_final.pth"
-    with closing_module.nnunet_safe_globals():
+    with nnunet_safe_globals():
         torch.save({"current_epoch": 250, "trainer_name": TRAINER_CLASS}, checkpoint)
     log = fold_dir / "training_log_0.txt"
     log.write_text("epoch 248\nEpoch 249 done\n")
@@ -129,7 +130,9 @@ def _base_module_file():
     return Path(sys.modules[nnUNetTrainer.__module__].__file__)
 
 
-def _verifier(tree):
+def _verifier(tree, checkpoint_reader=None):
+    if checkpoint_reader is None:
+        checkpoint_reader = InstrumentCheckpointReader()
     return closing_module.ClosingVerifier(
         CHALLENGE,
         tree["root"] / "brats2023_nnunet",
@@ -137,6 +140,7 @@ def _verifier(tree):
         tree["results_root"],
         tree["audit_dir"],
         False,
+        checkpoint_reader=checkpoint_reader,
     )
 
 
@@ -165,7 +169,7 @@ def test_closing_verdict_is_write_once(tree):
 
 
 def test_drifted_checkpoint_hash_fails_the_gate(tree):
-    with closing_module.nnunet_safe_globals():
+    with nnunet_safe_globals():
         torch.save({"current_epoch": 249, "trainer_name": TRAINER_CLASS}, tree["checkpoint"])  # tampered bytes
     verdict = _verifier(tree).verify()
     checkpoint_checks = [c for c in verdict["checks"] if c["check"].startswith("checkpoint_final")]
@@ -181,3 +185,20 @@ def test_protocol_mismatch_fails_the_gate(tree):
     verdict = _verifier(tree).verify()
     protocol_check = next(c for c in verdict["checks"] if c["check"] == "protocol")
     assert protocol_check["passed"] is False
+
+
+def test_closing_reads_the_checkpoint_through_the_injected_reader(tree):
+    """The checkpoint metadata read is the injected reader port's to answer
+    (#275): the verdict reflects the injected payload, not any module-owned
+    load (the AST half of this pin lives in test_safe_globals_adoption)."""
+
+    class _DriftedReader:
+        def read(self, checkpoint):
+            return {"current_epoch": 249, "trainer_name": "SomeOtherTrainer"}
+
+    verdict = _verifier(tree, checkpoint_reader=_DriftedReader()).verify()
+    epoch_check = next(c for c in verdict["checks"] if c["check"] == "checkpoint_final.current_epoch")
+    trainer_check = next(c for c in verdict["checks"] if c["check"] == "checkpoint_final.trainer_name")
+    assert epoch_check["passed"] is False and "249" in epoch_check["detail"]
+    assert trainer_check["passed"] is False and "SomeOtherTrainer" in trainer_check["detail"]
+    assert verdict["all_passed"] is False

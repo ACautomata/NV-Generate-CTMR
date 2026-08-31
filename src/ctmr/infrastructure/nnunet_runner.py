@@ -31,6 +31,7 @@ skeleton stays importable on any machine (ADR-0015 §3).
 """
 
 import sys
+from pathlib import Path
 
 import numpy
 import torch
@@ -73,6 +74,20 @@ class nnunet_safe_globals:
         if self._previous:
             torch.serialization.add_safe_globals(self._previous)
         return False
+
+
+class InstrumentCheckpointReader:
+    """The domain reader port realized over the scoped safe-globals load (ADR-0019 §3, #275).
+
+    One home for the judge chain's instrument checkpoint reads: the payload is
+    loaded on cpu under ``weights_only=True`` inside the frozen allowlist scope,
+    so the whitelist discipline holds wherever the read happens, not only at
+    the verb surface.
+    """
+
+    def read(self, checkpoint: str | Path) -> dict:
+        with nnunet_safe_globals():
+            return torch.load(checkpoint, map_location="cpu", weights_only=True)
 
 
 class MeasurePredictVerb:
