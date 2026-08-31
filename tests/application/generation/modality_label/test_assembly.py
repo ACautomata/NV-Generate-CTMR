@@ -10,15 +10,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Modality-label family assembly gates (issue #272 / ADR-0019 §2-§3).
+"""Modality-label family assembly gates (issue #272 / ADR-0019 §2-§3; #276 terminal form).
 
 The family entries consume only domain ports; the composition root
 (``ctmr.wiring.generate``) assembles the concrete set: the engine port
 adapter, the distributed session + logger, the gradient executor chosen by
-the amp declaration, and the MONAI-checkpoint archive behind the
-``CheckpointRepository`` load face. One gate scans the three family modules
-for infrastructure imports (the family-level face of the ADR-0019 §1
-direction rule -- the ratchet entries for this family shrink to zero); the
+the amp declaration, the MONAI-checkpoint archive behind the
+``CheckpointRepository`` load face, and the shell-side publication store
+behind the same port's save face (#276). One gate scans the three family
+modules for infrastructure imports (the family-level face of the ADR-0019 §1
+direction rule); the
 assembly behavior runs the real frozen functions behind the injected session
 with only the distributed bootstrap faked (no GPU on this tier).
 """
@@ -33,6 +34,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from ctmr.domain.checkpoints import CheckpointRepository
 from ctmr.domain.engine import GenerationEngine
 from ctmr.wiring.generate import MonaiCheckpointArchive, modality_label_engine, modality_label_train_session
 
@@ -90,7 +92,9 @@ class _FakeSessionEngine:
     def load_config(self, env_config_path, model_config_path, model_def_path):
         if self._order is not None:
             self._order.append("config")
-        return SimpleNamespace(env_config_path=env_config_path)
+        # the shell-side checkpoint repository reads model_dir off the parsed
+        # namespace (a bare string -- the constructor never touches the path)
+        return SimpleNamespace(env_config_path=env_config_path, model_dir="model-dir-under-test")
 
 
 @pytest.mark.parametrize(
@@ -127,6 +131,8 @@ def test_train_session_mounts_the_ports_and_resolves_config_before_the_collectiv
     assert session.device == CPU
     assert session.logger.name == "test-session"  # the Logger port's injected sink
     assert session.merged.env_config_path == "e.json"  # the parsed config rides the session
+    # the shell-side weight store rides the session behind the domain port (#276)
+    assert isinstance(session.checkpoint_repository, CheckpointRepository)
     # the malformed-config failure mode stays pre-collective: config resolution
     # strictly precedes the distributed bootstrap (the pre-migration ordering)
     assert order == ["config", "dist"]

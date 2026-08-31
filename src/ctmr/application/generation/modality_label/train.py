@@ -283,8 +283,6 @@ def main(argv=None):
         kernel=kernel,
         model_dir=merged.model_dir,
         n_epochs=merged.diffusion_unet_train["n_epochs"],
-        amp=args.amp,
-        amp_dtype=args.amp_dtype,
         local_rank=session.local_rank,
         logger=session.logger,
         recipe_check=P1RecipeSpec(merged.diffusion_unet_train, merged.noise_scheduler, session.logger).check,
@@ -300,6 +298,7 @@ def main(argv=None):
             script_path=Path(__file__),
         ),
         gradient_executor=session.gradient_executor,
+        checkpoint_repository=session.checkpoint_repository,
     ).run()
 
 

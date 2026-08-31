@@ -10,7 +10,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-state guard suite (issue #144 / ADR-0015 §9-§10, batch M7; issue #175 / ADR-0016 M4-M5; issue #230 / ADR-0018 gate 5; issue #268 / ADR-0019 §1).
+"""End-state guard suite (issue #144 / ADR-0015 §9-§10, batch M7; issue #175 / ADR-0016 M4-M5; issue #230 / ADR-0018 gate 5; issue #268/#276 / ADR-0019 §1).
 
 Six terminal-state gates pin the post-migration repository shape:
 
@@ -32,9 +32,9 @@ Six terminal-state gates pin the post-migration repository shape:
    tested, green, yet called by nothing; orphan status becomes a declared
    state, never a silent one);
 6. imports between the three layers run only in the ADR-0019 §1 admitted
-   directions; the cross-layer edges frozen alive at guard birth are pinned
-   by a violation ratchet that may only shrink during the B1 migration
-   (issue #268).
+   directions -- application zero infrastructure import, domain zero upper
+   layer, infrastructure zero application -- in pure terminal-state form
+   (issue #276: the B1-migration ratchet reached zero and was dismantled).
 
 Each gate runs two ways: a positive probe over the real repository (must be
 clean) and a negative probe over a synthetic tree (a seeded violation must be
@@ -396,45 +396,18 @@ def test_orphan_gate_detects_a_seeded_orphan(tmp_path):
     assert orphan_modules(tmp_path / "src" / "ctmr") == {"ctmr.orphan_mod"}
 
 
-# Gate 6: the layer-direction guard and its violation ratchet (issue #268 /
-# ADR-0019 §1).  Between the three layers exactly one direction is admitted:
+# Gate 6: the layer-direction guard in pure terminal-state form (issue #268
+# birthed it as a ratchet-guarded gate; issue #276 dismantled the ratchet
+# once the B1 migration drove the frozen 46 edges to zero, per ADR-0019 §1).
+# Between the three layers exactly one direction is admitted:
 # application -> domain (ports), infrastructure -> domain (implementing the
 # ports), every layer -> itself.  Forbidden: application -> infrastructure,
 # domain -> any upper layer (application / wiring / interface),
 # infrastructure -> application.  The composition root (``ctmr.wiring``, the
-# address the frozen edges' construction is being hoisted to) and the tests
-# are exempt by construction -- the scan surface is the package tree only.
-# During the B1 migration the gate runs as a ratchet:
-# FROZEN_VIOLATION_RATCHET pins the application -> infrastructure edges alive
-# at guard birth (2026-08 audit: 46 edges across 21 files, every one
-# application -> infrastructure).  A violation outside the frozen list goes
-# red immediately; an entry that no longer violates is stale and must be
-# removed -- the list may only shrink, never grow (same self-stabilizing
-# pair as the orphan whitelist above).  Migrated so far: the contract
-# pair as the orphan whitelist above).  Migrated so far: the contract
-# (#271, 5 edges), modality-label (#272, 9), mask (#273, 9), cross-modal
-# (#274, 16) and distribution (#275, 4) families.  When the ratchet reaches
-# zero the list is deleted and the gate turns purely terminal-state
-# (issue #10).
-FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
-    {
-        # issue #271 shrank the ratchet by the five contract-family edges:
-        # artifacts/conclude/lifecycle/record/verify -> ctmr.infrastructure.dmsource
-        # left with the family's port migration; #275 shrank it by the four
-        # distribution-family edges (closing / instrument_training ->
-        # nnunet_runner, intensity_domain -> diff_model_setting /
-        # instance_definition) with the reader/engine port migration.
-        # the modality-label (#272), mask (#273) and cross-modal (#274)
-        # families' frozen edges -- nine + nine + sixteen -- shrank to zero
-        # with their port migrations (composition-root assembly, ADR-0019 §2)
-        "ctmr.application.generation.train_loader -> ctmr.infrastructure.dataio.list_assembly",
-        "ctmr.application.shell -> ctmr.infrastructure.checkpoints",
-        "ctmr.application.shell -> ctmr.infrastructure.gradient_executors",
-    }
-)
-
-# The layers above domain -- the targets a domain import is forbidden to
-# reach (ADR-0019 §1: domain -> any upper layer).
+# address the concrete constructions are hoisted to) and the tests are exempt
+# by construction -- the scan surface is the package tree only.  There is no
+# exemption list on the forbidden directions themselves: application carries
+# zero infrastructure import, full stop.
 DOMAIN_UPPER_LAYERS = ("application", "infrastructure", "wiring", "interface")
 
 
@@ -469,9 +442,8 @@ def is_forbidden_direction(source_layer, target_layer):
 def layered_import_violations(package_root):
     """``"source -> target"`` edges in the package tree that break the
     ADR-0019 §1 directions.  The target is spelled as the imported base
-    module exactly as written: a pure respelling of an unchanged edge reads
-    as one stale ratchet entry plus one fresh violation and is resolved by
-    the only-shrink rule, never silently."""
+    module exactly as written, so a violation report names the offending
+    import verbatim."""
     violations = set()
     for path in sorted(package_root.rglob("*.py")):
         rel = path.relative_to(package_root.parent).with_suffix("")
@@ -489,14 +461,11 @@ def layered_import_violations(package_root):
     return violations
 
 
-def test_layered_imports_stay_within_the_frozen_ratchet():
-    fresh = layered_import_violations(PACKAGE_ROOT) - FROZEN_VIOLATION_RATCHET
-    assert not fresh, f"new layer-direction violations outside the frozen ratchet: {sorted(fresh)}"
-
-
-def test_ratchet_entries_are_current_violations():
-    stale = FROZEN_VIOLATION_RATCHET - layered_import_violations(PACKAGE_ROOT)
-    assert not stale, f"ratchet entries that no longer violate (shrink the ratchet): {sorted(stale)}"
+def test_layered_imports_stay_within_the_admitted_directions():
+    """The terminal-state probe (#276): zero violations, no ratchet, no
+    exemptions -- application carries zero infrastructure import."""
+    violations = layered_import_violations(PACKAGE_ROOT)
+    assert not violations, f"layer-direction violations outside the ADR-0019 §1 admitted set: {sorted(violations)}"
 
 
 def test_layer_gate_detects_seeded_violations_and_admits_the_legal_directions(tmp_path):
@@ -539,6 +508,5 @@ def test_layer_gate_detects_seeded_violations_and_admits_the_legal_directions(tm
         "ctmr.domain.entity -> ctmr.wiring",
         "ctmr.infrastructure.ledger -> ctmr.application.shell",
     }
-    # and every seed sits outside the frozen ratchet: growth of exactly this
-    # shape is what turns the real-repository probe red
-    assert seeded - FROZEN_VIOLATION_RATCHET == seeded
+    # terminal-state form (#276): every seeded violation is a real one -- no
+    # frozen list stands between the gate and the red

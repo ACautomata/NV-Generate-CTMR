@@ -9,14 +9,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Behaviour gates for the phase training shell (ADR-0011, #111).
+"""Behaviour gates for the phase training shell (ADR-0011, #111; terminal form #276).
 
 A fake ``PhaseTrainKernel`` drives ``PhaseHarness`` through the mechanical
 sequence the shell owns (epoch loop, early-stop file polling at epoch
 boundaries and mid-epoch, optimizer steps, atomic checkpoint publication +
 latest.json, rank-0 gating) and the provenance writer's field sets are pinned
-against the pre-#111 per-stage snapshots. Torch-level: runs on CPU in the CI
-full-dependency tier, which installs torch (ADR-0015 §6).
+against the pre-#111 per-stage snapshots. Since #276 (ADR-0019 §1 terminal
+state) the shell constructs nothing itself: the gradient executor and the
+checkpoint repository ride in as injected collaborators (the tests inject the
+real adapters -- tests are exempt from the layer rule). Torch-level: runs on
+CPU in the CI full-dependency tier, which installs torch (ADR-0015 §6).
 """
 
 import json
@@ -27,6 +30,7 @@ import pytest
 import torch
 
 from ctmr.application.shell import STOP_FILE, PhaseHarness, TrainContext, TrainProvenanceWriter
+from ctmr.infrastructure.checkpoints import CheckpointRepository
 from ctmr.infrastructure.gradient_executors import PlainGradientExecutor
 
 # The pre-#111 provenance writer field sets, verbatim (do not edit -- the
@@ -123,13 +127,12 @@ def _build_harness(kernel, tmp_path, n_epochs=2, local_rank=0, recipe_check=None
         kernel=kernel,
         model_dir=tmp_path,
         n_epochs=n_epochs,
-        amp=False,
-        amp_dtype="bf16",
         local_rank=local_rank,
         logger=logging.getLogger("test-harness"),
         recipe_check=recipe_check,
         provenance=provenance,
-        gradient_executor=gradient_executor,
+        gradient_executor=gradient_executor if gradient_executor is not None else PlainGradientExecutor(),
+        checkpoint_repository=CheckpointRepository(tmp_path),
     )
 
 
@@ -183,18 +186,28 @@ def test_migrated_kernel_drives_batches_through_the_injected_executor(tmp_path):
     assert (tmp_path / "epoch_2.pt").is_file()  # checkpoint publication unchanged
 
 
-def test_migrated_kernel_without_an_injected_executor_refuses_early(tmp_path):
+def test_missing_collaborators_are_refused_at_construction(tmp_path):
     # The injection guard fires at construction (before any checkpoint loading
-    # or first batch), never only when the cluster reaches epoch 1.
+    # or first batch), never only when the cluster reaches epoch 1. Both
+    # collaborators are terminal-state mandatory (#276): the shell no longer
+    # defaults the precision strategy or builds the weight store itself.
     with pytest.raises(ValueError, match="no gradient_executor was injected"):
         PhaseHarness(
             kernel=MigratedSpyKernel(n_batches=1),
             model_dir=tmp_path,
             n_epochs=1,
-            amp=False,
-            amp_dtype="bf16",
             local_rank=0,
             logger=logging.getLogger("test-harness"),
+            checkpoint_repository=CheckpointRepository(tmp_path),
+        )
+    with pytest.raises(ValueError, match="no checkpoint_repository was injected"):
+        PhaseHarness(
+            kernel=MigratedSpyKernel(n_batches=1),
+            model_dir=tmp_path,
+            n_epochs=1,
+            local_rank=0,
+            logger=logging.getLogger("test-harness"),
+            gradient_executor=PlainGradientExecutor(),
         )
 
 
