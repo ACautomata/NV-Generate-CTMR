@@ -32,7 +32,9 @@ diagnostic, never an acceptance verdict); the sugon host recipe that chains
 sample → report is ``deploy/jobs/run_token_dilution_d.sh``. Per ADR-0016 the
 denoising loop runs on the domain ``DiffusionModel`` through the sidecar's
 ``CandidateSampler`` (composition -- the sampler's model loading and
-per-sample rules are reused verbatim, no recipe value re-decided here).
+per-sample rules are reused verbatim, no recipe value re-decided here); per
+ADR-0019 §2-§3 (#272) the engine face rides the port the composition root
+assembles (``ctmr.wiring.generate``).
 
 Usage (sugon, one DCU; VAE path comes from the env json's
 trained_autoencoder_path, resolvable from the working directory):
@@ -59,7 +61,7 @@ from ctmr.application.acceptance.distribution.token_dilution import (
 )
 from ctmr.application.generation.modality_label.monitor import CandidateSampler, CohortSpacingSource
 from ctmr.application.generation.trend import DevCohortBuilder
-from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
+from ctmr.wiring.generate import modality_label_engine
 
 # The frozen sampling recipe values (dev-sidecar convention): cfg=10 with 30
 # RF steps. Not knobs -- pinned literals matching what the candidate's
@@ -77,8 +79,8 @@ class TokenSwapSampler:
     adds only the token-swap loop and the diagnostic filename family.
     """
 
-    def __init__(self, args, device):
-        self._sampler = CandidateSampler(args, device, None)
+    def __init__(self, args, device, engine):
+        self._sampler = CandidateSampler(args, device, None, engine)
         self._device = device
 
     def sample_cohort(self, checkpoint_path, cohort, spacings, out_dir) -> int:
@@ -113,7 +115,8 @@ def main(argv=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[job-d] device={device}; variant=diagnostic -- 冻结 checkpoint 只读,不产生任何验收判定", flush=True)
 
-    merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    engine = modality_label_engine()  # the composition root's engine assembly (ADR-0019 §2)
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.cfg_guidance_scale = TOKEN_SWAP_CFG
     merged.diffusion_unet_inference = (
         merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": TOKEN_SWAP_STEPS}
@@ -124,7 +127,7 @@ def main(argv=None):
     samples_dir.mkdir(parents=True, exist_ok=True)
     (samples_dir / "cohort.json").write_text(json.dumps({"cohort": cohort, "seed_anchor": "sha256(case|t1c), 五臂共用"}, indent=1) + "\n")
     spacings = CohortSpacingSource(args.dev_list, args.emb_root)
-    written = TokenSwapSampler(merged, device).sample_cohort(args.ckpt, cohort, spacings, samples_dir)
+    written = TokenSwapSampler(merged, device, engine).sample_cohort(args.ckpt, cohort, spacings, samples_dir)
     print(f"[job-d] {len(cohort)} cases x {len(ARM_ORDER)} arms; written {written} new volumes -> {samples_dir}", flush=True)
     return 0
 

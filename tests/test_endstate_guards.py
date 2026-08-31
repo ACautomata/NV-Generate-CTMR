@@ -448,15 +448,8 @@ FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
         "ctmr.application.generation.mask.train -> ctmr.infrastructure.bypass_mounting",
         "ctmr.application.generation.mask.train -> ctmr.infrastructure.gradient_executors",
         "ctmr.application.generation.mask.train -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.inference_primitives",
-        "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.instance_definition",
-        "ctmr.application.generation.modality_label.monitor -> ctmr.infrastructure.maisi_engine.utils_infer",
-        "ctmr.application.generation.modality_label.token_swap_sampling -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.modality_label.train -> ctmr.infrastructure.bypass_mounting",
-        "ctmr.application.generation.modality_label.train -> ctmr.infrastructure.gradient_executors",
-        "ctmr.application.generation.modality_label.train -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.modality_label.train -> ctmr.infrastructure.maisi_engine.instance_definition",
+        # the modality-label family's nine frozen edges shrank to zero with
+        # issue #272 (port injection, composition-root assembly, ADR-0019 §2)
         "ctmr.application.generation.train_loader -> ctmr.infrastructure.dataio.list_assembly",
         "ctmr.application.shell -> ctmr.infrastructure.checkpoints",
         "ctmr.application.shell -> ctmr.infrastructure.gradient_executors",

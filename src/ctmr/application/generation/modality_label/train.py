@@ -35,8 +35,12 @@ Migrated from the retired modality-label finetune script entry (ticket 10,
 ADR-0015 §2): the domain kernel (``TrainKernel``) rides the shared
 ``PhaseHarness`` shell; per ADR-0016 the single-batch training math is the
 domain ``DiffusionModel.train_step`` and the runtime precision strategy is
-injected by the application as a ``GradientExecutor``. The CLI face is
-unchanged.
+injected as a ``GradientExecutor`` -- the concrete executor chosen by the
+composition root (ADR-0019 §2, replacing ADR-0016's "injected by
+application"). Since #272 the family consumes only domain ports (engine
+loading, checkpoint repository, logger): the composition root
+(``ctmr.wiring.generate``) assembles the concrete set, and this entry -- the
+torchrun worker face -- reuses that one assembly. The CLI face is unchanged.
 
 Usage (CLI, torchrun spawn is derived by the ctmr launcher):
     ctmr generate modality-label train -e run/environment.json -c configs/config_brats_p1_train.json \
@@ -60,13 +64,12 @@ from torch.nn.parallel import DistributedDataParallel
 
 from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWriter
 from ctmr.application.train_cli import TrainCli
+from ctmr.domain.checkpoints import CheckpointRepository
+from ctmr.domain.engine import GenerationEngine
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.generation.objective import ModalityLabelPerturber
 from ctmr.domain.recipe import P1RecipeSpec
-from ctmr.infrastructure.bypass_mounting import MonaiCheckpoint
-from ctmr.infrastructure.gradient_executors import Bf16GradientExecutor, Fp16GradientExecutor, PlainGradientExecutor
-from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
-from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
+from ctmr.wiring.generate import modality_label_train_session
 
 SCALE_FACTOR_RELATIVE_TOLERANCE = 0.5  # issue #10 §7: sanity assert, not a re-pin
 
@@ -142,14 +145,18 @@ class TrainKernel:
     The single-batch training math (modality perturbation, RF timesteps, noise,
     L1 against the velocity target, one parameter update) is the domain
     ``DiffusionModel.train_step``; the shell injects the runtime precision
-    strategy via ``GradientExecutor`` (ADR-0016).
+    strategy via ``GradientExecutor`` (ADR-0016). The engine face and the base
+    checkpoint store arrive as domain ports, injected by the composition root
+    (ADR-0019 §2-§3, #272).
     """
 
-    def __init__(self, args, device, logger, local_rank):
+    def __init__(self, args, device, logger, local_rank, engine: GenerationEngine, base_checkpoints: CheckpointRepository):
         self._args = args
         self._device = device
         self._logger = logger
         self._local_rank = local_rank
+        self._engine = engine
+        self._base_checkpoints = base_checkpoints
         self._unet = None
         self._model = None
 
@@ -185,13 +192,13 @@ class TrainKernel:
 
     def load_unet(self):
         args = self._args
-        unet = define_instance(args, "diffusion_unet_def").to(self._device)
+        unet = self._engine.define_instance(args, "diffusion_unet_def").to(self._device)
         unet = torch.nn.SyncBatchNorm.convert_sync_batchnorm(unet)
         if dist.is_initialized():
             unet = DistributedDataParallel(unet, device_ids=[self._device], find_unused_parameters=True)
-        # The allowlisted weights_only load of the base checkpoint (the one
-        # safe_globals point shared with the P2/P3 DM-source hook-up).
-        checkpoint = MonaiCheckpoint(args.existing_ckpt_filepath, self._device).load()
+        # The base checkpoint fetch rides the injected CheckpointRepository load
+        # face (the MONAI-meta-tensor allowlist is the archive adapter's affair).
+        checkpoint = self._base_checkpoints.load(args.existing_ckpt_filepath)
         target = unet.module if dist.is_initialized() else unet
         state = target.load_state_dict(checkpoint["unet_state_dict"], strict=False)
         if state.missing_keys:
@@ -204,7 +211,7 @@ class TrainKernel:
     def load_models(self, loader):
         args = self._args
         unet, scale_policy = self.load_unet()
-        noise_scheduler = define_instance(args, "noise_scheduler")
+        noise_scheduler = self._engine.define_instance(args, "noise_scheduler")
 
         with open(args.modality_mapping_path) as handle:
             args.modality_mapping = json.load(handle)
@@ -255,7 +262,12 @@ class TrainKernel:
 def main(argv=None):
     args = TrainCli(__doc__, stage="p1").parse(argv)
 
-    merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    # The composition root's one assembly (ADR-0019 §2): distributed session,
+    # logger, engine port, gradient executor, base-checkpoint archive. This
+    # entry is the torchrun worker face, so it reuses that assembly here.
+    session = modality_label_train_session(args)
+
+    merged = session.engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.replay_list = args.replay_list
     merged.amp = args.amp
     merged.amp_dtype = args.amp_dtype
@@ -263,30 +275,20 @@ def main(argv=None):
     merged.model_config_path = args.model_config_path
     merged.model_def_path = args.model_def_path
 
-    local_rank, _world, device = initialize_distributed(args.num_gpus)
-    logger = setup_logging("modality-label-finetune")
-    kernel = TrainKernel(merged, device, logger, local_rank)
-    # The application injects the runtime precision strategy (ADR-0016): fp16
-    # (scaler), bf16 (DCU default) or non-AMP plain execution.
-    if args.amp and args.amp_dtype == "fp16":
-        gradient_executor = Fp16GradientExecutor()
-    elif args.amp:
-        gradient_executor = Bf16GradientExecutor()
-    else:
-        gradient_executor = PlainGradientExecutor()
+    kernel = TrainKernel(merged, session.device, session.logger, session.local_rank, session.engine, session.base_checkpoints)
     return PhaseHarness(
         kernel=kernel,
         model_dir=merged.model_dir,
         n_epochs=merged.diffusion_unet_train["n_epochs"],
         amp=args.amp,
         amp_dtype=args.amp_dtype,
-        local_rank=local_rank,
-        logger=logger,
-        recipe_check=P1RecipeSpec(merged.diffusion_unet_train, merged.noise_scheduler, logger).check,
+        local_rank=session.local_rank,
+        logger=session.logger,
+        recipe_check=P1RecipeSpec(merged.diffusion_unet_train, merged.noise_scheduler, session.logger).check,
         provenance=TrainProvenanceWriter(
             merged,
-            local_rank,
-            logger,
+            session.local_rank,
+            session.logger,
             domain_fields=lambda: {
                 "data_lists": {"brats_train": merged.json_data_list, "replay": list(merged.replay_list)},
                 "base_ckpt": merged.existing_ckpt_filepath,
@@ -294,7 +296,7 @@ def main(argv=None):
             },
             script_path=Path(__file__),
         ),
-        gradient_executor=gradient_executor,
+        gradient_executor=session.gradient_executor,
     ).run()
 
 

@@ -41,7 +41,8 @@ def _kernel_args(noise_timesteps=1000):
 
 
 def test_p1_payload_key_set_is_kept():
-    kernel = ModalityLabelTrainKernel(_kernel_args(), device=None, logger=None, local_rank=0)
+    # payload schema only: the injected ports (engine, base_checkpoints) stay unused here
+    kernel = ModalityLabelTrainKernel(_kernel_args(), device=None, logger=None, local_rank=0, engine=None, base_checkpoints=None)
     kernel._unet = FakeStateModule()
     payload = kernel.checkpoint_payload(3, 0.25, 1.0)
     assert list(payload) == P1_PAYLOAD_KEYS
