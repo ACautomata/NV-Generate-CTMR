@@ -49,6 +49,7 @@
 ### 6. 早停时序修复
 
 - 早停 mid-epoch 路径跨 rank 统一收尾（barrier 或等价机制），消除 rank 到达时序不同导致的 all_reduce 挂起/报错。
+- 落地机制（#277）：本地轮询（epoch 前 + 每 batch 边界）只置 sticky 标志；epoch 前与 epoch 尾各一次 MAX all_reduce 共识——epoch 前共识令全 rank 一致空过该 epoch（0 batch），epoch 尾共识令全 rank 一致跳过 loss all_reduce 与 checkpoint 发布、`run` 一致 break。检测到早停的 rank 不提前离开 batch 流、照常跑完 epoch 余批：生产内核的 DDP 包装 trainable 每 batch 发一组梯度集合，提前离开会使余批梯度集合与共识集合错位配对；共识的 rendezvous 性质同时对齐每 epoch 的集合流，吸收批内漂移。
 
 ### 7. VAE 复活与 DDP
 

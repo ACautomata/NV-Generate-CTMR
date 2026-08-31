@@ -229,10 +229,11 @@ def test_early_stop_file_halts_mid_epoch_without_that_checkpoint(tmp_path):
 
     kernel = SpyKernel(n_batches=4, on_train_batch=_write_stop)
     _build_harness(kernel, tmp_path, n_epochs=2).run()
-    # epoch 1 完整发布(4 batch);epoch 2 的 batch 0 即中断,无 epoch_2 发布
+    # epoch 1 完整发布(4 batch);epoch 2 检测到早停后照跑至尾(跨 rank 集合流
+    # 对齐要求检测 rank 不提前离开 batch 流,ADR-0019 §6),但不发布 epoch_2
     assert (tmp_path / "epoch_1.pt").is_file()
     assert not (tmp_path / "epoch_2.pt").exists()
-    assert len([c for c in kernel.calls if c[0] == "train_batch"]) == 5
+    assert len([c for c in kernel.calls if c[0] == "train_batch"]) == 8
 
 
 def test_recipe_check_runs_first_on_rank0(tmp_path):
