@@ -87,7 +87,8 @@ def test_p1_accepts_the_pinned_config():
     logger = _QuietLogger()
     spec = P1RecipeSpec(dict(P1_TRAIN_CONFIG["diffusion_unet_train"]), dict(RFLOW_NETWORK["noise_scheduler"]), logger)
     assert spec.check() is True
-    assert "P1 recipe guard OK: lr=2e-06 batch=1 epochs<=100 rflow uniform scale=1.4" in logger.messages
+    assert "P1 recipe guard OK: lr=2e-06 batch=1 epochs<=100 rflow uniform scale=1.4" in logger.messages[0]
+    assert "frozen_modality_tokens=[34]" in logger.messages[0]  # the committed recipe freezes t1c (issue #250)
 
 
 @pytest.mark.parametrize(
@@ -103,6 +104,24 @@ def test_p1_deviation_raises(field, value, message):
     config[field] = value
     with pytest.raises(ValueError, match=re.escape(message)):
         P1RecipeSpec(config, dict(RFLOW_NETWORK["noise_scheduler"]), _QuietLogger()).check()
+
+
+@pytest.mark.parametrize("freeze", ["34", [34.0], [True], 34, [34, "30"]], ids=["str", "float", "bool", "bare-int", "mixed"])
+def test_p1_malformed_freeze_raises(freeze):
+    """The freeze key is recipe-reachable: a malformed value fails the launch, not the training (issue #250)."""
+    config = dict(P1_TRAIN_CONFIG["diffusion_unet_train"])
+    config["frozen_modality_tokens"] = freeze
+    with pytest.raises(ValueError, match=re.escape("P1 frozen_modality_tokens must be a list of ints")):
+        P1RecipeSpec(config, dict(RFLOW_NETWORK["noise_scheduler"]), _QuietLogger()).check()
+
+
+def test_p1_freeze_absent_keeps_the_historical_guard_line():
+    """A config without the freeze key guards identically to the pre-#250 line (no suffix)."""
+    config = dict(P1_TRAIN_CONFIG["diffusion_unet_train"])
+    del config["frozen_modality_tokens"]
+    logger = _QuietLogger()
+    assert P1RecipeSpec(config, dict(RFLOW_NETWORK["noise_scheduler"]), logger).check() is True
+    assert logger.messages[0].endswith("scale=1.4")
 
 
 @pytest.mark.parametrize(

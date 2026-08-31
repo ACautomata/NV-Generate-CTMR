@@ -97,9 +97,15 @@ class P1RecipeSpec:
             )
         if self._scheduler.get("scale") != self.PINNED_RF_SCALE:
             raise ValueError(f"pinned P1 noise_scheduler.scale is {self.PINNED_RF_SCALE}, got {self._scheduler.get('scale')} (ADR-0005)")
+        freeze = cfg.get("frozen_modality_tokens")
+        if freeze is not None and (
+            not isinstance(freeze, list) or not all(isinstance(token, int) and not isinstance(token, bool) for token in freeze)
+        ):
+            raise ValueError(f"P1 frozen_modality_tokens must be a list of ints, got {freeze!r} (issue #250)")
         self._logger.info(
             f"P1 recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} "
             f"epochs<={self.MAX_EPOCHS} rflow {self.PINNED_SAMPLE_METHOD} scale={self.PINNED_RF_SCALE}"
+            + (f" frozen_modality_tokens={freeze}" if freeze is not None else "")
         )
         return True
 

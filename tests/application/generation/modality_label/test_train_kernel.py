@@ -204,6 +204,23 @@ def test_full_continuation_load_rejects_an_incompatible_checkpoint(tmp_path):
         kernel.load_models(loader)
 
 
+def test_load_models_wires_the_config_freeze_into_the_perturber(tmp_path):
+    """The optional ``frozen_modality_tokens`` key reaches the domain perturber (issue #250)."""
+    args = _fixture(tmp_path)
+    args.diffusion_unet_train["frozen_modality_tokens"] = [34]
+    kernel = _kernel(args)
+    kernel.load_models(kernel.build_loader())
+    assert kernel._model._perturber.frozen_tokens == (34,)
+    assert kernel._model._perturber.prob == pytest.approx(0.1)  # the pinned prob is untouched by the freeze
+
+
+def test_load_models_without_the_freeze_key_keeps_the_historical_perturber(tmp_path):
+    """A config without the key is the historical semantics: no freeze, pinned prob (issue #250)."""
+    kernel, _loader, _ctx = _loaded_kernel(tmp_path)
+    assert kernel._model._perturber.frozen_tokens == ()
+    assert kernel._model._perturber.prob == pytest.approx(0.1)
+
+
 def test_train_batch_executes_a_closed_training_step_with_the_production_rflow_shape(tmp_path):
     kernel, _loader, ctx = _loaded_kernel(tmp_path)
     batch = {

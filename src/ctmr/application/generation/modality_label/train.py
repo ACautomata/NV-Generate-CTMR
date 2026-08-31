@@ -15,8 +15,8 @@
 Full-parameter DM continuation of the frozen rflow-mr-brain v1 checkpoint with
 the VAE untouched, pinned hyperparameters (lr=2e-6, batch=1, <=100 epochs,
 Rectified Flow uniform timestep scale 1.4, PolynomialLR power 2.0, L1 loss,
-augment_modality_label prob 0.1) and the BraTS : MR-RATE 1:1 replay mix
-(spec #51 / issue #10 resolution).
+augment_modality_label prob 0.1, config-driven token freeze) and the BraTS :
+MR-RATE 1:1 replay mix (spec #51 / issue #10 resolution).
 
 Deltas against the retired vendored upstream training driver
 (``diff_model_train.py``, git history; deleted with issue #175), all pinned:
@@ -232,11 +232,14 @@ class TrainKernel:
         # the RF scheduler shape and the Adam + PolynomialLR session members.
         # The shell's TrainContext keeps the same handles for checkpoint scale
         # payloads and the shared (single) optimizer/scheduler instances.
+        # The perturber freeze is config-driven (issue #250): the optional
+        # ``frozen_modality_tokens`` key keeps those tokens at P(keep)=1, an
+        # absent key is the historical augmentation bit for bit.
         self._model = DiffusionModel(
             unet=unet,
             scale_factor=scale_factor,
             noise_scheduler=noise_scheduler,
-            perturber=ModalityLabelPerturber(),
+            perturber=ModalityLabelPerturber(frozen_tokens=args.diffusion_unet_train.get("frozen_modality_tokens", [])),
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
         )

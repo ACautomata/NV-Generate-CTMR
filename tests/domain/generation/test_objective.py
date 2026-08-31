@@ -16,7 +16,10 @@ The perturbation semantics must stay the P1-pinned recipe (augment prob 0.1,
 CT members → 1, MR members → 8, prob-decided zeroing) and numerically match
 the retired vendored ``augment_modality_label`` the migrated P1 entry used
 (deleted with issue #175, ADR-0016 M4; embedded verbatim below as the parity
-reference).  ``VaeObjective`` is the single domain definition of the
+reference).  The series-② rectification adds the config-driven per-token
+freeze (issue #250): explicit ``frozen_tokens`` keep P(retain)=1 while every
+other token stays bit-for-bit the pre-freeze augmentation under a fixed seed.
+``VaeObjective`` is the single domain definition of the
 repo-owned VAE KL and generator loss aggregation: its math must reproduce,
 bit for bit, the retired ``ctmr.domain.losses.kl_loss`` (itself extracted from
 the retired ``utils.KL_loss``) and ``ctmr.application.vae_train.loss_weighted_sum``
@@ -106,6 +109,74 @@ def test_keeps_shape_and_element_dtype():
     out = ModalityLabelPerturber()(base.clone())
     assert out.shape == base.shape
     assert out.dtype == base.dtype
+
+
+# ---------------------------------------------------------------------------
+# Token 34 freeze (issue #250, series-② T3): the config-driven freeze
+# semantics. t1c (34) must keep P(retain)=1 -- no →8 relabel, no zeroing --
+# while every other token's augmentation stays bit-for-bit the pre-freeze
+# behaviour under the same seed (the seam: fixed-seed external behaviour).
+# ---------------------------------------------------------------------------
+
+T1C_TOKEN = 34
+
+
+def test_default_perturber_carries_no_freeze():
+    """No freeze configured -- the historical augmentation semantics stay the default."""
+    assert ModalityLabelPerturber().frozen_tokens == ()
+
+
+def test_empty_freeze_config_reproduces_the_retired_augmentation_bit_for_bit():
+    """An explicitly empty freeze list is the historical semantics too: seed-replayed parity."""
+    base = torch.tensor([[[[0.0, 1.0, 2.0, 3.0, 5.0, 7.0, 8.0, 9.0, 12.0, 13.0, 20.0]]]])
+    torch.manual_seed(11)
+    legacy = _legacy_augment_modality_label(base.clone(), prob=PINNED_PROB)
+    torch.manual_seed(11)
+    configured = ModalityLabelPerturber(frozen_tokens=[])(base.clone())
+    assert torch.equal(configured, legacy)
+
+
+def test_frozen_token_34_is_never_perturbed():
+    """Freeze semantics: under fixed seeds the t1c elements keep 34 -- no →8, no →0."""
+    base = torch.tensor([[[[9.0, 13.0, 34.0, 8.0, 34.0, 29.0]]]])
+    for seed in range(12):
+        torch.manual_seed(seed)
+        out = ModalityLabelPerturber(frozen_tokens=[T1C_TOKEN])(base.clone())
+        assert torch.equal(out[base == T1C_TOKEN], base[base == T1C_TOKEN]), f"seed {seed}"
+
+
+def test_frozen_token_survives_even_the_full_zeroing_mask():
+    """P(retain)=1 exactly: at prob=1 the legacy chain relabels and zeroes every
+    element, the freeze keeps 34 while its neighbours go down the legacy path."""
+    base = torch.tensor([[[[34.0, 9.0, 3.0]]]])
+    torch.manual_seed(5)
+    out = ModalityLabelPerturber(prob=1.0, frozen_tokens=[T1C_TOKEN])(base.clone())
+    assert float(out[0, 0, 0, 0]) == T1C_TOKEN
+    assert torch.all(out[0, 0, 0, 1:] == 0.0)
+
+
+def test_freeze_leaves_every_other_token_bit_identical_seed_replayed():
+    """The freeze moves nothing but token 34: same seed, the non-34 outcome equals the
+    pre-freeze augmentation bit for bit (the other tokens keep their augmentation)."""
+    base = torch.tensor([[[[0.0, 1.0, 2.0, 3.0, 5.0, 7.0, 8.0, 9.0, 12.0, 13.0, 20.0, 29.0, 30.0, 31.0, 34.0, 34.0]]]])
+    others = base != T1C_TOKEN
+    for seed in range(12):
+        torch.manual_seed(seed)
+        unfrozen = ModalityLabelPerturber()(base.clone())
+        torch.manual_seed(seed)
+        frozen = ModalityLabelPerturber(frozen_tokens=[T1C_TOKEN])(base.clone())
+        assert torch.equal(frozen[others], unfrozen[others]), f"seed {seed}"
+        assert torch.equal(frozen[~others], base[~others]), f"seed {seed}"
+
+
+def test_freeze_holds_on_the_long_training_dtype():
+    """The loader hands long tensors over (EnsureTyped dtype=long); the freeze holds there too."""
+    base = torch.tensor([[[[29, 30, 31, 34, 34, 8]]]], dtype=torch.long)
+    for seed in range(12):
+        torch.manual_seed(seed)
+        out = ModalityLabelPerturber(frozen_tokens=[T1C_TOKEN])(base.clone())
+        assert torch.equal(out[base == T1C_TOKEN], base[base == T1C_TOKEN]), f"seed {seed}"
+    assert out.dtype == torch.long
 
 
 # ---------------------------------------------------------------------------
