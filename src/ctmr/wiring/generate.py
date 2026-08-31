@@ -39,8 +39,19 @@ from __future__ import annotations
 import importlib
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ctmr.application.generation.launcher import TorchrunLauncher, num_gpus_of
+
+if TYPE_CHECKING:
+    from argparse import Namespace
+
+    import torch
+
+    from ctmr.domain.checkpoints import CheckpointRepository
+    from ctmr.domain.engine import GenerationEngine
+    from ctmr.domain.generation import GradientExecutor
+    from ctmr.domain.logging import Logger
 
 
 class TrainDispatch:
@@ -64,14 +75,18 @@ class TrainDispatch:
 @dataclass
 class ModalityLabelTrainSession:
     """The assembled modality-label train runtime (ADR-0019 §2, #272): the
-    port set the family entry consumes, constructed nowhere else."""
+    port set the family entry consumes, constructed nowhere else. ``merged``
+    is the parsed config namespace -- resolution happens inside the assembly,
+    before the distributed group forms, so a bad config fails on every rank
+    ahead of any collective (the pre-migration ordering)."""
 
     local_rank: int
-    device: object  # torch.device (annotation-only: the module stays stdlib-light)
-    logger: object  # the domain Logger port's sink
-    engine: object  # the domain GenerationEngine port adapter
-    gradient_executor: object  # the domain GradientExecutor strategy
-    base_checkpoints: object  # the domain CheckpointRepository load face
+    device: torch.device
+    logger: Logger
+    engine: GenerationEngine
+    gradient_executor: GradientExecutor
+    base_checkpoints: CheckpointRepository
+    merged: Namespace
 
 
 class MonaiCheckpointArchive:
@@ -95,10 +110,14 @@ def modality_label_engine():
     return importlib.import_module("ctmr.infrastructure.engine").MaisiEngine()
 
 
-def modality_label_train_session(args):
-    """The modality-label train assembly (ADR-0019 §2, #272): the distributed
-    session bootstrap, the logger, the engine port, the gradient executor
-    chosen by the amp declaration, and the base-checkpoint archive."""
+def modality_label_train_session(args, engine=None):
+    """The modality-label train assembly (ADR-0019 §2, #272): the config
+    resolution (strictly before the distributed bootstrap -- a malformed
+    config must fail on every rank ahead of any collective), the session
+    bootstrap, the logger, the gradient executor chosen by the amp
+    declaration, and the base-checkpoint archive."""
+    engine = engine if engine is not None else modality_label_engine()
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     setting = importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting")
     executors = importlib.import_module("ctmr.infrastructure.gradient_executors")
     local_rank, _world, device = setting.initialize_distributed(args.num_gpus)
@@ -112,7 +131,8 @@ def modality_label_train_session(args):
         local_rank=local_rank,
         device=device,
         logger=setting.setup_logging("modality-label-finetune"),
-        engine=modality_label_engine(),
+        engine=engine,
         gradient_executor=gradient_executor,
         base_checkpoints=MonaiCheckpointArchive(device),
+        merged=merged,
     )

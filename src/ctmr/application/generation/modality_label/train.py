@@ -262,12 +262,12 @@ class TrainKernel:
 def main(argv=None):
     args = TrainCli(__doc__, stage="p1").parse(argv)
 
-    # The composition root's one assembly (ADR-0019 §2): distributed session,
-    # logger, engine port, gradient executor, base-checkpoint archive. This
-    # entry is the torchrun worker face, so it reuses that assembly here.
+    # The composition root's one assembly (ADR-0019 §2): config resolution
+    # (before the distributed group forms), session bootstrap, logger, engine
+    # port, gradient executor, base-checkpoint archive. This entry is the
+    # torchrun worker face, so it reuses that assembly here.
     session = modality_label_train_session(args)
-
-    merged = session.engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    merged = session.merged
     merged.replay_list = args.replay_list
     merged.amp = args.amp
     merged.amp_dtype = args.amp_dtype
