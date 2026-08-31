@@ -49,7 +49,6 @@ import sys
 from pathlib import Path
 
 import nibabel as nib
-import numpy as np
 import torch
 
 from ctmr.application.acceptance.distribution.token_dilution import (
@@ -59,6 +58,7 @@ from ctmr.application.acceptance.distribution.token_dilution import (
 )
 from ctmr.application.generation.modality_label.monitor import CandidateSampler, CohortSpacingSource
 from ctmr.application.generation.trend import DevCohortBuilder
+from ctmr.domain.dm_output_grid import V1_DM_OUTPUT_GRID
 from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
 
 # The frozen sampling recipe values (dev-sidecar convention): cfg=10 with 30
@@ -94,7 +94,9 @@ class TokenSwapSampler:
                     continue
                 data = self._sampler.sample_one(model, recon, TOKEN_ARMS[arm], spacing, seed)
                 out.parent.mkdir(parents=True, exist_ok=True)
-                nib.save(nib.Nifti1Image(data, affine=np.diag([1.0, 1.0, 1.0, 1.0])), out)
+                # Ruling #6: the diagnostic products declare the v1 DM's real sampling
+                # spacing too -- the same write protocol as the sidecar (issue #249).
+                nib.save(nib.Nifti1Image(data, affine=V1_DM_OUTPUT_GRID.affine()), out)
                 written += 1
                 print(f"[sample] {case} {arm} (token {TOKEN_ARMS[arm]}, seed {seed}) -> {out.name}", flush=True)
         return written
