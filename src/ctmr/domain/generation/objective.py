@@ -14,7 +14,9 @@
 
 ``ModalityLabelPerturber`` is the unique domain definition of the modality
 label augmentation the P1 continuation applies (pinned prob 0.1, CT members →
-1, MR members → 8, prob-decided zeroing) (issue #170).  ``VaeObjective`` is
+1, MR members → 8, prob-decided zeroing) (issue #170), with the config-driven
+per-token freeze the series-② rectification adds (token 34 P(keep)=1, issue
+#250).  ``VaeObjective`` is
 the single domain definition of the repo-owned VAE Kullback-Leibler and
 generator loss aggregation, consolidating the retired ``ctmr.domain.losses.kl_loss``
 and ``ctmr.application.vae_train.loss_weighted_sum`` business free functions
@@ -23,6 +25,8 @@ not defined here yet.
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 import torch
 
@@ -73,27 +77,60 @@ class ModalityLabelPerturber:
     members in [2, 8) relabel to 1; members >= 9 relabel to 8 (each with
     probability ``prob``); every element is then zeroed with probability
     ``prob``.  In-place on the label tensor, like the legacy augmentation.
+
+    Freeze (issue #250, series-② T3): ``frozen_tokens`` names the modality
+    tokens excluded from every rule -- each keeps its value with probability 1
+    (no relabel, no zeroing), fixing the job-D-measured ≈40% bright-core
+    dilution of t1c (34→8 share 0.6041 mixed).  Config-driven with an empty
+    default: without the key the augmentation is the legacy one op-for-op --
+    the three full-tensor ``torch.rand`` draws keep their shapes and order,
+    so the frozen run under a given seed differs from the unfrozen one only
+    at the frozen tokens' positions.  The augmentation's robustness purpose
+    for the other tokens is untouched.
     """
 
     PINNED_PROB = 0.1
 
-    def __init__(self, prob: float = PINNED_PROB):
+    def __init__(self, prob: float = PINNED_PROB, frozen_tokens: Iterable[int] = ()):
         self._prob = prob
+        self._frozen_tokens = frozenset(int(token) for token in frozen_tokens)
 
     @property
     def prob(self) -> float:
         return self._prob
 
+    @property
+    def frozen_tokens(self) -> tuple[int, ...]:
+        return tuple(sorted(self._frozen_tokens))
+
+    def _frozen_mask(self, modality_tensor: torch.Tensor) -> torch.Tensor | None:
+        """The elementwise freeze flag, or ``None`` when nothing is frozen.
+
+        ``None`` keeps the no-freeze path the legacy augmentation verbatim;
+        with a freeze, the masks narrow but the RNG draws do not.
+        """
+        if not self._frozen_tokens:
+            return None
+        tokens = torch.tensor(sorted(self._frozen_tokens), device=modality_tensor.device, dtype=modality_tensor.dtype)
+        return torch.isin(modality_tensor, tokens)
+
     def __call__(self, modality_tensor: torch.Tensor) -> torch.Tensor:
+        frozen = self._frozen_mask(modality_tensor)
         mask_ct = (modality_tensor < 8) & (modality_tensor >= 2)
+        if frozen is not None:
+            mask_ct = mask_ct & ~frozen
         prob_ct = torch.rand(modality_tensor.size(), device=modality_tensor.device) < self._prob
         modality_tensor[mask_ct & prob_ct] = 1
 
         mask_mri = modality_tensor >= 9
+        if frozen is not None:
+            mask_mri = mask_mri & ~frozen
         prob_mri = torch.rand(modality_tensor.size(), device=modality_tensor.device) < self._prob
         modality_tensor[mask_mri & prob_mri] = 8
 
         mask_zero = torch.rand(modality_tensor.size(), device=modality_tensor.device) > self._prob
+        if frozen is not None:
+            mask_zero = mask_zero | frozen
         return modality_tensor * mask_zero.long()
 
 
