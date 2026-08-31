@@ -16,11 +16,12 @@ retired harness/scripts layer (git history; the harness shim package was
 deleted with issue #175):
 
 - the **phase training shell**: ``PhaseHarness`` epoch loop with early-stop
-  file polling at epoch boundaries and mid-epoch, autocast + GradScaler
-  mechanics and loss all_reduce for the pre-ADR-0016 kernel path, checkpoint
-  publication via the injected ``CheckpointRepository`` port (the tmp atomic
-  publish + ``latest.json`` protocol lives in the adapter), rank-0 gating for
-  the recipe guard / mkdir / provenance — driven by an injected
+  file polling (a sticky local observation plus an epoch-end cross-rank
+  consensus exit, ADR-0019 §6 / #277), autocast + GradScaler mechanics and
+  loss all_reduce for the pre-ADR-0016 kernel path, checkpoint publication
+  via the injected ``CheckpointRepository`` port (the tmp atomic publish +
+  ``latest.json`` protocol lives in the adapter), rank-0 gating for the
+  recipe guard / mkdir / provenance — driven by an injected
   ``PhaseTrainKernel`` (composition, never implementation inheritance);
   kernels migrated per ADR-0016 replace ``train_batch`` with ``train_step`` and
   receive the injected ``GradientExecutor`` carrying the fp16 / bf16 /
@@ -131,7 +132,10 @@ class PhaseHarness:
     ``CheckpointRepository`` port. The shell never re-implements autocast,
     GradScaler state or the tmp atomic publish itself, and both injections
     are validated at construction -- before any checkpoint loading or first
-    batch.
+    batch. The early-stop file is polled locally before each epoch and at
+    every batch boundary, but the halt is decided by one epoch-end consensus
+    collective on every rank (ADR-0019 §6, #277): no rank leaves the epoch
+    early, so the collective stream stays aligned and the exit is unanimous.
     """
 
     ITER_LOG_EVERY = 50
@@ -174,10 +178,8 @@ class PhaseHarness:
         ctx = self._kernel.load_models(loader)
         torch.set_float32_matmul_precision("highest")
         for epoch in range(self._n_epochs):
-            if self._stop_requested():
-                self._logger.info(f"early-stop file present; halting before epoch {epoch + 1}")
+            if self._train_one_epoch(epoch, loader, ctx):
                 break
-            self._train_one_epoch(epoch, loader, ctx)
         if dist.is_initialized():
             dist.destroy_process_group()
         return 0
@@ -185,38 +187,71 @@ class PhaseHarness:
     def _stop_requested(self) -> bool:
         return (Path(self._model_dir) / STOP_FILE).is_file()
 
+    def _stop_consensus(self, ctx, stop_seen: bool) -> bool:
+        """Merge every rank's local stop observation into one verdict (ADR-0019 §6).
+
+        A MAX all_reduce over the per-rank flags: whichever rank observed the
+        stop file -- at whatever batch index -- makes the exit unanimous, and
+        the rendezvous keeps the per-epoch collective stream aligned (every
+        rank issues exactly one consensus per epoch, then collectively either
+        the loss all_reduce or nothing). Single-rank runs just take the local
+        flag.
+        """
+        if not dist.is_initialized():
+            return stop_seen
+        flag = torch.tensor(1 if stop_seen else 0, dtype=torch.int64, device=ctx.device)
+        dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+        return bool(flag.item())
+
     def _train_one_epoch(self, epoch, loader, ctx):
-        if self._local_rank == 0:
-            self._logger.info(f"Epoch {epoch + 1}, lr {ctx.optimizer.param_groups[0]['lr']}.")
+        """Run one epoch; returns True when the run must stop on every rank.
+
+        The stop file is polled locally before the epoch and at every batch
+        boundary, but an observation only sets the sticky ``stop_seen`` flag:
+        no rank may leave the epoch early, or the ranks with a later (or no)
+        observation would stall the epoch-end loss all_reduce. The consensus
+        at the epoch end makes the exit unanimous before that all_reduce, so
+        every rank skips it and the checkpoint publish together (ADR-0019 §6).
+        """
         iteration = 0
-        loss_totals = torch.zeros(2, dtype=torch.float, device=ctx.device)
-        ctx.trainable.train()
-        train_step = getattr(self._kernel, "train_step", None)
-        for batch in loader:
-            if self._stop_requested():
-                self._logger.info(f"early-stop file present; halting mid-epoch {epoch + 1}")
-                return
-            iteration += 1
-            if train_step is None:
-                # Pre-ADR-0016 mechanical path: the executor reproduces the shell's
-                # former zero_grad → autocast-wrapped loss → backward → step order.
-                loss = self._gradient_executor.run(lambda: self._kernel.train_batch(batch), ctx.trainable, ctx.optimizer)
-                ctx.scheduler.step()
-            else:
-                # Migrated stages: the kernel's model entity drives one closed
-                # update; the shell only aggregates and polls.
-                loss = train_step(batch, self._gradient_executor)
-            loss_totals[0] += loss.item()
-            loss_totals[1] += 1.0
-            if self._local_rank == 0 and iteration % self.ITER_LOG_EVERY == 0:
-                self._logger.info(
-                    f"[{str(datetime.now())[:19]}] epoch {epoch + 1}, iter {iteration}/{len(loader)}, "
-                    f"loss: {loss.item():.4f}, lr: {ctx.optimizer.param_groups[0]['lr']:.12f}."
-                )
+        stop_seen = self._stop_requested()
+        stop_at_start = stop_seen
+        if not stop_seen:
+            if self._local_rank == 0:
+                self._logger.info(f"Epoch {epoch + 1}, lr {ctx.optimizer.param_groups[0]['lr']}.")
+            loss_totals = torch.zeros(2, dtype=torch.float, device=ctx.device)
+            ctx.trainable.train()
+            train_step = getattr(self._kernel, "train_step", None)
+            for batch in loader:
+                if self._stop_requested():
+                    stop_seen = True
+                    break
+                iteration += 1
+                if train_step is None:
+                    # Pre-ADR-0016 mechanical path: the executor reproduces the shell's
+                    # former zero_grad → autocast-wrapped loss → backward → step order.
+                    loss = self._gradient_executor.run(lambda: self._kernel.train_batch(batch), ctx.trainable, ctx.optimizer)
+                    ctx.scheduler.step()
+                else:
+                    # Migrated stages: the kernel's model entity drives one closed
+                    # update; the shell only aggregates and polls.
+                    loss = train_step(batch, self._gradient_executor)
+                loss_totals[0] += loss.item()
+                loss_totals[1] += 1.0
+                if self._local_rank == 0 and iteration % self.ITER_LOG_EVERY == 0:
+                    self._logger.info(
+                        f"[{str(datetime.now())[:19]}] epoch {epoch + 1}, iter {iteration}/{len(loader)}, "
+                        f"loss: {loss.item():.4f}, lr: {ctx.optimizer.param_groups[0]['lr']:.12f}."
+                    )
+        if self._stop_consensus(ctx, stop_seen):
+            halt = "before epoch" if stop_at_start else "mid-epoch"
+            self._logger.info(f"early-stop file present; halting {halt} {epoch + 1}")
+            return True
         if dist.is_initialized():
             dist.all_reduce(loss_totals, op=torch.distributed.ReduceOp.SUM)
         if self._local_rank == 0:
             self._publish_checkpoint(epoch, ctx, loss_totals)
+        return False
 
     def _publish_checkpoint(self, epoch, ctx, loss_totals):
         average = (loss_totals[0] / loss_totals[1]).item()
