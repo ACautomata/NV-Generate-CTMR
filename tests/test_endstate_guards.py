@@ -412,6 +412,8 @@ def test_orphan_gate_detects_a_seeded_orphan(tmp_path):
 # removed -- the list may only shrink, never grow (same self-stabilizing
 # pair as the orphan whitelist above).  When the ratchet reaches zero the
 # list is deleted and the gate turns purely terminal-state (issue #10).
+# Migration ledger: the cross-modal family's 16 edges left with issue #274
+# (the per-family port assemblies landed in ``ctmr.wiring.generate``).
 FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
     {
         "ctmr.application.acceptance.contract.artifacts -> ctmr.infrastructure.dmsource",
@@ -423,22 +425,6 @@ FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
         "ctmr.application.acceptance.distribution.instrument_training -> ctmr.infrastructure.nnunet_runner",
         "ctmr.application.acceptance.distribution.intensity_domain -> ctmr.infrastructure.maisi_engine.diff_model_setting",
         "ctmr.application.acceptance.distribution.intensity_domain -> ctmr.infrastructure.maisi_engine.instance_definition",
-        "ctmr.application.generation.cross_modal.anchor -> ctmr.infrastructure.maisi_engine.inference_primitives",
-        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.diff_model_infer",
-        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.inference_primitives",
-        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.maisi_engine.utils_infer",
-        "ctmr.application.generation.cross_modal.baseline -> ctmr.infrastructure.weightsref",
-        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.maisi_engine.inference_primitives",
-        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.maisi_engine.utils_infer",
-        "ctmr.application.generation.cross_modal.candidate -> ctmr.infrastructure.weightsref",
-        "ctmr.application.generation.cross_modal.monitor -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.generation.cross_modal.monitor -> ctmr.infrastructure.maisi_engine.inference_primitives",
-        "ctmr.application.generation.cross_modal.monitor -> ctmr.infrastructure.maisi_engine.utils_infer",
-        "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.bypass_mounting",
-        "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.gradient_executors",
-        "ctmr.application.generation.cross_modal.train -> ctmr.infrastructure.maisi_engine.diff_model_setting",
         "ctmr.application.generation.mask.monitor -> ctmr.infrastructure.maisi_engine.diff_model_setting",
         "ctmr.application.generation.mask.sample -> ctmr.infrastructure.dataio.augmentation",
         "ctmr.application.generation.mask.sample -> ctmr.infrastructure.maisi_engine.diff_model_setting",

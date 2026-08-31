@@ -100,7 +100,9 @@ def _kernel_on(device):
         controlnet_train={"weighted_loss": 100.0, "weighted_loss_label": [129]},
         noise_scheduler={"num_train_timesteps": 1000},
     )
-    kernel = TrainKernel(args, device=device, logger=logging.getLogger("gpu-smoke"), local_rank=0)
+    # mounting=None: the smoke gate injects the real toy networks directly below
+    # (the mount seam is exercised by tests/infrastructure/test_bypass_mounting.py).
+    kernel = TrainKernel(args, device=device, logger=logging.getLogger("gpu-smoke"), local_rank=0, mounting=None)
     controlnet = define_instance(_network_defs(), "controlnet_def").to(device)
     unet = define_instance(_network_defs(), "diffusion_unet_def").to(device)
     for parameter in unet.parameters():

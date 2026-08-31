@@ -26,7 +26,7 @@
 ### 2. 组合根 `ctmr.wiring`
 
 - 顶层装配模块（与 `cli.py` 并列、三层之外），按子命令族组织装配函数；具体实现的知识唯一定居于此。
-- `cli.py` 纯分派：不 import infrastructure，只调用装配函数；torchrun worker 入口复用同一装配函数。
+- `cli.py` 纯分派：不 import infrastructure，只调用装配函数；torchrun worker 入口复用同一装配函数。家族入口（各模块 `main`）为拿取运行时协作者直接咨询组合根装配——与 worker 复用同一条款，application→wiring 这一方向不计为跨层违规、守卫豁免之（B1 执行期 #274 澄清）。
 - 46 条既有违规的构造全部上收此处；执行期搬移按 ADR-0015 惯例在 PR 描述申报 from→to 映射。
 
 ### 3. domain 端口与内容归位

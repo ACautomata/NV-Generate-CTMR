@@ -17,6 +17,10 @@ cross-modal families: real anchor volume → the training-matching preprocessing
 encode → float.  The baseline and candidate writers share it; the retired
 vendored img2img entry owned this logic as ``load_anchor_latent`` (deleted
 with issue #175, git history is the provenance anchor).
+
+Layering (ADR-0019 §1-§3, issue #274): the sliding-window inference call rides
+the injected ``GenerationEngine`` port -- the encoder holds no infrastructure
+address.
 """
 
 from __future__ import annotations
@@ -25,17 +29,16 @@ import monai.transforms as monai_t
 import torch
 from monai.inferers.inferer import SlidingWindowInferer
 
-from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
-
 
 class AnchorLatentEncoder:
     """The anchor-image condition adapter: preprocess → VAE encode → normalized latent (1,C,H,W,D)."""
 
-    def __init__(self, autoencoder, device, output_size, logger):
+    def __init__(self, autoencoder, device, output_size, logger, engine):
         self._autoencoder = autoencoder
         self._device = device
         self._output_size = output_size
         self._logger = logger
+        self._engine = engine
 
     def encode(self, anchor_path: str) -> torch.Tensor:
         """锚影像 → 训练同款预处理 → encode → 归一化 latent (1,C,H,W,D),float32。"""
@@ -63,7 +66,7 @@ class AnchorLatentEncoder:
             device=self._device,
         )
         with torch.amp.autocast("cuda", enabled=True):
-            z = dynamic_infer(encode_inferer, self._autoencoder.encode_stage_2_inputs, x)
+            z = self._engine.dynamic_infer(encode_inferer, self._autoencoder.encode_stage_2_inputs, x)
         # encode 的中间激活占用大,释放缓存后再进入去噪循环(否则叠出 OOM)
         torch.cuda.empty_cache()
         # encode 在 autocast 下输出 half;去噪循环的输入统一 float32(与 P1 的 randn 一致)

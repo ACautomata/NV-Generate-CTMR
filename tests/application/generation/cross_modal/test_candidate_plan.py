@@ -43,6 +43,7 @@ from ctmr.application.generation.cross_modal.candidate import (
     CandidateSamplePlanBuilder,
 )
 from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
+from ctmr.infrastructure.weightsref import weights_ref_of_file  # tests are exempt (ADR-0019 §1); the real identity
 
 pytestmark = pytest.mark.torch
 
@@ -207,9 +208,9 @@ def _run_guard_fixture(root):
     dm.write_bytes(b"p1-dm-fixture")
     infer_path = root / "infer.json"
     infer_path.write_text(json.dumps(_config_payload()))
-    cn_sha = CandidateRunGuard.file_sha256(checkpoint)
-    dm_sha = CandidateRunGuard.file_sha256(dm)
-    infer_sha = CandidateRunGuard.file_sha256(infer_path)
+    cn_sha = weights_ref_of_file(checkpoint).sha256
+    dm_sha = weights_ref_of_file(dm).sha256
+    infer_sha = weights_ref_of_file(infer_path).sha256
 
     def record(**overrides):
         payload = {
@@ -229,7 +230,7 @@ def _run_guard_fixture(root):
 
 def test_run_guard_positive_path_returns_the_pinned_candidate_checkpoint(tmp_path):
     checkpoint, _dm, _dm_sha, infer_path, _infer_sha, record = _run_guard_fixture(tmp_path / "run-guard")
-    assert CandidateRunGuard(record(), infer_path).check() == checkpoint
+    assert CandidateRunGuard(record(), infer_path, weights_ref_of_file).check() == checkpoint
 
 
 @pytest.mark.parametrize(
@@ -255,7 +256,7 @@ def test_run_guard_rejects_contract_violations(tmp_path, mutate):
     root = tmp_path / "run-guard"
     _checkpoint, dm, dm_sha, infer_path, infer_sha, record = _run_guard_fixture(root)
     with pytest.raises(CandidatePlanError):
-        CandidateRunGuard(mutate(record, dm, dm_sha, infer_sha, root), infer_path).check()
+        CandidateRunGuard(mutate(record, dm, dm_sha, infer_sha, root), infer_path, weights_ref_of_file).check()
 
 
 def test_run_guard_rejects_infer_config_drift_from_the_pinned_cfg0_provenance(tmp_path):
@@ -264,4 +265,4 @@ def test_run_guard_rejects_infer_config_drift_from_the_pinned_cfg0_provenance(tm
     drifted = root / "drifted.json"
     drifted.write_text(json.dumps(_config_payload(cfg_guidance_scale=10.0)))
     with pytest.raises(CandidatePlanError):
-        CandidateRunGuard(record(), drifted).check()
+        CandidateRunGuard(record(), drifted, weights_ref_of_file).check()

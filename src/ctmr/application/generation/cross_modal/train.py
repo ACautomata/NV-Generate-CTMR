@@ -47,6 +47,12 @@ Usage (CLI, torchrun spawn is derived by the ctmr launcher):
         -t configs/config_network_p3.json --data-list runs/p3/.../p3_pairs.json
     # or directly under torchrun (same argv namespace):
     torchrun --nproc_per_node=7 -m ctmr.application.generation.cross_modal.train ...
+
+Layering (ADR-0019 §1-§3, issue #274): the module depends only on domain ports
+and injected collaborators -- the engine adapter, the distributed session, the
+run logger, the ControlNet mounting and the precision executor are assembled by
+the composition root (``ctmr.wiring.generate``, which the main entry consults
+directly: the torchrun worker reuses the same assembly).
 """
 
 from __future__ import annotations
@@ -64,9 +70,7 @@ from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.generation.objective import TumourWeightedTarget
 from ctmr.domain.recipe import CrossModalRecipeSpec
-from ctmr.infrastructure.bypass_mounting import BypassMounting
-from ctmr.infrastructure.gradient_executors import Bf16GradientExecutor, Fp16GradientExecutor, PlainGradientExecutor
-from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
+from ctmr.wiring.generate import GenerateRuntime
 
 
 class DataCatalog:
@@ -120,12 +124,12 @@ class TrainKernel:
 
     The four-method ``PhaseTrainKernel`` boundary. Recipe values live here, not
     in the shell: AdamW + lr + PolynomialLR power 2.0 (mask-equivalent recipe).
-    The hook-up itself is the shared ``BypassMounting`` collaborator -- the
-    kernel injects only the recipe values and composes the domain entity from
-    the mount.
+    The hook-up itself is the injected ``BypassMounting`` collaborator (assembled
+    by the composition root, ADR-0019 §2) -- the kernel injects only the recipe
+    values and composes the domain entity from the mount.
     """
 
-    def __init__(self, args, device, logger, local_rank):
+    def __init__(self, args, device, logger, local_rank, mounting):
         self._args = args
         self._device = device
         self._logger = logger
@@ -136,7 +140,7 @@ class TrainKernel:
         # migration introduced (TumourWeightedTarget), driven by the same
         # recipe values (weighted_loss=100 on {129,130,131}).
         self._weighted_target = TumourWeightedTarget(args.controlnet_train["weighted_loss"], args.controlnet_train["weighted_loss_label"])
-        self._mounting = BypassMounting(args, device, logger)
+        self._mounting = mounting
         self._train_loader = BypassTrainLoader(load_keys=("image", "label", "src_image"), join_keys=("src_image",))
 
     def build_loader(self):
@@ -219,7 +223,12 @@ class TrainKernel:
 def main(argv=None):
     args = TrainCli(__doc__, stage="p3").parse(argv)
 
-    merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    # The composition root assembles every concrete collaborator (ADR-0019 §2):
+    # the engine adapter behind the GenerationEngine port, the distributed
+    # session, the run logger, the ControlNet mounting and the precision executor.
+    runtime = GenerateRuntime()
+    engine = runtime.engine()
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.amp = args.amp
     merged.amp_dtype = args.amp_dtype
     merged.env_config_path = args.env_config_path
@@ -230,17 +239,9 @@ def main(argv=None):
     with open(merged.modality_mapping_path) as handle:
         merged.modality_mapping = json.load(handle)
 
-    local_rank, _world, device = initialize_distributed(args.num_gpus)
-    logger = setup_logging("cross-modal-finetune")
-    kernel = TrainKernel(merged, device, logger, local_rank)
-    # The application injects the runtime precision strategy (ADR-0016): fp16
-    # (scaler), bf16 (DCU default) or non-AMP plain execution.
-    if args.amp and args.amp_dtype == "fp16":
-        gradient_executor = Fp16GradientExecutor()
-    elif args.amp:
-        gradient_executor = Bf16GradientExecutor()
-    else:
-        gradient_executor = PlainGradientExecutor()
+    local_rank, _world, device = runtime.train_session(args)
+    logger = runtime.logger("cross-modal-finetune")
+    kernel = TrainKernel(merged, device, logger, local_rank, mounting=runtime.bypass_mounting(merged, device, logger))
     infer_cfg = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else None
     return PhaseHarness(
         kernel=kernel,
@@ -271,7 +272,7 @@ def main(argv=None):
             },
             script_path=Path(__file__),
         ),
-        gradient_executor=gradient_executor,
+        gradient_executor=runtime.gradient_executor(args.amp, args.amp_dtype),
     ).run()
 
 

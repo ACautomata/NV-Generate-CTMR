@@ -43,6 +43,12 @@ domain ``DiffusionModel`` + ``ControlNetBypass`` composition with the
 candidate's pinned CFG=0 recipe; the VAE decode and int16 post-processing stay
 application adapters (``render``).
 
+Layering (ADR-0019 §1-§3, issue #274): the module holds no infrastructure
+address -- config parsing / model loading / inference primitives ride the
+injected ``GenerationEngine`` port, and the concrete adapters are assembled by
+the composition root (``ctmr.wiring.generate``, which the main entry consults
+directly).
+
 Usage (sugon, one reserved GPU):
     ctmr generate cross-modal dev-eval reference --dev-list ... --raw-root ... --eval-root DIR
     ctmr generate cross-modal dev-eval watch --ckpt-dir ... --eval-root ... \
@@ -79,9 +85,7 @@ from ctmr.application.shell import (
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.intensity_protocol import MRIntensityNormalizer
-from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
-from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
-from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, load_image_models
+from ctmr.wiring.generate import GenerateRuntime
 
 LATENT = (4, 64, 64, 32)
 GRID = (256, 256, 128)
@@ -281,27 +285,28 @@ class PairwiseScorer:
 class CandidateSampler:
     """Generates the fixed dev cohort with a candidate ControlNet checkpoint (cfg=0, 30 steps)."""
 
-    def __init__(self, args, device, logger):
+    def __init__(self, args, device, logger, engine):
         self._args = args
         self._device = device
         self._logger = logger
+        self._engine = engine
 
     def load_models(self, checkpoint_path):
         self._args.trained_controlnet_path = str(checkpoint_path)
-        autoencoder, unet, controlnet, scale_factor, _noise_scheduler = load_image_models(self._args, self._device)
+        autoencoder, unet, controlnet, scale_factor, _noise_scheduler = self._engine.load_image_models(self._args, self._device)
         for model in (autoencoder, unet, controlnet):
             model.eval()
         # The domain composition carries the sampling rules: the frozen P1-DM +
         # the image-conditioned bypass, fresh DiffusionScheduler per sample call
         # (ADR-0016, issue #174).  The VAE reconstruction stays an application
-        # adapter (ReconModel) below the latent the entity produces.
+        # adapter below the latent the entity produces.
         model = DiffusionModel(
             unet=unet,
             scale_factor=torch.tensor(float(scale_factor), device=self._device),
             noise_scheduler=RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"}),
             bypass=ControlNetBypass(controlnet),
         )
-        recon = ReconModel(autoencoder=autoencoder, scale_factor=scale_factor).to(self._device)
+        recon = self._engine.recon_model(autoencoder, scale_factor).to(self._device)
         torch.cuda.empty_cache()
         return model, recon
 
@@ -341,7 +346,7 @@ class CandidateSampler:
             sw_device=self._device,
             device=torch.device("cpu"),
         )
-        synthetic = dynamic_infer(inferer, recon, latent).squeeze().cpu().detach().numpy()
+        synthetic = self._engine.dynamic_infer(inferer, recon, latent).squeeze().cpu().detach().numpy()
         return synthetic * 1000.0
 
     def generate_cohort(self, checkpoint_path, cases, cohort_source, phase_root, out_dir):
@@ -468,7 +473,10 @@ def main(argv=None):
             summary_extra=lambda selection: f", mean_psnr {selection['mean_psnr']:.2f}",
         )
 
-    # watch mode: assemble the stage collaborators, the shell engine drives the loop
+    # watch mode: assemble the stage collaborators, the shell engine drives the loop.
+    # The composition root assembles the concrete collaborators (ADR-0019 §2):
+    # the engine adapter behind the GenerationEngine port.
+    runtime = GenerateRuntime()
     dev_list = DevList(args.dev_list, eval_root).build()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cohort_source = DevCohort(dev_list)
@@ -488,11 +496,12 @@ def main(argv=None):
         )
         + "\n"
     )
-    merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    engine = runtime.engine()
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
     merged.cfg_guidance_scale = 0.0
     scorer = PairwiseScorer(workers=args.score_workers)
-    sampler = CandidateSampler(merged, device, None)
+    sampler = CandidateSampler(merged, device, None, engine)
     return WatchEngine(
         ckpt_dir=args.ckpt_dir,
         eval_root=eval_root,

@@ -21,9 +21,18 @@ so the spawn topology has exactly one home, the composition root. The
 collaborator classes (``TorchrunLauncher`` / ``num_gpus_of``, stdlib-light)
 are imported at module top and called exactly as the interface layer used
 to; the train modules themselves load lazily on dispatch (they are the
-production torch entries). The per-case port assemblies (gradient executors,
-checkpoint repository, engine loading, logging) land with the family
-migration tickets #272-#274.
+production torch entries).
+
+The per-case port assemblies land with the family migration tickets
+(#272-#274): the concrete collaborators the application entries stopped
+constructing -- the frozen engine adapter behind the ``GenerationEngine``
+port, the distributed session bootstrap, the run logger, the ControlNet
+mounting, the pinned precision executor and the checkpoint file identity --
+settle in :class:`GenerateRuntime`, resolved lazily on dispatch (importing
+the composition root still pulls no third-party dependency). The family
+entries reach it directly (the torchrun worker entry reuses the same
+assembly, ADR-0019 §2), so the concrete knowledge stays here and nowhere
+else.
 """
 
 from __future__ import annotations
@@ -32,6 +41,48 @@ import importlib
 import os
 
 from ctmr.application.generation.launcher import TorchrunLauncher, num_gpus_of
+
+
+class GenerateRuntime:
+    """The generate family's production runtime (ADR-0019 §2, #272-#274).
+
+    One method per collaborator the application entries receive at their
+    seams; each resolves its concrete adapter lazily (importlib on dispatch)
+    so the frozen maisi_engine functions, the precision executors, the
+    ControlNet mounting, the distributed session and the run logger load only
+    when a verb actually runs. The application entries see the domain port
+    faces (``GenerationEngine`` / ``Logger`` / ``GradientExecutor``) and the
+    injected collaborators -- never the concrete addresses.
+    """
+
+    def engine(self):
+        """The frozen maisi_engine adapter behind the GenerationEngine port."""
+        return importlib.import_module("ctmr.infrastructure.engine").MaisiEngine()
+
+    def logger(self, name):
+        """The run logger (the Logger port's stdlib realization)."""
+        return importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting").setup_logging(name)
+
+    def train_session(self, args):
+        """Bootstrap the distributed training session: (local_rank, world_size, device)."""
+        return importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting").initialize_distributed(args.num_gpus)
+
+    def bypass_mounting(self, args, device, logger):
+        """The ControlNet-only hook-up collaborator the bypass kernels drive."""
+        return importlib.import_module("ctmr.infrastructure.bypass_mounting").BypassMounting(args, device, logger)
+
+    def gradient_executor(self, amp, amp_dtype):
+        """The pinned precision strategy (ADR-0016): fp16 (scaler), bf16 (DCU default) or plain."""
+        executors = importlib.import_module("ctmr.infrastructure.gradient_executors")
+        if amp and amp_dtype == "fp16":
+            return executors.Fp16GradientExecutor()
+        if amp:
+            return executors.Bf16GradientExecutor()
+        return executors.PlainGradientExecutor()
+
+    def weights_ref_of_file(self):
+        """The checkpoint file identity callable (path -> domain WeightsRef)."""
+        return importlib.import_module("ctmr.infrastructure.weightsref").weights_ref_of_file
 
 
 class TrainDispatch:

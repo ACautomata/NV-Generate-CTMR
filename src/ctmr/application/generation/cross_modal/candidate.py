@@ -49,6 +49,13 @@ domain ``DiffusionModel`` + ``ControlNetBypass`` composition with the candidate'
 pinned CFG=0 recipe; the VAE decode and int16 post-processing stay application
 adapters (``render``).
 
+Layering (ADR-0019 §1-§3, issue #274): the module holds no infrastructure
+address -- model loading / config parsing / inference primitives ride the
+injected ``GenerationEngine`` port, the checkpoint file identity rides the
+injected ref-of-file callable (the dmsource ledger's injection precedent), and
+the concrete adapters are assembled by the composition root
+(``ctmr.wiring.generate``, which the main entry consults directly).
+
 Usage::
 
     ctmr generate cross-modal generate candidate \
@@ -89,10 +96,7 @@ from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.identity import WeightsRef
-from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config, setup_logging
-from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
-from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel, load_image_models
-from ctmr.infrastructure.weightsref import weights_ref_of_file
+from ctmr.wiring.generate import GenerateRuntime
 
 LATENT = (4, 64, 64, 32)
 INFER_SCHEMA = "brats-p3-controlnet-infer/1"
@@ -184,12 +188,15 @@ class CandidateRunGuard:
     variant, its selection must pin the trained ControlNet checkpoint (never the
     upstream P1-DM — that would be the zero-training baseline in disguise), and the
     inference config used on the command line must byte-match the
-    ``role=inference`` config the run pinned at init.
+    ``role=inference`` config the run pinned at init. The checkpoint file
+    identity rides the injected ref-of-file callable (path -> domain
+    ``WeightsRef``, the dmsource ledger's injection precedent).
     """
 
-    def __init__(self, run_record, infer_config_path):
+    def __init__(self, run_record, infer_config_path, ref_of_file):
         self._record = run_record
         self._infer_config_path = Path(infer_config_path)
+        self._ref_of_file = ref_of_file
 
     def check(self):
         record = self._record
@@ -207,7 +214,7 @@ class CandidateRunGuard:
         path = Path(checkpoint["path"])
         if not path.is_file():
             raise CandidatePlanError(f"candidate ControlNet checkpoint missing: {path}")
-        if weights_ref_of_file(path) != WeightsRef(sha256=checkpoint["sha256"]):
+        if self._ref_of_file(path) != WeightsRef(sha256=checkpoint["sha256"]):
             raise CandidatePlanError(f"candidate ControlNet checkpoint changed on disk: {path}")
         # anti-confusion (issue #61 acceptance criterion 3): a trained candidate pins its own
         # ControlNet checkpoint, never the upstream P1-DM (that would be the zero-training
@@ -225,16 +232,12 @@ class CandidateRunGuard:
                 "the cross-modal candidate run must pin exactly one --config inference=<cross-modal candidate inference config> "
                 "(the recorded inference provenance, issue #61 acceptance criterion 1)"
             )
-        if weights_ref_of_file(self._infer_config_path).sha256 != inference_entries[0]["sha256"]:
+        if self._ref_of_file(self._infer_config_path).sha256 != inference_entries[0]["sha256"]:
             raise CandidatePlanError(
                 f"--infer-config sha256 does not match the config pinned by run {record['run_id']}; "
                 "regenerate with the recorded official cross-modal candidate inference config"
             )
         return path
-
-    @staticmethod
-    def file_sha256(path):
-        return weights_ref_of_file(path).sha256
 
 
 class CandidateSamplePlanBuilder:
@@ -333,7 +336,7 @@ class CandidateSamplePlanBuilder:
 class CandidateSampleWriter:
     """Generates the 12 ordered pairs per case and writes the distribution/quantitative candidate manifests."""
 
-    def __init__(self, merged, run_record, side, config, device, out_root, logger):
+    def __init__(self, merged, run_record, side, config, device, out_root, logger, engine):
         self._merged = merged
         self._run_record = run_record
         self._side = side
@@ -341,19 +344,21 @@ class CandidateSampleWriter:
         self._device = device
         self._out_root = Path(out_root)
         self._logger = logger
+        self._engine = engine
 
     def load_models(self, checkpoint, controlnet_ckpt):
         """Load AE + frozen P1-DM + trained ControlNet via the image-side loader.
 
         Sets ``trained_diffusion_path`` (the frozen P1-DM) and ``trained_controlnet_path``
-        (the run's candidate checkpoint) on the merged config; ``load_image_models`` also
-        re-initializes the ControlNet from the DM encoder/mid and then overlays the
-        trained weights (``strict=False``) — the same "copy_model_state from dm" source
-        the training run used, so the candidate inherits no mask-family ControlNet.
+        (the run's candidate checkpoint) on the merged config; the engine's
+        ``load_image_models`` also re-initializes the ControlNet from the DM
+        encoder/mid and then overlays the trained weights (``strict=False``) — the
+        same "copy_model_state from dm" source the training run used, so the
+        candidate inherits no mask-family ControlNet.
         """
         self._merged.trained_diffusion_path = str(checkpoint)
         self._merged.trained_controlnet_path = str(controlnet_ckpt)
-        autoencoder, unet, controlnet, scale_factor, _noise_scheduler = load_image_models(self._merged, self._device)
+        autoencoder, unet, controlnet, scale_factor, _noise_scheduler = self._engine.load_image_models(self._merged, self._device)
         for model in (autoencoder, unet, controlnet):
             model.to(self._device).eval()
         self._logger.info(f"candidate models loaded: DM={self._merged.trained_diffusion_path} ControlNet={self._merged.trained_controlnet_path}")
@@ -375,8 +380,8 @@ class CandidateSampleWriter:
             noise_scheduler=RFlowScheduler(**{k: v for k, v in self._merged.noise_scheduler.items() if k != "_target_"}),
             bypass=ControlNetBypass(controlnet),
         )
-        recon_model = ReconModel(autoencoder=autoencoder, scale_factor=scale_factor).to(self._device)
-        anchor_encoder = AnchorLatentEncoder(autoencoder, self._device, GRID, self._logger)
+        recon_model = self._engine.recon_model(autoencoder, scale_factor).to(self._device)
+        anchor_encoder = AnchorLatentEncoder(autoencoder, self._device, GRID, self._logger, self._engine)
         builder = CandidateSamplePlanBuilder(
             self._run_record["run_id"],
             self._run_record["upstream"]["checkpoint"]["sha256"],
@@ -457,7 +462,7 @@ class CandidateSampleWriter:
             sw_device=self._device,
             device=torch.device("cpu"),
         )
-        synthetic = dynamic_infer(inferer, recon_model, latent).squeeze().cpu().detach().numpy()
+        synthetic = self._engine.dynamic_infer(inferer, recon_model, latent).squeeze().cpu().detach().numpy()
         synthetic = synthetic * 1000.0
         return np.clip(synthetic, 0, None).astype(np.int16)
 
@@ -491,9 +496,13 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
 
+    # The composition root assembles the concrete collaborators (ADR-0019 §2):
+    # the checkpoint file identity, the engine adapter behind the GenerationEngine
+    # port and the run logger.
+    runtime = GenerateRuntime()
     run_record = json.loads(Path(args.run).read_text())
     try:
-        controlnet_ckpt = CandidateRunGuard(run_record, args.infer_config).check()
+        controlnet_ckpt = CandidateRunGuard(run_record, args.infer_config, runtime.weights_ref_of_file()).check()
         config = CandidateInferenceConfig.from_path(args.infer_config)
         manifest = json.loads(Path(args.manifest).read_text())
         stage0_pairs = json.loads(Path(args.stage0_pairs).read_text())
@@ -505,7 +514,8 @@ def main(argv=None):
         print(f"cross-modal candidate infer config grid {list(config.grid)} != fixed SRI24 grid {GRID}", file=sys.stderr)
         return 1
 
-    merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    engine = runtime.engine()
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.model_dir = str(Path(controlnet_ckpt).parent)
 
     stage0_records = stage0_pairs.get("records")
@@ -519,8 +529,8 @@ def main(argv=None):
         return 1
     layout = RawCaseLayout(args.raw_root, manifest)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger = setup_logging("cross-modal-candidate")
-    writer = CandidateSampleWriter(merged, run_record, args.side, config, device, args.out_root, logger)
+    logger = runtime.logger("cross-modal-candidate")
+    writer = CandidateSampleWriter(merged, run_record, args.side, config, device, args.out_root, logger, engine)
     entries, pairs = writer.write(cohort, layout, stage0_records)
 
     suffix = f"_shard_{args.shard}" if args.num_shards > 1 else ""
