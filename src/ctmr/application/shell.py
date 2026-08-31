@@ -18,9 +18,9 @@ deleted with issue #175):
 - the **phase training shell**: ``PhaseHarness`` epoch loop with early-stop
   file polling at epoch boundaries and mid-epoch, autocast + GradScaler
   mechanics and loss all_reduce for the pre-ADR-0016 kernel path, checkpoint
-  publication via ``CheckpointRepository`` (the tmp atomic publish +
-  ``latest.json`` protocol lives there), rank-0 gating for the recipe guard /
-  mkdir / provenance — driven by an injected
+  publication via the injected ``CheckpointRepository`` port (the tmp atomic
+  publish + ``latest.json`` protocol lives in the adapter), rank-0 gating for
+  the recipe guard / mkdir / provenance — driven by an injected
   ``PhaseTrainKernel`` (composition, never implementation inheritance);
   kernels migrated per ADR-0016 replace ``train_batch`` with ``train_step`` and
   receive the injected ``GradientExecutor`` carrying the fp16 / bf16 /
@@ -53,8 +53,8 @@ from typing import Any, Protocol
 import torch
 import torch.distributed as dist
 
-from ctmr.infrastructure.checkpoints import CheckpointRepository
-from ctmr.infrastructure.gradient_executors import Bf16GradientExecutor, Fp16GradientExecutor, PlainGradientExecutor
+from ctmr.domain.checkpoints import CheckpointRepository
+from ctmr.domain.generation import GradientExecutor
 
 STOP_FILE = ".early_stop"
 
@@ -93,12 +93,10 @@ class PhaseTrainKernel(Protocol):
     - ``train_step`` (migrated stages, ADR-0016): the kernel hands the shell one
       closed single-batch update (its model entity drives loss → backward →
       optimizer step through the injected ``GradientExecutor``) and the shell
-      only aggregates and polls.  The application must inject the
-      ``GradientExecutor`` (the shell validates this at construction, before
-      any checkpoint loading or first batch).
+      only aggregates and polls.
     - ``train_batch`` (pre-migration stages): forward + loss only; the shell
-      drives the update through the executor built from ``amp``/``amp_dtype``
-      and steps ``ctx.scheduler`` itself.
+      drives the update through the injected executor and steps
+      ``ctx.scheduler`` itself.
     """
 
     def build_loader(self):
@@ -125,12 +123,15 @@ class PhaseTrainKernel(Protocol):
 class PhaseHarness:
     """The shared training shell: mechanical sequence only, no recipe or domain values.
 
-    The per-batch precision strategy is always carried by one injected
-    ``GradientExecutor``: migrated kernels (``train_step``) receive the
-    application-injected instance; still-migrating kernels (``train_batch``)
-    default to the strategy matching the ``amp``/``amp_dtype`` declaration
-    (fp16 scaler / bf16 / plain). The shell never re-implements autocast or
-    GradScaler state itself.
+    Every collaborator rides in injected (ADR-0019 §1 terminal state, #276):
+    the per-batch precision strategy is always a composition-root-assembled
+    ``GradientExecutor`` (migrated kernels, ``train_step``, receive it inside
+    their closed update; still-migrating kernels, ``train_batch``, have the
+    shell drive it) and the checkpoint publication goes through the injected
+    ``CheckpointRepository`` port. The shell never re-implements autocast,
+    GradScaler state or the tmp atomic publish itself, and both injections
+    are validated at construction -- before any checkpoint loading or first
+    batch.
     """
 
     ITER_LOG_EVERY = 50
@@ -140,13 +141,12 @@ class PhaseHarness:
         kernel: PhaseTrainKernel,
         model_dir,
         n_epochs: int,
-        amp: bool,
-        amp_dtype: str,
         local_rank: int,
         logger,
+        gradient_executor: GradientExecutor | None = None,
+        checkpoint_repository: CheckpointRepository | None = None,
         recipe_check: Callable[[], Any] | None = None,
         provenance: TrainProvenanceWriter | None = None,
-        gradient_executor=None,
     ):
         self._kernel = kernel
         self._model_dir = model_dir
@@ -155,18 +155,12 @@ class PhaseHarness:
         self._logger = logger
         self._recipe_check = recipe_check
         self._provenance = provenance
-        self._repository = CheckpointRepository(Path(model_dir))
-        if getattr(kernel, "train_step", None) is not None:
-            if gradient_executor is None:
-                raise ValueError("kernel provides train_step but no gradient_executor was injected (ADR-0016)")
-        elif gradient_executor is None:
-            if amp and amp_dtype == "fp16":
-                gradient_executor = Fp16GradientExecutor()
-            elif amp:
-                gradient_executor = Bf16GradientExecutor()
-            else:
-                gradient_executor = PlainGradientExecutor()
+        if gradient_executor is None:
+            raise ValueError("no gradient_executor was injected (ADR-0016/ADR-0019: the composition root assembles the precision strategy)")
+        if checkpoint_repository is None:
+            raise ValueError("no checkpoint_repository was injected (ADR-0015 §4/ADR-0019: the composition root assembles the weight store)")
         self._gradient_executor = gradient_executor
+        self._repository = checkpoint_repository
 
     def run(self):
         """Drive one full training run: recipe guard -> provenance -> loop -> cleanup."""

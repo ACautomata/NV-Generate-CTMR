@@ -27,8 +27,10 @@ The per-case port assemblies land with the family migration tickets: the
 modality-label (#272) and mask (#273) families' are the ``*_train_session``
 assemblies and the ``*_engine`` seams below -- the engine adapter, the
 distributed session + logger, the gradient executor chosen by the amp
-declaration, and the modality-label MONAI-checkpoint archive behind the
-``CheckpointRepository`` load face (ADR-0019 §2: concrete knowledge settles
+declaration, the modality-label MONAI-checkpoint archive behind the
+``CheckpointRepository`` load face, and (with the #276 ratchet-zeroing sweep)
+the shell-side publication store behind the same port's save face
+(ADR-0019 §2: concrete knowledge settles
 nowhere else; §3: the family entries consume only domain ports). The
 cross-modal family's (#274) is :class:`GenerateRuntime` -- the frozen engine
 adapter behind the ``GenerationEngine`` port, the distributed session
@@ -97,6 +99,11 @@ class GenerateRuntime:
             return executors.Bf16GradientExecutor()
         return executors.PlainGradientExecutor()
 
+    def checkpoint_repository(self, model_dir):
+        """The shell-side weight store behind the CheckpointRepository port (ADR-0015 §4)."""
+        checkpoints = importlib.import_module("ctmr.infrastructure.checkpoints")
+        return checkpoints.CheckpointRepository(model_dir)
+
     def weights_ref_of_file(self):
         """The checkpoint file identity callable (path -> domain WeightsRef)."""
         return importlib.import_module("ctmr.infrastructure.weightsref").weights_ref_of_file
@@ -150,6 +157,7 @@ class ModalityLabelTrainSession:
     engine: GenerationEngine
     gradient_executor: GradientExecutor
     base_checkpoints: CheckpointRepository
+    checkpoint_repository: CheckpointRepository
     merged: Namespace
 
 
@@ -168,6 +176,7 @@ class MaskTrainSession:
     engine: GenerationEngine
     gradient_executor: GradientExecutor
     mounting: BypassMounting
+    checkpoint_repository: CheckpointRepository
     merged: Namespace
 
 
@@ -186,11 +195,13 @@ def modality_label_train_session(args, engine=None):
     resolution (strictly before the distributed bootstrap -- a malformed
     config must fail on every rank ahead of any collective), the session
     bootstrap, the logger, the gradient executor chosen by the amp
-    declaration, and the base-checkpoint archive."""
+    declaration, the base-checkpoint archive, and the shell-side publication
+    store (#276)."""
     engine = engine if engine is not None else modality_label_engine()
     merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     setting = importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting")
     executors = importlib.import_module("ctmr.infrastructure.gradient_executors")
+    checkpoints = importlib.import_module("ctmr.infrastructure.checkpoints")
     local_rank, _world, device = setting.initialize_distributed(args.num_gpus)
     if args.amp and args.amp_dtype == "fp16":
         gradient_executor = executors.Fp16GradientExecutor()
@@ -205,6 +216,7 @@ def modality_label_train_session(args, engine=None):
         engine=engine,
         gradient_executor=gradient_executor,
         base_checkpoints=MonaiCheckpointArchive(device),
+        checkpoint_repository=checkpoints.CheckpointRepository(merged.model_dir),
         merged=merged,
     )
 
@@ -213,13 +225,15 @@ def mask_train_session(args, engine=None):
     """The mask train assembly (ADR-0019 §2, #273): the config resolution
     (strictly before the distributed bootstrap -- a malformed config must
     fail on every rank ahead of any collective), the session bootstrap, the
-    logger, the gradient executor chosen by the amp declaration, and the
-    bypass mounting the kernel composes the domain entities from."""
+    logger, the gradient executor chosen by the amp declaration, the
+    bypass mounting the kernel composes the domain entities from, and the
+    shell-side publication store (#276)."""
     engine = engine if engine is not None else mask_engine()
     merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     setting = importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting")
     executors = importlib.import_module("ctmr.infrastructure.gradient_executors")
     mounting = importlib.import_module("ctmr.infrastructure.bypass_mounting")
+    checkpoints = importlib.import_module("ctmr.infrastructure.checkpoints")
     local_rank, _world, device = setting.initialize_distributed(args.num_gpus)
     logger = setting.setup_logging("mask-finetune")
     if args.amp and args.amp_dtype == "fp16":
@@ -235,5 +249,6 @@ def mask_train_session(args, engine=None):
         engine=engine,
         gradient_executor=gradient_executor,
         mounting=mounting.BypassMounting(merged, device, logger),
+        checkpoint_repository=checkpoints.CheckpointRepository(merged.model_dir),
         merged=merged,
     )

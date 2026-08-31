@@ -247,8 +247,6 @@ def main(argv=None):
         kernel=kernel,
         model_dir=merged.model_dir,
         n_epochs=merged.controlnet_train["n_epochs"],
-        amp=args.amp,
-        amp_dtype=args.amp_dtype,
         local_rank=local_rank,
         logger=logger,
         recipe_check=CrossModalRecipeSpec(
@@ -273,6 +271,7 @@ def main(argv=None):
             script_path=Path(__file__),
         ),
         gradient_executor=runtime.gradient_executor(args.amp, args.amp_dtype),
+        checkpoint_repository=runtime.checkpoint_repository(merged.model_dir),
     ).run()
 
 

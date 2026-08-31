@@ -36,7 +36,7 @@ from monai.data import CacheDataset, partition_dataset
 from monai.transforms import Compose, EnsureTyped, Lambdad, LoadImaged, Orientationd
 from torch.utils.data import DataLoader
 
-from ctmr.infrastructure.dataio.list_assembly import add_data_dir2path
+from ctmr.domain.generation.train_list import add_data_dir2path
 
 
 class BypassTrainLoader:

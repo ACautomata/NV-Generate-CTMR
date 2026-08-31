@@ -20,7 +20,9 @@ train entries used to inline), the checkpoint file identity (collapsing onto the
 domain ``WeightsRef`` addressing rule), the frozen engine adapter behind the
 ``GenerationEngine`` port and the logger behind the ``Logger`` port.
 ``train_session`` is the one seam without a local gate: it bootstraps the real
-distributed session, a cluster-side topology behavior. Torch-level (the seams
+distributed session, a cluster-side topology behavior. The shell-side weight
+store seam (#276) hands back the ``CheckpointRepository`` adapter behind the
+domain port. Torch-level (the seams
 resolve torch/monai adapters), so the module is torch-marked and runs for real
 in the CI full-dependency tier (ADR-0015 §6); the structural light-import gate
 stays in tests/test_wiring.py.
@@ -32,6 +34,7 @@ import logging
 
 import pytest
 
+from ctmr.domain.checkpoints import CheckpointRepository
 from ctmr.domain.engine import GenerationEngine
 from ctmr.domain.identity import WeightsRef
 from ctmr.domain.logging import Logger
@@ -66,3 +69,14 @@ def test_bypass_mounting_assembles_the_hook_up_collaborator():
     args = type("Args", (), {})()  # the mount constructor only holds references
     mounted = GenerateRuntime().bypass_mounting(args, device=None, logger=logging.getLogger("runtime-gate"))
     assert isinstance(mounted, BypassMounting)
+
+
+def test_checkpoint_repository_assembles_the_shell_side_weight_store(tmp_path):
+    """The shell's publication store (#276): the adapter behind the domain
+    port, with the tmp atomic publish + latest.json protocol the shell relies
+    on (the round trip itself is the infrastructure gate's seam)."""
+    repository = GenerateRuntime().checkpoint_repository(tmp_path)
+    assert isinstance(repository, CheckpointRepository)
+    published = repository.save({"epoch": 1}, 1)
+    assert published == tmp_path / "epoch_1.pt" and published.is_file()
+    assert (tmp_path / "latest.json").is_file()
