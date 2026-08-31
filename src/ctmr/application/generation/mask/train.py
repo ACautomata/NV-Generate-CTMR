@@ -41,7 +41,7 @@ ADR-0016 (issue #172) the single-batch training math runs as the domain
 ``DiffusionModel.train_step`` over a ``ControlNetBypass`` composition (the
 runtime bypass object carries no checkpoint identity). Per ADR-0019 §2/#273
 the entry assembles no runtime itself: the composition root's
-``mask_train_runtime`` provides the merged config, the distributed session,
+``mask_train_session`` provides the merged config, the distributed session,
 the logger, the precision executor (injected through the domain
 ``GradientExecutor`` port) and the bypass mounting (the domain
 ``BypassMounting`` port); the kernel receives the mounting as an injected
@@ -72,7 +72,7 @@ from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.generation.mounting import BypassMounting
 from ctmr.domain.generation.objective import TumourWeightedTarget
 from ctmr.domain.recipe import MaskRecipeSpec
-from ctmr.wiring.generate import mask_train_runtime
+from ctmr.wiring.generate import mask_train_session
 
 
 class DataCatalog:
@@ -212,25 +212,34 @@ class TrainKernel:
 def main(argv=None):
     args = TrainCli(__doc__, stage="p2").parse(argv)
 
-    # The composition root assembles the runtime ports (ADR-0019 §2/#273):
-    # the merged config, the distributed session, the logger, the precision
-    # executor and the bypass mounting. The entry only orchestrates.
-    runtime = mask_train_runtime(args)
-    merged = runtime.merged
-    kernel = TrainKernel(merged, runtime.device, runtime.logger, runtime.local_rank, mounting=runtime.mounting)
+    # The composition root's one assembly (ADR-0019 §2/#273): config
+    # resolution (before the distributed group forms), session bootstrap,
+    # logger, engine port, gradient executor, bypass mounting. This entry is
+    # the torchrun worker face, so it reuses that assembly here.
+    session = mask_train_session(args)
+    merged = session.merged
+    merged.amp = args.amp
+    merged.amp_dtype = args.amp_dtype
+    merged.env_config_path = args.env_config_path
+    merged.model_config_path = args.model_config_path
+    merged.model_def_path = args.model_def_path
+    with open(merged.modality_mapping_path) as handle:
+        merged.modality_mapping = json.load(handle)
+
+    kernel = TrainKernel(merged, session.device, session.logger, session.local_rank, mounting=session.mounting)
     return PhaseHarness(
         kernel=kernel,
         model_dir=merged.model_dir,
         n_epochs=merged.controlnet_train["n_epochs"],
-        amp=merged.amp,
-        amp_dtype=merged.amp_dtype,
-        local_rank=runtime.local_rank,
-        logger=runtime.logger,
-        recipe_check=MaskRecipeSpec(merged.controlnet_train, runtime.logger).check,
+        amp=args.amp,
+        amp_dtype=args.amp_dtype,
+        local_rank=session.local_rank,
+        logger=session.logger,
+        recipe_check=MaskRecipeSpec(merged.controlnet_train, session.logger).check,
         provenance=TrainProvenanceWriter(
             merged,
-            runtime.local_rank,
-            runtime.logger,
+            session.local_rank,
+            session.logger,
             domain_fields=lambda: {
                 "data_list": merged.json_data_list,
                 "trained_diffusion_path": merged.trained_diffusion_path,
@@ -239,7 +248,7 @@ def main(argv=None):
             },
             script_path=Path(__file__),
         ),
-        gradient_executor=runtime.gradient_executor,
+        gradient_executor=session.gradient_executor,
     ).run()
 
 

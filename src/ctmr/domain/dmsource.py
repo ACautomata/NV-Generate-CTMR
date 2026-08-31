@@ -72,6 +72,12 @@ class DmSourceLedger(Protocol):
     def check_record(self, record: dict) -> list[str]: ...
 
 
+DmSourceLedgerFactory = Callable[[Path], DmSourceLedger]
+"""The port-factory shape the application cases inject: one ledger per record
+root (the verify chain recursion reaches upstream records under their own
+root), realized in the composition root over ``dm_source.json``."""
+
+
 class DmSourceLedgerRules:
     """The ledger rules as pure decisions over an entry store.
 

@@ -33,7 +33,9 @@ import pytest
 import SimpleITK as sitk
 import torch
 
-from ctmr.application.generation.modality_label.monitor import FidTrendScorer, L2PostScore
+from ctmr.application.acceptance.distribution.token_dilution import ARM_ORDER
+from ctmr.application.generation.modality_label.monitor import CandidateSampler, FidTrendScorer, L2PostScore
+from ctmr.application.generation.modality_label.token_swap_sampling import TokenSwapSampler
 from ctmr.application.generation.trend import (
     DevCohortBuilder,
     L2TrendRunner,
@@ -112,6 +114,63 @@ def test_trend_ledger_roundtrip(tmp_path):
 
 
 # --------------------------------------------------- watch engine collaborators (issue #225)
+
+
+class _ToyVolumeNet(torch.nn.Module):
+    """One-conv stand-in for the sampler's load path (state roundtrip only)."""
+
+    def __init__(self):
+        super().__init__()
+        self.conv = torch.nn.Conv3d(4, 4, 3, padding=1)
+
+
+class _ScriptedSamplerEngine:
+    """Engine-port stand-in: hands back the prebuilt networks, counts the calls."""
+
+    def __init__(self, autoencoder, unet):
+        self._autoencoder = autoencoder
+        self._unet = unet
+        self.calls = []
+
+    def define_instance(self, args, instance_def_key):
+        self.calls.append(f"define_instance:{instance_def_key}")
+        return self._autoencoder if instance_def_key == "autoencoder_def" else self._unet
+
+    def recon_model(self, autoencoder, scale_factor):
+        self.calls.append("recon_model")
+        from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
+
+        return ReconModel(autoencoder=autoencoder, scale_factor=scale_factor)
+
+
+def test_candidate_sampler_loads_models_through_the_engine_port(tmp_path):
+    """The sidecar sampler reaches its networks only through the injected
+    GenerationEngine port (issue #272): define_instance for both networks,
+    recon_model for the VAE decode wrapper, checkpoints loaded verbatim."""
+    autoencoder, unet = _ToyVolumeNet(), _ToyVolumeNet()
+    with torch.no_grad():
+        autoencoder.conv.weight.fill_(0.25)
+    torch.save(autoencoder.state_dict(), tmp_path / "ae.pt")
+    torch.save({"unet_state_dict": unet.state_dict(), "scale_factor": 0.5}, tmp_path / "candidate.pt")
+    args = types.SimpleNamespace(
+        trained_autoencoder_path=str(tmp_path / "ae.pt"),
+        noise_scheduler={
+            "_target_": "monai.networks.schedulers.rectified_flow.RFlowScheduler",
+            "num_train_timesteps": 1000,
+            "use_discrete_timesteps": False,
+            "use_timestep_transform": True,
+            "sample_method": "uniform",
+            "scale": 1.4,
+        },
+    )
+    engine = _ScriptedSamplerEngine(autoencoder, unet)
+
+    model, recon = CandidateSampler(args, torch.device("cpu"), None, engine).load_models(tmp_path / "candidate.pt")
+
+    assert engine.calls == ["define_instance:autoencoder_def", "define_instance:diffusion_unet_def", "recon_model"]
+    assert recon.scale_factor == pytest.approx(0.5)
+    assert float(model.scale_factor) == pytest.approx(0.5)
+    assert torch.allclose(recon.autoencoder.conv.weight, torch.full_like(recon.autoencoder.conv.weight, 0.25))
 
 
 class _ScriptedFeatures:
@@ -302,3 +361,68 @@ def _trend_volume():
     image = sitk.GetImageFromArray((100.0 * np.exp(-(((xx - 100.0) ** 2 + (yy - 65.0) ** 2 + (zz - 40.0) ** 2) / 2.0e4))).astype(np.float32))
     image.SetSpacing((1.0, 2.0, 1.5))  # xyz mm
     return image
+
+
+# --------------------------------------------------- write-path affine (issue #249)
+
+# The real sampling spacing the v1 DM natively generates at (ruling #6 / #247). The
+# pre-fix sidecar writer declared unit 1 mm, which made the instrument chain's 1 mm
+# resample a no-op and produced the centroid pad-world artefacts the audit quantified.
+TRUE_DM_SPACING_AFFINE = np.diag([0.94, 0.94, 1.36, 1.0])
+
+
+class _StubSpacings:
+    """Stands in for CohortSpacingSource; the write path only reads spacing_of."""
+
+    def spacing_of(self, case):
+        return [0.94, 0.94, 1.36]
+
+
+def _stub_gpu_sampler(monkeypatch):
+    """Stub the GPU-bound model load / denoise so the write path runs CPU-only.
+
+    The seam under test is the on-disk affine, not the sampling, so the sampler
+    returns a synthetic volume and never touches a checkpoint or a device.
+    """
+    monkeypatch.setattr(CandidateSampler, "load_models", lambda self, checkpoint_path: (object(), object()))
+    monkeypatch.setattr(
+        CandidateSampler,
+        "sample_one",
+        lambda self, model, recon_model, modality_token, spacing, seed: np.zeros((256, 256, 128), dtype=np.int16),
+    )
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+
+
+def test_modality_label_write_stamps_the_true_dm_spacing(tmp_path, monkeypatch):
+    """The dev-sidecar write path declares the v1 DM's real spacing, not unit 1 mm.
+
+    Pin: a synthetic volume written through ``CandidateSampler.generate_cohort``
+    reads back with the true-spacing affine (never ``np.diag([1, 1, 1])``), so a
+    future write-path refactor cannot silently regress to the 1 mm convention.
+    """
+    _stub_gpu_sampler(monkeypatch)
+    cohort = [{"sub": "GLI", "case": "BraTS-GLI-0001-000"}]
+
+    # the injected engine port stays unused here: _stub_gpu_sampler replaced load_models wholesale
+    samples = CandidateSampler(types.SimpleNamespace(), torch.device("cpu"), None, None).generate_cohort(
+        "/ckpt/epoch_20.pt", cohort, _StubSpacings(), tmp_path
+    )
+
+    assert samples  # one sample per target modality was written
+    for sample in samples:
+        affine = nib.load(sample["path"]).affine
+        assert np.allclose(affine, TRUE_DM_SPACING_AFFINE), sample["path"]
+        assert not np.allclose(np.diag(affine)[:3], (1.0, 1.0, 1.0)), sample["path"]  # the retired convention
+
+
+def test_token_swap_write_stamps_the_true_dm_spacing(tmp_path, monkeypatch):
+    """The job-D diagnostic arm shares the modality-label write path (#249): its
+    five per-case products carry the same true-spacing affine."""
+    _stub_gpu_sampler(monkeypatch)
+    sampler = TokenSwapSampler(types.SimpleNamespace(), torch.device("cpu"), None)
+
+    written = sampler.sample_cohort("/ckpt/epoch_20.pt", [{"case": "BraTS-GLI-0001-000"}], _StubSpacings(), tmp_path)
+
+    assert written == len(ARM_ORDER)
+    for path in tmp_path.glob("*.nii.gz"):
+        assert np.allclose(nib.load(str(path)).affine, TRUE_DM_SPACING_AFFINE), path.name

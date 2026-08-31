@@ -45,7 +45,7 @@ Migrated from the retired mask dev-eval script entry (ticket 09, ADR-0015
 §2); its ``selftest`` subcommand retired with it — its assertions live as
 pytest functions in tests/application/generation/mask. Since #273
 (ADR-0019 §2) the watch face locates the engine through the composition
-root's ``generation_engine`` lookup: the merged config comes from the
+root's ``mask_engine`` lookup: the merged config comes from the
 ``GenerationEngine`` port, handed on to the sampler; the family assembles no
 infrastructure itself.
 
@@ -84,7 +84,7 @@ from ctmr.application.shell import (
 )
 from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter
 from ctmr.domain.measurement import REGIONS, DiceScore, RegionMasks
-from ctmr.wiring.generate import generation_engine
+from ctmr.wiring.generate import mask_engine
 
 # Mask condition combined mask -> instrument label space (REGION_LABELS = {1,2,3}).
 COMBINED_TO_INSTRUMENT = {22: 0, 129: 1, 130: 2, 131: 3}
@@ -352,7 +352,7 @@ def main(argv=None):
     (eval_root / "early_stop_rule.json").write_text(
         json.dumps({"rule": rule.rule_text(), "patience": args.patience, "min_epoch": args.min_epoch, "max_epoch": args.max_epoch}, indent=2) + "\n"
     )
-    engine = generation_engine()
+    engine = mask_engine()
     merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
     merged.cfg_guidance_scale = 10.0

@@ -24,7 +24,7 @@ domain kernel, and controlled-storage placement enforced.
 import json
 from pathlib import Path
 
-from ctmr.application.acceptance.contract.artifacts import ArtifactFingerprinter, ManifestSides
+from ctmr.application.acceptance.contract.artifacts import ManifestSides
 from ctmr.application.acceptance.contract.binding import STATUS_FROZEN
 from ctmr.application.acceptance.contract.conclude import FinalAcceptanceJudge
 from ctmr.application.acceptance.contract.guard import HoldoutGuard
@@ -39,14 +39,21 @@ from ctmr.application.acceptance.contract.record import (
     RunRecordStore,
 )
 from ctmr.application.acceptance.contract.registry import ACCEPTANCE_LAYERS, FORMAL_LAYER_KINDS
-from ctmr.infrastructure.dmsource import DmSourceLedger
+from ctmr.domain.dmsource import DmSourceLedgerFactory, DmSourceViolationError
 
 
 class RunVerifier:
-    """Reconciles one run record against the contract: hashes, guard, phase chain, storage."""
+    """Reconciles one run record against the contract: hashes, guard, phase chain, storage.
 
-    def __init__(self, fingerprinter):
+    ``ledger_factory`` is the injected ``(record_root) -> DmSourceLedger`` port
+    (ADR-0019 §2/§3): the DM-source consultation draws one ledger per record
+    root -- the chain recursion reaches the upstream record under its own root,
+    so a factory over roots is the injection shape, not a single instance.
+    """
+
+    def __init__(self, fingerprinter, ledger_factory: DmSourceLedgerFactory):
         self._fingerprinter = fingerprinter
+        self._ledger_factory = ledger_factory
         self.failures = []
 
     def check(self, cond, msg):
@@ -99,7 +106,7 @@ class RunVerifier:
         verdict_path = FinalAcceptanceJudge.verdict_path_for(record_path)
         if not verdict_path.is_file():
             return
-        judge = FinalAcceptanceJudge(RunRecordStore.for_run(record_path), ArtifactFingerprinter())
+        judge = FinalAcceptanceJudge(RunRecordStore.for_run(record_path), self._fingerprinter, self._ledger_factory)
         for failure in judge.revalidate_verdict(record, verdict_path):
             self.failures.append(f"final acceptance: {failure}")
 
@@ -211,7 +218,11 @@ class RunVerifier:
         self.verify_guard(record)
         resolved_path = record_path or Path(record.get("run_id", "."))
         self.verify_storage(resolved_path)
-        for failure in DmSourceLedger(RunRecordStore.for_run(resolved_path).root()).check_record(record):
+        try:
+            dm_failures = self._ledger_factory(RunRecordStore.for_run(resolved_path).root()).check_record(record)
+        except DmSourceViolationError as violation:
+            raise ContractViolationError(str(violation)) from violation
+        for failure in dm_failures:
             self.failures.append(f"dm source: {failure}")
         self.verify_final_acceptance(record, resolved_path)
         if chain_depth == 0:

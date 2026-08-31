@@ -62,6 +62,7 @@ from pathlib import Path
 import numpy as np
 import SimpleITK as sitk
 
+from ctmr.domain.dm_output_grid import V1_DM_OUTPUT_GRID
 from ctmr.domain.grid import InstrumentGridAdapter
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
 from ctmr.domain.measurement import REGIONS, DiceScore, HierarchyChecker, RegionMasks, WilsonUpper
@@ -89,9 +90,10 @@ NNUNET_CHANNELS = {
 # BraTS 标签语义
 BRATS_LABELS = {"WT": (1, 2, 3), "TC": (1, 3), "ET": (3,)}
 
-# v1 DM 输出参数（#10 P1 配方钉板）
-V1_DM_OUTPUT_SIZE = (256, 256, 128)
-V1_DM_SPACING = (0.94, 0.94, 1.36)  # mm
+# v1 DM 输出参数（#10 P1 配方钉板）——唯一定义点在 domain 叶 ``dm_output_grid``
+# (#249 写出协议修复的单一定义点);此处再导出,消费面不变。
+V1_DM_OUTPUT_SIZE = V1_DM_OUTPUT_GRID.size
+V1_DM_SPACING = V1_DM_OUTPUT_GRID.spacing  # mm
 
 # 每个子挑战用于合成域评估的样本数
 SAMPLES_PER_CHALLENGE = {

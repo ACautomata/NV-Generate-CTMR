@@ -19,15 +19,18 @@ the final-acceptance verdict schema), the contract-violation error type, the
 best-effort git provenance snapshot, and the controlled record-root store.
 Records live in controlled storage; a record root inside a git work tree is
 a verification failure (DUA-constrained outputs must not enter the repo).
+
+Since #271 (ADR-0019 §3) the contract-violation type is contract-owned: an
+``Exception`` subclass defined here, not an alias of an infrastructure error.
+The DM-source ledger's domain violation (``ctmr.domain.dmsource``) is
+translated into this type at the port boundary (lifecycle / conclude /
+verify); everything this module raises natively is already contractual.
 """
 
 import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
-
-from ctmr.application.acceptance.contract.artifacts import ArtifactFingerprinter
-from ctmr.infrastructure.dmsource import DmSourceViolationError
 
 SCHEMA = "brats-phase-run/1"
 PHASES = ("P1", "P2", "P3")
@@ -42,27 +45,34 @@ UPSTREAM_PHASE = "P1"  # P2 and P3 both hang off the same frozen P1-DM
 
 FINAL_ACCEPTANCE_SCHEMA = "brats-final-acceptance/1"
 
-# Issue #135: the ledger's violation type IS the contract-violation type, so
-# ``except ContractViolationError`` keeps catching ledger gates unchanged.
-# Since #269 (ADR-0019 §3) that violation's canonical home is
-# ``ctmr.domain.dmsource`` -- the name imported below is the domain class, the
-# infrastructure spelling being the re-export face the ratchet pins until the
-# contract-family migration (#271) retires the alias in favor of a
-# contract-owned type.
-ContractViolationError = DmSourceViolationError
+
+class ContractViolationError(Exception):
+    """The run contract's own violation type (ADR-0019 §3: contract-owned since #271).
+
+    Raised natively by every contract rule, and the boundary translation of
+    the DM-source ledger's ``DmSourceViolationError`` -- one catch type for
+    every contract gate.
+    """
 
 
 class CodeVersion:
-    """Best-effort provenance of the contract code itself (git is optional on sugon copies)."""
+    """Best-effort provenance of the contract code itself (git is optional on sugon copies).
 
-    def __init__(self, script_path):
+    ``fingerprinter`` is injected (the artifact fingerprinter the lifecycle
+    already holds); record.py itself stays import-free of the evidence
+    micro-tools, which need this module's violation type -- the import cycle
+    the pre-#271 alias hack papered over.
+    """
+
+    def __init__(self, script_path, fingerprinter):
         self._script_path = Path(script_path)
+        self._fingerprinter = fingerprinter
 
     def snapshot(self):
         record = {
             "git_commit": None,
             "git_dirty": None,
-            "script_sha256": ArtifactFingerprinter().file_sha256(self._script_path),
+            "script_sha256": self._fingerprinter.file_sha256(self._script_path),
         }
         probe = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self._script_path.parent, capture_output=True, text=True)
         if probe.returncode != 0:

@@ -78,7 +78,7 @@ from ctmr.domain.engine import GenerationEngine
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.generation.tumor_removal import remove_tumors
-from ctmr.wiring.generate import generation_engine
+from ctmr.wiring.generate import mask_engine
 
 GRID = (256, 256, 128)
 LATENT_SHAPE = (1, 4, 64, 64, 32)  # the VAE latent grid (4x downsampled per axis)
@@ -383,7 +383,7 @@ def main(argv=None):
         print(f"run {run_record.get('run_id')} has no selection; record the dev-side selection first", file=sys.stderr)
         return 1
     manifest = json.loads(Path(args.manifest).read_text())
-    engine = generation_engine()
+    engine = mask_engine()
     merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
     merged.cfg_guidance_scale = 10.0

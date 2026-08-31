@@ -42,9 +42,9 @@ importable on any machine without them (pinned by the CLI purity gates in
 tests/test_cli_entry and tests/test_wiring). Pure dispatch (ADR-0019 §2,
 issue #270): the interface layer imports no infrastructure and assembles no
 runtime -- the concrete knowledge (the nnUNetv2 adapter behind ``measure
-predict``, the torchrun topology behind the train verbs) settles in the
-composition root ``ctmr.wiring``, and the torchrun worker entry reuses the
-same train assembly.
+predict``, the torchrun topology behind the train verbs, the DM-source ledger
+behind the contract verbs) settles in the composition root ``ctmr.wiring``,
+and the torchrun worker entry reuses the same train assembly.
 """
 
 from __future__ import annotations
@@ -117,12 +117,14 @@ VERBS: dict[tuple[str, ...], VerbRoute] = {
         "ctmr.application.acceptance.expert_review.aggregate",
         help="aggregate blinded judgments into the candidate-bound L3 report",
     ),
-    ("accept", "contract", "init"): VerbRoute("ctmr.application.acceptance.contract.cli", peel_verb=False),
-    ("accept", "contract", "select"): VerbRoute("ctmr.application.acceptance.contract.cli", peel_verb=False),
-    ("accept", "contract", "freeze"): VerbRoute("ctmr.application.acceptance.contract.cli", peel_verb=False),
-    ("accept", "contract", "attach"): VerbRoute("ctmr.application.acceptance.contract.cli", peel_verb=False),
-    ("accept", "contract", "conclude"): VerbRoute("ctmr.application.acceptance.contract.cli", peel_verb=False),
-    ("accept", "contract", "verify"): VerbRoute("ctmr.application.acceptance.contract.cli", peel_verb=False),
+    # the contract verbs ride the composition root: the DM-source ledger the
+    # contract face consults is wiring's injection, never the interface's (ADR-0019 §2)
+    ("accept", "contract", "init"): VerbRoute("ctmr.wiring.contract", peel_verb=False),
+    ("accept", "contract", "select"): VerbRoute("ctmr.wiring.contract", peel_verb=False),
+    ("accept", "contract", "freeze"): VerbRoute("ctmr.wiring.contract", peel_verb=False),
+    ("accept", "contract", "attach"): VerbRoute("ctmr.wiring.contract", peel_verb=False),
+    ("accept", "contract", "conclude"): VerbRoute("ctmr.wiring.contract", peel_verb=False),
+    ("accept", "contract", "verify"): VerbRoute("ctmr.wiring.contract", peel_verb=False),
 }
 
 # Spelling-tree help for the intermediate case/layer nodes. Not a routing

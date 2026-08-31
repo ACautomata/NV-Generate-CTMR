@@ -10,7 +10,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The generate family's assembly (ADR-0019 §2, issues #270/#273).
+"""The generate family's assembly (ADR-0019 §2, issues #270/#272/#273).
 
 The train verbs' runtime topology: ``ctmr generate <case> train`` arrives
 WITHOUT torchrun and derives the ``torchrun --nproc_per_node=<num_gpus> -m
@@ -24,28 +24,33 @@ to; the train modules themselves load lazily on dispatch (they are the
 production torch entries).
 
 The per-case port assemblies land with the family migration tickets: the
-mask family (#273) is here -- ``mask_train_runtime`` hoists every concrete
-construction the mask train entry used to make (the engine config merge with
-the CLI flags patched in, the distributed session bootstrap, the run logger,
-the amp-selected precision executor, the bypass mounting) and
-``generation_engine`` is the lazy adapter lookup behind the sampling and
-monitoring faces; modality-label (#272) and cross-modal (#274) follow.
+modality-label (#272) and mask (#273) families' are here -- the engine
+adapter, the distributed session + logger, the gradient executor chosen by
+the amp declaration, and the modality-label MONAI-checkpoint archive behind
+the ``CheckpointRepository`` load face (ADR-0019 §2: concrete knowledge
+settles nowhere else; §3: the family entries consume only domain ports). The
+torchrun worker entry reuses the same assembly: the family ``main`` imports
+it from here, so the worker process assembles through the composition root
+too. cross-modal follows with #274.
 """
 
 from __future__ import annotations
 
 import importlib
-import json
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ctmr.application.generation.launcher import TorchrunLauncher, num_gpus_of
 
-if TYPE_CHECKING:  # port types for the runtime record's annotations only --
-    # the runtime imports stay lazy, the composition root stays stdlib-light
-    from ctmr.domain.generation.mounting import BypassMounting
-    from ctmr.domain.generation.update import GradientExecutor
+if TYPE_CHECKING:
+    from argparse import Namespace
+
+    import torch
+
+    from ctmr.domain.checkpoints import CheckpointRepository
+    from ctmr.domain.engine import GenerationEngine
+    from ctmr.domain.generation import BypassMounting, GradientExecutor
     from ctmr.domain.logging import Logger
 
 
@@ -67,66 +72,120 @@ class TrainDispatch:
         return TorchrunLauncher(self._module, self._argv, num_gpus_of(self._argv)).run()
 
 
-def generation_engine():
-    """The ``GenerationEngine`` adapter behind the generate families' config,
-    model-loading and inference faces (ADR-0019 §2): one lazy lookup, so
-    importing the composition root stays stdlib-light."""
-    return importlib.import_module("ctmr.infrastructure.engine").MaisiEngine()
+class MonaiCheckpointArchive:
+    """MONAI-pickled training checkpoints behind the CheckpointRepository load
+    face (ADR-0019 §3, #272).
+
+    The P1 base checkpoint pickles MONAI meta-tensor globals: the allowlisted
+    weights_only realization (``MonaiCheckpoint``) is mounted here in the
+    composition root and reaches the family only as the domain port."""
+
+    def __init__(self, device):
+        self._device = device
+
+    def load(self, path):
+        bypass_mounting = importlib.import_module("ctmr.infrastructure.bypass_mounting")
+        return bypass_mounting.MonaiCheckpoint(path, self._device).load()
 
 
 @dataclass
-class MaskTrainRuntime:
-    """What the mask train assembly hands the trainer entry (ADR-0019 §2, #273).
+class ModalityLabelTrainSession:
+    """The assembled modality-label train runtime (ADR-0019 §2, #272): the
+    port set the family entry consumes, constructed nowhere else. ``merged``
+    is the parsed config namespace -- resolution happens inside the assembly,
+    before the distributed group forms, so a bad config fails on every rank
+    ahead of any collective (the pre-migration ordering)."""
 
-    The merged config namespace, the distributed session (local rank +
-    device), the run logger, the injected runtime precision strategy and the
-    bypass mounting -- every concrete construction the entry used to make
-    itself, hoisted here so the application entry sees ports only.
-    """
-
-    merged: Any
     local_rank: int
-    device: Any
+    device: torch.device
     logger: Logger
+    engine: GenerationEngine
+    gradient_executor: GradientExecutor
+    base_checkpoints: CheckpointRepository
+    merged: Namespace
+
+
+@dataclass
+class MaskTrainSession:
+    """The assembled mask train runtime (ADR-0019 §2, #273): the port set
+    the family entry consumes, constructed nowhere else. ``merged`` is the
+    parsed config namespace -- resolution happens inside the assembly, before
+    the distributed group forms, so a bad config fails on every rank ahead of
+    any collective (the pre-migration ordering). The bypass mounting is the
+    domain port the kernel composes the entities from."""
+
+    local_rank: int
+    device: torch.device
+    logger: Logger
+    engine: GenerationEngine
     gradient_executor: GradientExecutor
     mounting: BypassMounting
+    merged: Namespace
 
 
-def mask_train_runtime(args) -> MaskTrainRuntime:
-    """Assemble the mask train runtime (ADR-0019 §2, #273): the engine
-    config merge with the CLI flags patched in, the modality mapping read,
-    the distributed session bootstrap, the run logger, the amp-flag-selected
-    precision executor and the bypass mounting. The adapters load lazily on
-    dispatch (the ``cli.py`` discipline)."""
+def modality_label_engine():
+    """The modality-label family's GenerationEngine assembly (ADR-0019 §2, #272)."""
+    return importlib.import_module("ctmr.infrastructure.engine").MaisiEngine()
+
+
+def mask_engine():
+    """The mask family's GenerationEngine assembly (ADR-0019 §2, #273)."""
+    return importlib.import_module("ctmr.infrastructure.engine").MaisiEngine()
+
+
+def modality_label_train_session(args, engine=None):
+    """The modality-label train assembly (ADR-0019 §2, #272): the config
+    resolution (strictly before the distributed bootstrap -- a malformed
+    config must fail on every rank ahead of any collective), the session
+    bootstrap, the logger, the gradient executor chosen by the amp
+    declaration, and the base-checkpoint archive."""
+    engine = engine if engine is not None else modality_label_engine()
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     setting = importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting")
     executors = importlib.import_module("ctmr.infrastructure.gradient_executors")
-    mounting = importlib.import_module("ctmr.infrastructure.bypass_mounting")
-
-    merged = generation_engine().load_config(args.env_config_path, args.model_config_path, args.model_def_path)
-    merged.amp = args.amp
-    merged.amp_dtype = args.amp_dtype
-    merged.env_config_path = args.env_config_path
-    merged.model_config_path = args.model_config_path
-    merged.model_def_path = args.model_def_path
-    with open(merged.modality_mapping_path) as handle:
-        merged.modality_mapping = json.load(handle)
-
     local_rank, _world, device = setting.initialize_distributed(args.num_gpus)
-    logger = setting.setup_logging("mask-finetune")
-    # The runtime precision strategy (ADR-0016): fp16 (scaler), bf16 (DCU
-    # default) or non-AMP plain execution -- selected here, typed to the
-    # application as the domain GradientExecutor port.
     if args.amp and args.amp_dtype == "fp16":
         gradient_executor = executors.Fp16GradientExecutor()
     elif args.amp:
         gradient_executor = executors.Bf16GradientExecutor()
     else:
         gradient_executor = executors.PlainGradientExecutor()
-    return MaskTrainRuntime(
+    return ModalityLabelTrainSession(
+        local_rank=local_rank,
+        device=device,
+        logger=setting.setup_logging("modality-label-finetune"),
+        engine=engine,
+        gradient_executor=gradient_executor,
+        base_checkpoints=MonaiCheckpointArchive(device),
         merged=merged,
+    )
+
+
+def mask_train_session(args, engine=None):
+    """The mask train assembly (ADR-0019 §2, #273): the config resolution
+    (strictly before the distributed bootstrap -- a malformed config must
+    fail on every rank ahead of any collective), the session bootstrap, the
+    logger, the gradient executor chosen by the amp declaration, and the
+    bypass mounting the kernel composes the domain entities from."""
+    engine = engine if engine is not None else mask_engine()
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    setting = importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting")
+    executors = importlib.import_module("ctmr.infrastructure.gradient_executors")
+    mounting = importlib.import_module("ctmr.infrastructure.bypass_mounting")
+    local_rank, _world, device = setting.initialize_distributed(args.num_gpus)
+    logger = setting.setup_logging("mask-finetune")
+    if args.amp and args.amp_dtype == "fp16":
+        gradient_executor = executors.Fp16GradientExecutor()
+    elif args.amp:
+        gradient_executor = executors.Bf16GradientExecutor()
+    else:
+        gradient_executor = executors.PlainGradientExecutor()
+    return MaskTrainSession(
         local_rank=local_rank,
         device=device,
         logger=logger,
+        engine=engine,
         gradient_executor=gradient_executor,
         mounting=mounting.BypassMounting(merged, device, logger),
+        merged=merged,
     )
