@@ -38,6 +38,9 @@ from ctmr.application.acceptance.contract import (
     QUANTITATIVE_PLANES,
     QUANTITATIVE_SCHEMA,
     QUANTITATIVE_T1N_TO_T1C,
+    SCHEMA,
+    STATUS_FROZEN,
+    STATUS_OPEN,
     ArtifactFingerprinter,
     CandidateFreezer,
     ContractViolationError,
@@ -49,6 +52,8 @@ from ctmr.application.acceptance.contract import (
     RunVerifier,
     SelectionRecorder,
 )
+from ctmr.domain.dmsource import DmSourceViolationError
+from ctmr.domain.identity import WeightsRef
 from ctmr.infrastructure.dmsource import DmSourceLedger
 
 QUOTAS = {
@@ -123,7 +128,8 @@ def expect_reject(action, label):
 
 
 def initializer(store, fingerprinter, fixture_root):
-    return RunInitializer(store, fingerprinter, ManifestSides.from_path(fixture_root / "phase_manifest.json"))
+    """The real-adapter wiring: the json-backed ledger factory rides every use case (the composition root's injection, observed)."""
+    return RunInitializer(store, fingerprinter, ManifestSides.from_path(fixture_root / "phase_manifest.json"), DmSourceLedger)
 
 
 def open_passing_candidate(tmp_path, store, fingerprinter, fixture_root, run_id, checkpoint=None):
@@ -421,7 +427,7 @@ def test_p1_positive_path_with_negative_attachment_probes(tmp_path, fixture_root
     )
     ReportAttacher(records, fingerprinter).attach(p1_path, "l3_report", fixture_root / "l3_report.json")
 
-    verifier = RunVerifier(fingerprinter)
+    verifier = RunVerifier(fingerprinter, DmSourceLedger)
     failures = verifier.verify(records.load_by_path(p1_path), record_path=p1_path)
     assert failures == []
 
@@ -475,7 +481,7 @@ def test_p1_replay_positive_path(tmp_path, fixture_root, fingerprinter):
         None,
     )
 
-    failures = RunVerifier(fingerprinter).verify(replay_store.load_by_path(replay_path), record_path=replay_path)
+    failures = RunVerifier(fingerprinter, DmSourceLedger).verify(replay_store.load_by_path(replay_path), record_path=replay_path)
 
     assert failures == []
 
@@ -551,7 +557,7 @@ def test_final_acceptance_blocked_with_traceable_reasons_and_no_dm_registration(
     attacher.attach(p1_path, "l3_report", fixture_root / "l3_report.json")
     write_l2_report(fixture_root / "l2_report.json", records.load_by_path(p1_path))
     attacher.attach(p1_path, "l2_report", fixture_root / "l2_report.json")
-    judge = FinalAcceptanceJudge(records, fingerprinter)
+    judge = FinalAcceptanceJudge(records, fingerprinter, DmSourceLedger)
 
     blocked_entry, _blocked_path = judge.conclude(p1_path)  # L1 fail + L2/L3 pass -> blocked
 
@@ -568,7 +574,7 @@ def test_final_acceptance_blocked_with_traceable_reasons_and_no_dm_registration(
     flipped["verdict"] = "pass"
     flipped["blocked_reasons"] = []
     flipped_path.write_text(json.dumps(flipped))
-    failures = RunVerifier(fingerprinter).verify(records.load_by_path(p1_path), record_path=p1_path)
+    failures = RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(p1_path), record_path=p1_path)
 
     assert any("non-compensatory AND" in failure for failure in failures)
 
@@ -584,7 +590,7 @@ def test_l2_undecided_blocks_final_acceptance(tmp_path, fixture_root, fingerprin
     write_l3_report(fixture_root / "l3_undecided_run_report.json", records.load_by_path(p1_undecided_path))
     attacher.attach(p1_undecided_path, "l3_report", fixture_root / "l3_undecided_run_report.json")
 
-    undecided_entry, _ = FinalAcceptanceJudge(records, fingerprinter).conclude(p1_undecided_path)
+    undecided_entry, _ = FinalAcceptanceJudge(records, fingerprinter, DmSourceLedger).conclude(p1_undecided_path)
 
     assert undecided_entry["verdict"] == "blocked"
     assert any("L2 SSA: undecided" in r for r in undecided_entry["blocked_reasons"])
@@ -602,7 +608,7 @@ def test_final_acceptance_pass_registers_dm_source(tmp_path, fixture_root, finge
     attacher.attach(p1_final_path, "l2_report", fixture_root / "l2_pass_report.json")
     write_l3_report(fixture_root / "l3_pass_report.json", p1_final_record)
     attacher.attach(p1_final_path, "l3_report", fixture_root / "l3_pass_report.json")
-    judge = FinalAcceptanceJudge(records, fingerprinter)
+    judge = FinalAcceptanceJudge(records, fingerprinter, DmSourceLedger)
 
     pass_entry, _ = judge.conclude(p1_final_path)
 
@@ -615,7 +621,7 @@ def test_final_acceptance_pass_registers_dm_source(tmp_path, fixture_root, finge
     assert source["checkpoint"]["sha256"] == p1_final_record["selection"]["checkpoint"]["sha256"]
     with pytest.raises(ContractViolationError, match="immutable"):
         judge.conclude(p1_final_path)
-    failures = RunVerifier(fingerprinter).verify(records.load_by_path(p1_final_path), record_path=p1_final_path)
+    failures = RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(p1_final_path), record_path=p1_final_path)
     assert failures == []
 
 
@@ -632,7 +638,7 @@ def registered_source(tmp_path, fixture_root, fingerprinter):
     attacher.attach(p1_final_path, "l2_report", fixture_root / "l2_pass_report.json")
     write_l3_report(fixture_root / "l3_pass_report.json", p1_final_record)
     attacher.attach(p1_final_path, "l3_report", fixture_root / "l3_pass_report.json")
-    entry, _ = FinalAcceptanceJudge(records, fingerprinter).conclude(p1_final_path)
+    entry, _ = FinalAcceptanceJudge(records, fingerprinter, DmSourceLedger).conclude(p1_final_path)
     assert entry["verdict"] == "pass"
     open_store = store_at(tmp_path, "records_open")
     open_path = initializer(open_store, fingerprinter, fixture_root).init(
@@ -711,7 +717,7 @@ def test_phase_chain_gates(tmp_path, fixture_root, fingerprinter, registered_sou
         p1_final_path,
         None,
     )
-    assert RunVerifier(fingerprinter).verify(records.load_by_path(p2_combined_path), record_path=p2_combined_path) == []
+    assert RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(p2_combined_path), record_path=p2_combined_path) == []
     with pytest.raises(ContractViolationError):
         initializer(store_at(tmp_path, "records_comb_reject"), fingerprinter, fixture_root).init(
             "P1",
@@ -769,8 +775,8 @@ def test_phase_chain_gates(tmp_path, fixture_root, fingerprinter, registered_sou
     write_l1_report(fixture_root / "p3_l1_report.json", records.load_by_path(p3_path))
     ReportAttacher(records, fingerprinter).attach(p3_path, "l1_report", fixture_root / "p3_l1_report.json")
 
-    assert RunVerifier(fingerprinter).verify(records.load_by_path(p2_path), record_path=p2_path) == []
-    assert RunVerifier(fingerprinter).verify(records.load_by_path(p3_path), record_path=p3_path) == []
+    assert RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(p2_path), record_path=p2_path) == []
+    assert RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(p3_path), record_path=p3_path) == []
 
 
 def test_stage0_baseline_is_the_comparison_floor(tmp_path, fixture_root, fingerprinter, registered_source):
@@ -836,11 +842,11 @@ def test_stage0_baseline_is_the_comparison_floor(tmp_path, fixture_root, fingerp
         stage0_path, upstream_ckpt, "zero-training stage-0 baseline: DM is the upstream P1-DM selection", [fixture_root / "dev_metrics.json"], None
     )
     CandidateFreezer(records, fingerprinter).freeze(stage0_path, fixture_root / "samples.json")
-    assert RunVerifier(fingerprinter).verify(records.load_by_path(stage0_path), record_path=stage0_path) == []
+    assert RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(stage0_path), record_path=stage0_path) == []
     with pytest.raises(ContractViolationError, match="comparison floor"):
         ReportAttacher(records, fingerprinter).attach(stage0_path, "l1_report", fixture_root / "l1_report.json")
     with pytest.raises(ContractViolationError, match="never takes final acceptance"):
-        FinalAcceptanceJudge(records, fingerprinter).conclude(stage0_path)
+        FinalAcceptanceJudge(records, fingerprinter, DmSourceLedger).conclude(stage0_path)
 
     # A P1 record carrying the P3-only variant marker must fail verification.
     p1_frozen = records.load_by_path(next(path for path in records.all_record_paths() if "p1-final" in str(path)))
@@ -849,7 +855,7 @@ def test_stage0_baseline_is_the_comparison_floor(tmp_path, fixture_root, fingerp
     tainted_path = Path(stage0_path).parent.parent / "runs" / "p1-tainted-variant" / "run.json"
     tainted_path.parent.mkdir(parents=True, exist_ok=True)
     tainted_path.write_text(json.dumps(tainted))
-    failures = RunVerifier(fingerprinter).verify(records.load_by_path(tainted_path), record_path=tainted_path)
+    failures = RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(tainted_path), record_path=tainted_path)
     assert any("variant" in failure for failure in failures)
 
     # A hand-edited stage-0 record with a formal report attached must fail verification.
@@ -858,7 +864,7 @@ def test_stage0_baseline_is_the_comparison_floor(tmp_path, fixture_root, fingerp
     tainted_stage0_path = Path(stage0_path).parent.parent / "runs" / "p3-stage0-tainted" / "run.json"
     tainted_stage0_path.parent.mkdir(parents=True, exist_ok=True)
     tainted_stage0_path.write_text(json.dumps(tainted_stage0))
-    failures = RunVerifier(fingerprinter).verify(records.load_by_path(tainted_stage0_path), record_path=tainted_stage0_path)
+    failures = RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(tainted_stage0_path), record_path=tainted_stage0_path)
     assert any("stage-0" in failure for failure in failures)
 
 
@@ -888,7 +894,7 @@ def test_dm_retrain_supersedes_source_and_mismatches_old_bypasses(tmp_path, fixt
     write_l3_report(fixture_root / "l3_retrained_report.json", retrained_record)
     attacher.attach(p1_retrained_path, "l3_report", fixture_root / "l3_retrained_report.json")
 
-    retrained_entry, _ = FinalAcceptanceJudge(records, fingerprinter).conclude(p1_retrained_path)
+    retrained_entry, _ = FinalAcceptanceJudge(records, fingerprinter, DmSourceLedger).conclude(p1_retrained_path)
 
     assert retrained_entry["verdict"] == "pass"
     superseded = DmSourceLedger(records.root()).current()
@@ -896,9 +902,9 @@ def test_dm_retrain_supersedes_source_and_mismatches_old_bypasses(tmp_path, fixt
     assert superseded["superseded_run_id"] == "p1-final"
 
     # the old bypass now fails verification explicitly (a retrained DM invalidates it)
-    failures = RunVerifier(fingerprinter).verify(records.load_by_path(p2_stale), record_path=p2_stale)
+    failures = RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(p2_stale), record_path=p2_stale)
     assert any("DM was retrained" in failure for failure in failures)
-    assert RunVerifier(fingerprinter).verify(records.load_by_path(p1_retrained_path), record_path=p1_retrained_path) == []
+    assert RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(p1_retrained_path), record_path=p1_retrained_path) == []
 
 
 def test_tamper_detection_flags_a_changed_checkpoint(tmp_path, fixture_root, fingerprinter):
@@ -908,7 +914,7 @@ def test_tamper_detection_flags_a_changed_checkpoint(tmp_path, fixture_root, fin
     original = tampered.read_bytes()
     tampered.write_bytes(b"tampered")
     try:
-        failures = RunVerifier(fingerprinter).verify(records.load_by_path(p1_path), record_path=p1_path)
+        failures = RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(p1_path), record_path=p1_path)
     finally:
         tampered.write_bytes(original)
     assert any("sha256 changed" in f or "missing on disk" in f for f in failures)
@@ -923,6 +929,185 @@ def test_storage_guard_flags_a_record_inside_a_git_work_tree(tmp_path, fixture_r
     repo_records.parent.mkdir(parents=True, exist_ok=True)
     repo_records.write_text(p1_path.read_text())
 
-    failures = RunVerifier(fingerprinter).verify(records.load_by_path(p1_path), record_path=repo_records)
+    failures = RunVerifier(fingerprinter, DmSourceLedger).verify(records.load_by_path(p1_path), record_path=repo_records)
 
     assert any("git work tree" in f for f in failures)
+
+
+# ------------------------------------------------------- the injected DM-source port (#271)
+#
+# The three ledger-gated use cases (derive_upstream / conclude / verify) ride the
+# injected ``DmSourceLedger`` port; the json adapter is the composition root's
+# choice, not theirs. These gates drive the port with an in-memory fake -- no
+# dm_source.json is touched -- and pin the boundary translation: a domain ledger
+# violation surfaces as the contract's own violation type.
+
+
+class FakeDmSourceLedger:
+    """In-memory DmSourceLedger port: calls recorded, rejection/failure behavior programmable."""
+
+    def __init__(self, check_upstream_error=None, register_error=None, record_failures=()):
+        self._check_upstream_error = check_upstream_error
+        self._register_error = register_error
+        self._record_failures = list(record_failures)
+        self.check_upstream_calls = []
+        self.register_calls = []
+        self.check_record_calls = []
+
+    def check_upstream(self, upstream_run_id, checkpoint):
+        self.check_upstream_calls.append((upstream_run_id, checkpoint))
+        if self._check_upstream_error is not None:
+            raise self._check_upstream_error
+
+    def register(self, record, run_record_path):
+        self.register_calls.append((record["run_id"], run_record_path))
+        if self._register_error is not None:
+            raise self._register_error
+        return {"schema": "brats-dm-source/1", "run_id": record["run_id"]}
+
+    def check_record(self, record):
+        self.check_record_calls.append(record)
+        return list(self._record_failures)
+
+
+class FakeLedgerFactory:
+    """The ``(record_root) -> ledger`` injection: every root it is asked for is recorded."""
+
+    def __init__(self, **ledger_behavior):
+        self._ledger_behavior = ledger_behavior
+        self.roots = []
+        self.ledgers = []
+
+    def __call__(self, record_root):
+        self.roots.append(Path(record_root))
+        ledger = FakeDmSourceLedger(**self._ledger_behavior)
+        self.ledgers.append(ledger)
+        return ledger
+
+
+def _write_frozen_p1_record(root, run_id, checkpoint_path, checkpoint_sha):
+    """A minimal frozen P1 run.json: enough shape for load_by_path, derive_upstream, and a chain recursion."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "manifest.json").write_text('{"challenges": {}}')
+    record = {
+        "schema": SCHEMA,
+        "run_id": run_id,
+        "phase": "P1",
+        "variant": None,
+        "status": STATUS_FROZEN,
+        "manifest": {"path": str(root / "manifest.json"), "sha256": "0" * 64},
+        "configs": [],
+        "data_lists": [],
+        "base_ckpt": None,
+        "upstream": None,
+        "selection": {"checkpoint": {"path": str(checkpoint_path), "sha256": checkpoint_sha, "epoch": 5}, "evidence": []},
+    }
+    run_path = root / "runs" / run_id / "run.json"
+    run_path.parent.mkdir(parents=True, exist_ok=True)
+    run_path.write_text(json.dumps(record))
+    return run_path
+
+
+def test_derive_upstream_pins_the_registered_source_through_the_injected_port(tmp_path, fingerprinter):
+    store = RunRecordStore(tmp_path / "records")
+    checkpoint = tmp_path / "candidate.pt"
+    checkpoint.write_bytes(b"candidate-fixture")
+    checkpoint_sha = fingerprinter.file_sha256(checkpoint)
+    upstream_path = _write_frozen_p1_record(store.root(), "p1-src", checkpoint, checkpoint_sha)
+    fake_factory = FakeLedgerFactory()
+
+    upstream = RunInitializer(store, fingerprinter, ManifestSides({"challenges": {}}), fake_factory).derive_upstream(upstream_path)
+
+    assert upstream["run_id"] == "p1-src"
+    assert fake_factory.roots == [store.root()]  # the ledger is drawn from the store's record root
+    assert fake_factory.ledgers[0].check_upstream_calls == [("p1-src", WeightsRef(sha256=checkpoint_sha))]
+
+
+def test_derive_upstream_translates_a_ledger_violation_into_the_contract_violation(tmp_path, fingerprinter):
+    store = RunRecordStore(tmp_path / "records")
+    checkpoint = tmp_path / "candidate.pt"
+    checkpoint.write_bytes(b"candidate-fixture")
+    upstream_path = _write_frozen_p1_record(store.root(), "p1-src", checkpoint, fingerprinter.file_sha256(checkpoint))
+    fake_factory = FakeLedgerFactory(check_upstream_error=DmSourceViolationError("no P1 candidate has passed final acceptance yet"))
+
+    with pytest.raises(ContractViolationError, match="no P1 candidate has passed final acceptance yet"):
+        RunInitializer(store, fingerprinter, ManifestSides({"challenges": {}}), fake_factory).derive_upstream(upstream_path)
+
+
+def test_conclude_registers_the_passing_p1_through_the_injected_port(tmp_path, fixture_root, fingerprinter):
+    records = store_at(tmp_path, "records")
+    p1_final_path = open_passing_candidate(tmp_path, records, fingerprinter, fixture_root, "p1-final")
+    p1_final_record = records.load_by_path(p1_final_path)
+    write_l1_report(fixture_root / "l1_pass_report.json", p1_final_record, passing=True)
+    attacher = ReportAttacher(records, fingerprinter)
+    attacher.attach(p1_final_path, "l1_report", fixture_root / "l1_pass_report.json")
+    write_l2_report(fixture_root / "l2_pass_report.json", p1_final_record)
+    attacher.attach(p1_final_path, "l2_report", fixture_root / "l2_pass_report.json")
+    write_l3_report(fixture_root / "l3_pass_report.json", p1_final_record)
+    attacher.attach(p1_final_path, "l3_report", fixture_root / "l3_pass_report.json")
+    fake_factory = FakeLedgerFactory()
+
+    entry, _ = FinalAcceptanceJudge(records, fingerprinter, fake_factory).conclude(p1_final_path)
+
+    assert entry["verdict"] == "pass" and entry["dm_source_registered"] is True
+    assert fake_factory.ledgers[0].register_calls == [("p1-final", p1_final_path)]
+
+
+def test_verify_consults_the_injected_ledger_and_flags_its_mismatches(tmp_path, fixture_root, fingerprinter):
+    records = store_at(tmp_path, "records")
+    p1_path = initializer(records, fingerprinter, fixture_root).init(
+        "P1",
+        "p1-fixture",
+        fixture_root / "phase_manifest.json",
+        [("env", fixture_root / "env_config.json")],
+        [("train", fixture_root / "lists/train.json")],
+        fixture_root / "base_ckpt.pt",
+        None,
+        None,
+    )
+    record = records.load_by_path(p1_path)
+    fake_factory = FakeLedgerFactory(record_failures=["DM was retrained: this bypass is pinned to superseded DM p1-final"])
+
+    failures = RunVerifier(fingerprinter, fake_factory).verify(record, record_path=p1_path)
+
+    assert fake_factory.ledgers[0].check_record_calls == [record]
+    assert "dm source: DM was retrained: this bypass is pinned to superseded DM p1-final" in failures
+
+
+def test_verify_draws_a_ledger_per_record_root_along_the_chain(tmp_path, fixture_root, fingerprinter):
+    """The chain recursion verifies the upstream record under its own record root -- the
+    reason the injection is a factory over roots, not a single instance."""
+    upstream_store = store_at(tmp_path, "records_a")
+    bypass_store = store_at(tmp_path, "records_b")
+    checkpoint = tmp_path / "candidate.pt"
+    checkpoint.write_bytes(b"candidate-fixture")
+    upstream_path = _write_frozen_p1_record(upstream_store.root(), "p1-src", checkpoint, fingerprinter.file_sha256(checkpoint))
+    upstream_entry = RunInitializer(bypass_store, fingerprinter, ManifestSides({"challenges": {}}), FakeLedgerFactory()).derive_upstream(
+        upstream_path
+    )
+    bypass_record = {
+        "schema": SCHEMA,
+        "run_id": "p2-bypass",
+        "phase": "P2",
+        "variant": None,
+        "status": STATUS_OPEN,
+        "created_utc": "2026-08-31T00:00:00Z",
+        "frozen_utc": None,
+        "manifest": {"path": str(fixture_root / "phase_manifest.json"), "sha256": "0" * 64},
+        "configs": [],
+        "data_lists": [],
+        "base_ckpt": None,
+        "upstream": upstream_entry,
+        "platform": None,
+        "selection": None,
+        "samples": None,
+        "attachments": [],
+    }
+    bypass_path = bypass_store.write(bypass_record)
+    fake_factory = FakeLedgerFactory()
+
+    RunVerifier(fingerprinter, fake_factory).verify(bypass_store.load_by_path(bypass_path), record_path=bypass_path)
+
+    assert fake_factory.roots == [bypass_store.root(), upstream_store.root()]
+    assert fake_factory.ledgers[0].check_record_calls == [bypass_store.load_by_path(bypass_path)]
+    assert fake_factory.ledgers[1].check_record_calls[0]["run_id"] == "p1-src"

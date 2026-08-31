@@ -414,11 +414,9 @@ def test_orphan_gate_detects_a_seeded_orphan(tmp_path):
 # list is deleted and the gate turns purely terminal-state (issue #10).
 FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
     {
-        "ctmr.application.acceptance.contract.artifacts -> ctmr.infrastructure.dmsource",
-        "ctmr.application.acceptance.contract.conclude -> ctmr.infrastructure.dmsource",
-        "ctmr.application.acceptance.contract.lifecycle -> ctmr.infrastructure.dmsource",
-        "ctmr.application.acceptance.contract.record -> ctmr.infrastructure.dmsource",
-        "ctmr.application.acceptance.contract.verify -> ctmr.infrastructure.dmsource",
+        # issue #271 shrank the ratchet by the five contract-family edges:
+        # artifacts/conclude/lifecycle/record/verify -> ctmr.infrastructure.dmsource
+        # left with the family's port migration.
         "ctmr.application.acceptance.distribution.closing -> ctmr.infrastructure.nnunet_runner",
         "ctmr.application.acceptance.distribution.instrument_training -> ctmr.infrastructure.nnunet_runner",
         "ctmr.application.acceptance.distribution.intensity_domain -> ctmr.infrastructure.maisi_engine.diff_model_setting",
