@@ -39,8 +39,13 @@ Migrated from the retired mask finetune script entry (ticket 09, ADR-0015
 publication via ``CheckpointRepository``); the CLI face is unchanged.  Per
 ADR-0016 (issue #172) the single-batch training math runs as the domain
 ``DiffusionModel.train_step`` over a ``ControlNetBypass`` composition (the
-runtime bypass object carries no checkpoint identity), and the runtime
-precision strategy is injected as a ``GradientExecutor``.
+runtime bypass object carries no checkpoint identity). Per ADR-0019 §2/#273
+the entry assembles no runtime itself: the composition root's
+``mask_train_session`` provides the merged config, the distributed session,
+the logger, the precision executor (injected through the domain
+``GradientExecutor`` port) and the bypass mounting (the domain
+``BypassMounting`` port); the kernel receives the mounting as an injected
+collaborator.
 
 Usage (CLI, torchrun spawn is derived by the ctmr launcher):
     ctmr generate mask train -e run/environment.json -c configs/config_brats_p2_train.json \
@@ -64,11 +69,10 @@ from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWr
 from ctmr.application.train_cli import TrainCli
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
+from ctmr.domain.generation.mounting import BypassMounting
 from ctmr.domain.generation.objective import TumourWeightedTarget
 from ctmr.domain.recipe import MaskRecipeSpec
-from ctmr.infrastructure.bypass_mounting import BypassMounting
-from ctmr.infrastructure.gradient_executors import Bf16GradientExecutor, Fp16GradientExecutor, PlainGradientExecutor
-from ctmr.infrastructure.maisi_engine.diff_model_setting import initialize_distributed, load_config, setup_logging
+from ctmr.wiring.generate import mask_train_session
 
 
 class DataCatalog:
@@ -117,11 +121,12 @@ class TrainKernel:
 
     The four-method ``PhaseTrainKernel`` boundary. Recipe values live here, not
     in the shell: AdamW + lr + PolynomialLR power 2.0 (ADR-0007). The hook-up
-    itself is the shared ``BypassMounting`` collaborator -- the kernel injects
-    only the recipe values and composes the domain entity from the mount.
+    arrives as the injected ``BypassMounting`` port (ADR-0019 §2/#273: the
+    composition root mounts the concrete sequence) -- the kernel drives it and
+    composes the domain entity from the mount.
     """
 
-    def __init__(self, args, device, logger, local_rank):
+    def __init__(self, args, device, logger, local_rank, *, mounting: BypassMounting):
         self._args = args
         self._device = device
         self._logger = logger
@@ -129,7 +134,7 @@ class TrainKernel:
         self._controlnet = None
         self._model = None
         self._weighted_target = TumourWeightedTarget(args.controlnet_train["weighted_loss"], args.controlnet_train["weighted_loss_label"])
-        self._mounting = BypassMounting(args, device, logger)
+        self._mounting = mounting
         self._train_loader = BypassTrainLoader(load_keys=("image", "label"), companion_keys=("top_region_index", "bottom_region_index"))
 
     def build_loader(self):
@@ -207,7 +212,12 @@ class TrainKernel:
 def main(argv=None):
     args = TrainCli(__doc__, stage="p2").parse(argv)
 
-    merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    # The composition root's one assembly (ADR-0019 §2/#273): config
+    # resolution (before the distributed group forms), session bootstrap,
+    # logger, engine port, gradient executor, bypass mounting. This entry is
+    # the torchrun worker face, so it reuses that assembly here.
+    session = mask_train_session(args)
+    merged = session.merged
     merged.amp = args.amp
     merged.amp_dtype = args.amp_dtype
     merged.env_config_path = args.env_config_path
@@ -216,30 +226,20 @@ def main(argv=None):
     with open(merged.modality_mapping_path) as handle:
         merged.modality_mapping = json.load(handle)
 
-    local_rank, _world, device = initialize_distributed(args.num_gpus)
-    logger = setup_logging("mask-finetune")
-    kernel = TrainKernel(merged, device, logger, local_rank)
-    # The application injects the runtime precision strategy (ADR-0016): fp16
-    # (scaler), bf16 (DCU default) or non-AMP plain execution.
-    if args.amp and args.amp_dtype == "fp16":
-        gradient_executor = Fp16GradientExecutor()
-    elif args.amp:
-        gradient_executor = Bf16GradientExecutor()
-    else:
-        gradient_executor = PlainGradientExecutor()
+    kernel = TrainKernel(merged, session.device, session.logger, session.local_rank, mounting=session.mounting)
     return PhaseHarness(
         kernel=kernel,
         model_dir=merged.model_dir,
         n_epochs=merged.controlnet_train["n_epochs"],
         amp=args.amp,
         amp_dtype=args.amp_dtype,
-        local_rank=local_rank,
-        logger=logger,
-        recipe_check=MaskRecipeSpec(merged.controlnet_train, logger).check,
+        local_rank=session.local_rank,
+        logger=session.logger,
+        recipe_check=MaskRecipeSpec(merged.controlnet_train, session.logger).check,
         provenance=TrainProvenanceWriter(
             merged,
-            local_rank,
-            logger,
+            session.local_rank,
+            session.logger,
             domain_fields=lambda: {
                 "data_list": merged.json_data_list,
                 "trained_diffusion_path": merged.trained_diffusion_path,
@@ -248,7 +248,7 @@ def main(argv=None):
             },
             script_path=Path(__file__),
         ),
-        gradient_executor=gradient_executor,
+        gradient_executor=session.gradient_executor,
     ).run()
 
 

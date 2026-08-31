@@ -34,7 +34,7 @@ from ctmr.application.acceptance.contract.record import (
 )
 from ctmr.application.acceptance.contract.registry import LAYER_BY_KIND, LAYER_KINDS
 from ctmr.domain.acceptance import FinalAcceptanceRule
-from ctmr.infrastructure.dmsource import DmSourceLedger
+from ctmr.domain.dmsource import DmSourceLedgerFactory, DmSourceViolationError
 
 
 class FinalAcceptanceJudge:
@@ -42,12 +42,15 @@ class FinalAcceptanceJudge:
 
     ``LAYER_KINDS`` comes from the acceptance-layer registry (single source);
     the AND itself comes from the domain kernel, shared with verify-time
-    reconciliation so the two sides cannot drift.
+    reconciliation so the two sides cannot drift. A P1 pass registers the DM
+    source through the injected ``(record_root) -> DmSourceLedger`` port
+    (ADR-0019 §2/§3); the concrete adapter is the composition root's choice.
     """
 
-    def __init__(self, store, fingerprinter):
+    def __init__(self, store, fingerprinter, ledger_factory: DmSourceLedgerFactory):
         self._store = store
         self._fingerprinter = fingerprinter
+        self._ledger_factory = ledger_factory
         self._rule = FinalAcceptanceRule()
 
     @staticmethod
@@ -94,7 +97,10 @@ class FinalAcceptanceJudge:
         }
         if verdict == "pass" and record["phase"] == "P1":
             entry["dm_source_registered"] = True
-            DmSourceLedger(self._store.root()).register(record, run_path)
+            try:
+                self._ledger_factory(self._store.root()).register(record, run_path)
+            except DmSourceViolationError as violation:
+                raise ContractViolationError(str(violation)) from violation
         verdict_path.parent.mkdir(parents=True, exist_ok=True)
         verdict_path.write_text(json.dumps(entry, indent=2, sort_keys=True) + "\n")
         return entry, verdict_path

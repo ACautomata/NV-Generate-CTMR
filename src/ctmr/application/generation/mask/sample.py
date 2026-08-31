@@ -33,6 +33,12 @@ separate GPUs and their manifests concatenate into the final samples.json.
 The sampler is the SAME class the dev-eval sidecar (``monitor``) drives, so
 dev-trend samples and holdout deliverables share one sampling definition.
 
+Since #273 (ADR-0019 §2-§3) the family assembles no infrastructure itself:
+the engine (config merge, network instantiation, the inference primitive, the
+latent decode wrapper) arrives as the injected ``GenerationEngine`` port from
+the composition root, and the tumour-free unconditional branch runs the pure
+domain tumor-removal chain (``ctmr.domain.generation.tumor_removal``).
+
 Migrated from the retired mask holdout-generate script entry (ticket 09,
 ADR-0015 §2); the argv namespace is unchanged.
 
@@ -68,13 +74,11 @@ from monai.networks.schedulers import RFlowScheduler
 
 from ctmr.application.generation.mask.inference import binarize_labels, crop_img_body_mask
 from ctmr.application.shell import MODALITY_TOKENS, TARGET_MODALITIES
+from ctmr.domain.engine import GenerationEngine
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
-from ctmr.infrastructure.dataio.augmentation import remove_tumors
-from ctmr.infrastructure.maisi_engine.diff_model_setting import load_config
-from ctmr.infrastructure.maisi_engine.inference_primitives import dynamic_infer
-from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
-from ctmr.infrastructure.maisi_engine.utils_infer import ReconModel
+from ctmr.domain.generation.tumor_removal import remove_tumors
+from ctmr.wiring.generate import mask_engine
 
 GRID = (256, 256, 128)
 LATENT_SHAPE = (1, 4, 64, 64, 32)  # the VAE latent grid (4x downsampled per axis)
@@ -82,27 +86,32 @@ IDENTITY_AFFINE = np.diag([1.0, 1.0, 1.0, 1.0])
 
 
 class CandidateSampler:
-    """Generates the fixed dev cohort samples with a mask ControlNet checkpoint (cfg=10, 30 steps)."""
+    """Generates the fixed dev cohort samples with a mask ControlNet checkpoint (cfg=10, 30 steps).
 
-    def __init__(self, args, device, logger):
+    The engine (network instantiation, inference primitive, decode wrapper)
+    arrives as the injected ``GenerationEngine`` port (ADR-0019 §2/#273).
+    """
+
+    def __init__(self, args, device, logger, engine: GenerationEngine):
         self._args = args
         self._device = device
         self._logger = logger
+        self._engine = engine
 
     @staticmethod
     def seed_of(case, modality):
         return int(hashlib.sha256(f"{case}|{modality}".encode()).hexdigest()[:8], 16) % (2**31 - 1)
 
     def load_models(self, checkpoint_path):
-        autoencoder = define_instance(self._args, "autoencoder_def").to(self._device)
+        autoencoder = self._engine.define_instance(self._args, "autoencoder_def").to(self._device)
         ae_ckpt = torch.load(self._args.trained_autoencoder_path, map_location=self._device, weights_only=True)
         if "unet_state_dict" in ae_ckpt:
             ae_ckpt = ae_ckpt["unet_state_dict"]
         autoencoder.load_state_dict(ae_ckpt)
-        unet = define_instance(self._args, "diffusion_unet_def").to(self._device)
+        unet = self._engine.define_instance(self._args, "diffusion_unet_def").to(self._device)
         dm_ckpt = torch.load(self._args.trained_diffusion_path, map_location=self._device, weights_only=True)
         unet.load_state_dict(dm_ckpt["unet_state_dict"], strict=False)
-        controlnet = define_instance(self._args, "controlnet_def").to(self._device)
+        controlnet = self._engine.define_instance(self._args, "controlnet_def").to(self._device)
         cn_ckpt = torch.load(checkpoint_path, map_location=self._device, weights_only=True)
         controlnet.load_state_dict(cn_ckpt["controlnet_state_dict"], strict=False)
         for network in (autoencoder, unet, controlnet):
@@ -117,14 +126,15 @@ class CandidateSampler:
         # The domain composition carries the sampling rules: the frozen DM +
         # the ControlNet bypass (CFG double forward, fresh DiffusionScheduler
         # per sample call, ADR-0016 / issue #172).  The VAE reconstruction
-        # stays an application adapter (ReconModel) below the latent.
+        # stays an application adapter below the latent (the engine-built
+        # decode wrapper).
         model = DiffusionModel(
             unet=unet,
             scale_factor=torch.tensor(scale, device=self._device),
             noise_scheduler=RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"}),
             bypass=ControlNetBypass(controlnet),
         )
-        return model, ReconModel(autoencoder=autoencoder, scale_factor=scale).to(self._device).half()
+        return model, self._engine.recon_model(autoencoder=autoencoder, scale_factor=scale).to(self._device).half()
 
     @staticmethod
     def load_condition_mask(mask_source, case, device):
@@ -189,7 +199,7 @@ class CandidateSampler:
             roi_size=[96, 96, 96], sw_batch_size=1, mode="gaussian", overlap=0.25, sw_device=self._device, device=torch.device("cpu")
         )
         with torch.amp.autocast("cuda", enabled=True, dtype=torch.float16):
-            synthetic = dynamic_infer(inferer, recon, image)
+            synthetic = self._engine.dynamic_infer(inferer, recon, image)
         synthetic = torch.clip(synthetic, 0, None) * 1000.0  # [0,1] -> MR 0..1000 scale
         synthetic = crop_img_body_mask(synthetic, combine_label, a_min=0)
         data = synthetic.squeeze().float().cpu().numpy()
@@ -285,17 +295,18 @@ class HoldoutCohortBuilder:
 class HoldoutSampleWriter:
     """Runs the mask candidate sampler over the holdout cohort and writes the L2 samples manifest."""
 
-    def __init__(self, merged, run_record, raw_root, out_root, device, logger):
+    def __init__(self, merged, run_record, raw_root, out_root, device, logger, engine):
         self._merged = merged
         self._run_record = run_record
         self._raw_root = Path(raw_root)
         self._out_root = Path(out_root)
         self._device = device
         self._logger = logger
+        self._engine = engine
 
     def write(self, cohort, spacings, masks):
         checkpoint_path = self._run_record["selection"]["checkpoint"]["path"]
-        sampler = CandidateSampler(self._merged, self._device, self._logger)
+        sampler = CandidateSampler(self._merged, self._device, self._logger, self._engine)
         model, recon = sampler.load_models(checkpoint_path)
         self._logger(f"[gen] candidate checkpoint: {checkpoint_path} (epoch {self._run_record['selection']['checkpoint'].get('epoch')})")
         entries = []
@@ -372,7 +383,8 @@ def main(argv=None):
         print(f"run {run_record.get('run_id')} has no selection; record the dev-side selection first", file=sys.stderr)
         return 1
     manifest = json.loads(Path(args.manifest).read_text())
-    merged = load_config(args.env_config_path, args.model_config_path, args.model_def_path)
+    engine = mask_engine()
+    merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
     merged.cfg_guidance_scale = 10.0
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -382,7 +394,7 @@ def main(argv=None):
         return 1
     spacings = HoldoutSpacingSource(args.raw_root, manifest)
     masks = HoldoutMaskSource(args.label_root, manifest)
-    writer = HoldoutSampleWriter(merged, run_record, args.raw_root, args.out_root, device, print)
+    writer = HoldoutSampleWriter(merged, run_record, args.raw_root, args.out_root, device, print, engine)
     entries = writer.write(cohort, spacings, masks)
     suffix = f"_shard_{args.shard}" if args.num_shards > 1 else ""
     manifest_path = Path(args.out_root) / f"samples{suffix}.json"
