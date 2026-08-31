@@ -411,18 +411,19 @@ def test_orphan_gate_detects_a_seeded_orphan(tmp_path):
 # red immediately; an entry that no longer violates is stale and must be
 # removed -- the list may only shrink, never grow (same self-stabilizing
 # pair as the orphan whitelist above).  Migrated so far: the contract
-# (#271, 5 edges), modality-label (#272, 9), mask (#273, 9) and cross-modal
-# (#274, 16) families.  When the ratchet reaches zero the list is deleted
-# and the gate turns purely terminal-state (issue #10).
+# pair as the orphan whitelist above).  Migrated so far: the contract
+# (#271, 5 edges), modality-label (#272, 9), mask (#273, 9), cross-modal
+# (#274, 16) and distribution (#275, 4) families.  When the ratchet reaches
+# zero the list is deleted and the gate turns purely terminal-state
+# (issue #10).
 FROZEN_VIOLATION_RATCHET: frozenset[str] = frozenset(
     {
         # issue #271 shrank the ratchet by the five contract-family edges:
         # artifacts/conclude/lifecycle/record/verify -> ctmr.infrastructure.dmsource
-        # left with the family's port migration.
-        "ctmr.application.acceptance.distribution.closing -> ctmr.infrastructure.nnunet_runner",
-        "ctmr.application.acceptance.distribution.instrument_training -> ctmr.infrastructure.nnunet_runner",
-        "ctmr.application.acceptance.distribution.intensity_domain -> ctmr.infrastructure.maisi_engine.diff_model_setting",
-        "ctmr.application.acceptance.distribution.intensity_domain -> ctmr.infrastructure.maisi_engine.instance_definition",
+        # left with the family's port migration; #275 shrank it by the four
+        # distribution-family edges (closing / instrument_training ->
+        # nnunet_runner, intensity_domain -> diff_model_setting /
+        # instance_definition) with the reader/engine port migration.
         # the modality-label (#272), mask (#273) and cross-modal (#274)
         # families' frozen edges -- nine + nine + sixteen -- shrank to zero
         # with their port migrations (composition-root assembly, ADR-0019 §2)

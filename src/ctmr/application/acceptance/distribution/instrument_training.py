@@ -16,14 +16,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-# weights_only 白名单已收编到 ADR-0009 的单一 scoped 定义
-# (ctmr.infrastructure.nnunet_runner.nnunet_safe_globals)：load 处 `with`
-# 包裹，import 本模块不再改全局 torch 状态。sugon 部署须连同 src/ 树一起
-# 同步(同族 shim,见本包 measurement_run)。
+# torch / monai 是运行硬依赖(sugon 部署须连同 src/ 树一起同步,同族 shim,
+# 见本包 measurement_run)。checkpoint 的 weights_only 白名单读取已下沉到
+# 注入的 InstrumentCheckpointReader 端口适配器(ADR-0009 scoped 定义,#275),
+# 本模块不触 torch 序列化状态。
 import torch  # noqa: E402
 from monai.apps.nnunet import nnUNetV2Runner  # noqa: E402
 
-from ctmr.infrastructure.nnunet_runner import nnunet_safe_globals
+from ctmr.domain.checkpoints import InstrumentCheckpointReader  # noqa: E402
+from ctmr.wiring.distribution import instrument_checkpoint_reader  # noqa: E402
 
 PERSISTENT_ROOT = Path("/root/private_data")
 TRAINER_CLASS = "nnUNetTrainer250Epochs"
@@ -247,15 +248,21 @@ class AuditLedger:
 
 
 class InstrumentRun:
-    """执行一个隔离的 nnU-Net preprocessing、training 或完成校验。"""
+    """执行一个隔离的 nnU-Net preprocessing、training 或完成校验。
 
-    def __init__(self, configuration: RunConfiguration, spec: ChallengeSpec):
+    checkpoint 元数据的读取经注入的 ``InstrumentCheckpointReader`` 端口
+    (ADR-0019 §3, #275):weights_only 白名单作用域是适配器的保证,本类不触
+    torch 序列化状态。
+    """
+
+    def __init__(self, configuration: RunConfiguration, spec: ChallengeSpec, *, checkpoint_reader: InstrumentCheckpointReader):
         self.configuration = configuration
         self.spec = spec
         self.protocol = TrainingProtocol(spec, configuration.ssa_exception)
         self.dataset = DatasetContract(spec, configuration.raw_root, configuration.preprocessed_root)
         self.ledger = AuditLedger(configuration.audit_dir)
         self.trainer = TrainerContract()
+        self.checkpoint_reader = checkpoint_reader
 
     def preprocess(self) -> dict:
         self._verify_paths()
@@ -377,8 +384,7 @@ class InstrumentRun:
         )
         checkpoint = fold_dir / "checkpoint_final.pth"
         hasher = ArtifactHasher()
-        with nnunet_safe_globals():
-            checkpoint_data = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        checkpoint_data = self.checkpoint_reader.read(checkpoint)
         if checkpoint_data.get("current_epoch") != 250:
             raise ValueError("checkpoint_final does not record current_epoch=250")
         if checkpoint_data.get("trainer_name") != TRAINER_CLASS:
@@ -450,7 +456,9 @@ def main() -> int:
         nnunetv2_distribution_sha256=args.nnunetv2_distribution_sha256,
         ssa_exception=args.ssa_batch16_exception,
     )
-    run = InstrumentRun(configuration, ChallengeRegistry().get(args.challenge))
+    # 进程级跨层收口(#275):进程入口经组合根装配函数取得真实 reader 适配器;
+    # 库路径只认注入的端口,适配器知识唯一定居于 ctmr.wiring(ADR-0019 §2)。
+    run = InstrumentRun(configuration, ChallengeRegistry().get(args.challenge), checkpoint_reader=instrument_checkpoint_reader())
     if args.mode == "preprocess":
         print(json.dumps(run.preprocess(), indent=2, sort_keys=True))
     elif args.mode == "train":

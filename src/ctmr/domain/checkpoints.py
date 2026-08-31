@@ -10,15 +10,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CheckpointRepository: the persistence port for weight payloads (ADR-0019 §3, #269).
+"""Checkpoint ports: the training-shell repository and the instrument reader.
 
-The port application shells drive: ``save(payload, epoch)`` publishes one
-epoch's state_dict payload (tmp write + rename, then the ``latest.json``
-pointer written only after the renamed file is fully on disk -- it can never
-direct a reader at a partial write) and returns the published path;
-``load(path)`` fetches a published payload verbatim, the payload key set
-repo-transparent. Protocol only -- the filesystem realization lives in
-``ctmr.infrastructure.checkpoints`` (ADR-0015 §4 辖区不变).
+Two persistence faces live here (ADR-0019 §3, #269/#275): ``CheckpointRepository``
+is the shell-side weight store (ADR-0015 §4 辖区), ``InstrumentCheckpointReader``
+is the judge-chain face onto the frozen instrument's published fold_0 checkpoint.
 """
 
 from pathlib import Path
@@ -35,4 +31,20 @@ class CheckpointRepository(Protocol):
 
     def load(self, path: str | Path):
         """Fetch a published payload (weights_only: the repository's own artifacts are trusted)."""
+        ...
+
+
+@runtime_checkable
+class InstrumentCheckpointReader(Protocol):
+    """Reader for the frozen instrument's published fold_0 checkpoint (ADR-0009, #275).
+
+    The judge chain (closing verification) and the instrument trainer read only
+    the recorded metadata (``current_epoch`` / ``trainer_name``) out of
+    ``checkpoint_final.pth``. The weights_only allowlist scoping that makes the
+    load safe is the adapter's guarantee, not the caller's concern -- callers
+    depend on this port and never touch torch serialization state.
+    """
+
+    def read(self, checkpoint: str | Path) -> dict:
+        """Load one checkpoint payload on cpu (weights_only under the scoped allowlist)."""
         ...
