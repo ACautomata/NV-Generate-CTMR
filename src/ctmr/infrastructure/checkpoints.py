@@ -19,6 +19,10 @@ write. Payloads stream straight to the tmp file (no full-artifact RAM copy), and
 the payload key set is repo-transparent (``checkpoint_payload`` returns the
 storage object verbatim). Provenance is a runtime log, not model state: it stays
 in the application layer.
+
+Since #269 (ADR-0019 §3) the port itself is spelled in ``ctmr.domain.checkpoints``;
+this class realizes it structurally -- the json/torch file semantics are the
+adapter's contribution, pinned by tests/infrastructure/test_checkpoints.py.
 """
 
 import json

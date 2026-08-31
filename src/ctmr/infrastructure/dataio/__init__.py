@@ -1,1 +1,1 @@
-"""Dataio adapters: augmentation/morphology/list-assembly. Pure domain math stays in ctmr.domain."""
+"""Dataio adapters: augmentation and list-assembly. Pure domain math stays in ctmr.domain -- since #269 (ADR-0019 §3) morphology lives in ``ctmr.domain.morphology`` and the tumor-removal chain in ``ctmr.domain.generation.tumor_removal`` (augmentation re-exports the moved names until the mask-family migration, #273)."""

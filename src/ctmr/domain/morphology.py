@@ -3,16 +3,18 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #     http://www.apache.org/licenses/LICENSE-2.0
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Binary-mask morphology wrappers around MONAI's dilate/erode.
+"""Binary-mask morphology: dilate/erode wrappers around MONAI's pure tensor ops.
 
-Migrated verbatim from the retired ``utils.erode_one_img`` / ``utils.dilate_one_img``
-(git history; ticket #132); the originals were removed with the scripts layer.
+Migrated verbatim from the retired scripts layer via ``infrastructure.dataio.morphology``
+(git history; ticket #132, floated up to domain in #269 per ADR-0019 §3 -- pure
+tensor computation, no IO). The originals were removed with the scripts layer.
 """
 
 from collections.abc import Sequence
