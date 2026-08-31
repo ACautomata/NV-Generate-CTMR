@@ -17,9 +17,9 @@ Floated up verbatim from the retired augmentation scripts via
 IO. ``remove_tumors`` turns a generated combined-label volume tumor-free:
 organ tumors remap to their organs, lesion regions take the offered pseudo
 labels (or, unoffered, the majority organ of their immediate neighborhood /
-the brain label). The infrastructure augmentation module re-exports the chain
-so the existing import face holds until the mask-family migration retires it
-(#273).
+the brain label). The infrastructure augmentation module's re-export alias
+retired with the mask-family migration (#273): the sampling path imports this
+domain module directly.
 """
 
 import torch

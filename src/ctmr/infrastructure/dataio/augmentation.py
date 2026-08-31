@@ -9,17 +9,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Label-volume augmentation family: elastic organ/tumor deformation and tumor removal (migrated verbatim from the retired scripts layer (git history; ``augmentation``), ticket #132).
+"""Label-volume augmentation family: elastic organ/tumor deformation (migrated verbatim from the retired scripts layer (git history; ``augmentation``), ticket #132).
 
 Two Codex-reported defects (PR #155) are fixed against the migrated copy: the liver/lung/pancreas/bone
 retry loops are bounded by ``MAX_COUNT`` like ``augmentation_tumor_only``, and ``finalize_tumor_mask``
 counts retained voxels instead of summing multi-label values (BraTS 401/402/403).
 
-Since #269 (ADR-0019 §3) the pure tensor half lives in domain: morphology moved to
-``ctmr.domain.morphology`` and the tumor-removal chain to
-``ctmr.domain.generation.tumor_removal`` -- the imports below re-export those
-names so the historical import face holds until the mask-family migration
-retires it (#273).
+The pure tensor half lives in domain since #269 (ADR-0019 §3): morphology in
+``ctmr.domain.morphology`` and the tumor-removal chain in
+``ctmr.domain.generation.tumor_removal`` -- the re-export alias this module
+kept for the old import face retired with the mask-family migration (#273);
+the sampling path calls the domain chain directly.
 """
 
 import numpy as np
@@ -29,13 +29,7 @@ from monai.transforms import Rand3DElastic, RandAffine, RandZoom
 from monai.utils import ensure_tuple_rep
 from torch import Tensor
 
-from ctmr.domain.generation.tumor_removal import remap_labels, remove_tumors, remove_tumors_majority_vote
 from ctmr.domain.morphology import dilate_one_img, erode_one_img
-
-# the domain re-export face (#269/#273): these names moved to
-# ctmr.domain.generation.tumor_removal; the augmentation module keeps spelling
-# them until the mask-family migration retires the alias
-__all__ = ["remove_tumors", "remove_tumors_majority_vote", "remap_labels"]
 
 MAX_COUNT = 1000  # maximum augmentation retries before raising an error
 

@@ -25,20 +25,26 @@ ADR-0016's domain entity partition untouched: the kernel composes the
 ``DiffusionModel``/``ControlNetBypass`` entities on top of what the mount
 produced). Numerics are byte-identical to the collapsed copies; the assembly
 gate is tests/infrastructure/test_bypass_mounting.py (S5 seam).
+
+Since #273 (ADR-0019 §3) this class realizes the domain ``BypassMounting``
+port and its ``MountedBypass`` record lives in
+``ctmr.domain.generation.mounting`` (imported here); the mask family receives
+the mount through the port, assembled by the composition root -- the
+cross-modal family migrates with #274.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import monai
 import torch
 import torch.distributed as dist
-from monai.networks.schedulers import Scheduler
 from monai.networks.utils import copy_model_state
 from torch.nn.parallel import DistributedDataParallel
 
+from ctmr.domain.generation.mounting import MountedBypass
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
+
+__all__ = ["BypassMounting", "MonaiCheckpoint", "MountedBypass"]
 
 
 class MonaiCheckpoint:
@@ -58,18 +64,6 @@ class MonaiCheckpoint:
     def load(self):
         torch.serialization.add_safe_globals([monai.data.meta_tensor.MetaTensor, monai.utils.enums.TraceKeys])
         return torch.load(self._path, map_location=self._device, weights_only=True)
-
-
-@dataclass
-class MountedBypass:
-    """What one ControlNet-only mount produced: the trainable bypass, the frozen DM and the session members."""
-
-    trainable: torch.nn.Module
-    dm: torch.nn.Module
-    noise_scheduler: Scheduler
-    scale: torch.Tensor
-    optimizer: torch.optim.Optimizer
-    scheduler: torch.optim.lr_scheduler.LRScheduler
 
 
 class BypassMounting:

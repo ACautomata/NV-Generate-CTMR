@@ -18,22 +18,27 @@ checkpoint identity); ``scheduler`` is the per-sample trajectory entity
 application injects the runtime precision strategy through; ``objective``
 holds the modality-label perturbation and the repo-owned VAE objective (the
 tumour-region weighting, ``TumourWeightedTarget``, issue #172).  ``bypass`` is
-the P2/P3 ``ControlNetBypass`` (issue #172).
+the P2/P3 ``ControlNetBypass`` (issue #172); ``mounting`` is the
+``BypassMounting`` hook-up port and its ``MountedBypass`` record
+(ADR-0019 §3, #273).
 ``ModalityLabelPerturber`` and ``VaeObjective`` stay as documented above.
 """
 
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
+from ctmr.domain.generation.mounting import BypassMounting, MountedBypass
 from ctmr.domain.generation.objective import ModalityLabelPerturber, TumourWeightedTarget, VaeObjective
 from ctmr.domain.generation.scheduler import DiffusionScheduler
 from ctmr.domain.generation.update import GradientExecutor
 
 __all__ = [
+    "BypassMounting",
     "ControlNetBypass",
     "DiffusionModel",
     "DiffusionScheduler",
     "GradientExecutor",
     "ModalityLabelPerturber",
+    "MountedBypass",
     "TumourWeightedTarget",
     "VaeObjective",
 ]
