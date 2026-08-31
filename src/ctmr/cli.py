@@ -34,19 +34,27 @@ nnUNetv2 predictor parser untouched. The superseded reverse shim retired with
 issue #175.
 
 ``ctmr generate <case> train`` derives torchrun itself (no WORLD_SIZE -> spawn
-the trainer child); everything else dispatches in-process. All verbs reach
-their handlers lazily (importlib on dispatch): torch / monai / nnunetv2 are
-only loaded when a verb actually runs, so this module stays importable on any
-machine without them -- pinned by the CLI purity gate in tests/test_cli_entry.
+the trainer child); everything else dispatches in-process. Verbs reach their
+handlers lazily (importlib on dispatch): torch / monai / nnunetv2 load only
+when a verb actually runs -- the one module-level import beyond stdlib is the
+composition root's train assembly, itself stdlib-light -- so this module stays
+importable on any machine without them (pinned by the CLI purity gates in
+tests/test_cli_entry and tests/test_wiring). Pure dispatch (ADR-0019 §2,
+issue #270): the interface layer imports no infrastructure and assembles no
+runtime -- the concrete knowledge (the nnUNetv2 adapter behind ``measure
+predict``, the torchrun topology behind the train verbs) settles in the
+composition root ``ctmr.wiring``, and the torchrun worker entry reuses the
+same train assembly.
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib
-import os
 import sys
 from typing import Literal, NamedTuple
+
+from ctmr.wiring.generate import TrainDispatch
 
 
 class VerbRoute(NamedTuple):
@@ -84,7 +92,7 @@ VERBS: dict[tuple[str, ...], VerbRoute] = {
     ("generate", "cross-modal", "generate", "candidate"): VerbRoute("ctmr.application.generation.cross_modal.candidate"),
     # -- measure: the frozen-instrument door (issue #140 / ADR-0009 decision 3)
     ("measure", "predict"): VerbRoute(
-        "ctmr.infrastructure.nnunet_runner",
+        "ctmr.wiring.measure",  # the composition root owns the adapter knowledge (ADR-0019 §2)
         help="run the native nnUNetv2 predictor inside the weights_only allowlist scope (flags pass through to nnUNetv2)",
         description=(
             "Canonical frozen-instrument execution entry (ADR-0009 decision 3). "
@@ -283,12 +291,8 @@ class CtmrCli:
         return args.run(args)
 
     def _run_train(self, module, rest):
-        """Dispatch a train verb; outside torchrun, derive the torchrun child."""
-        from ctmr.application.generation.launcher import TorchrunLauncher, num_gpus_of
-
-        if os.environ.get("WORLD_SIZE"):
-            return importlib.import_module(module).main(rest)
-        return TorchrunLauncher(module, rest, num_gpus_of(rest)).run()
+        """Dispatch a train verb through the composition root's train assembly (ADR-0019 §2)."""
+        return TrainDispatch(module, rest).run()
 
 
 def main(argv=None):

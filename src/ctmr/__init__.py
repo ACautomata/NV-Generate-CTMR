@@ -24,9 +24,13 @@ ADR-0015 §2 since #133:
                         acceptance layers                             (ticket 08-10)
 - ``ctmr.infrastructure`` — IO/framework adapters: checkpoints, nnunet_runner,
                         vendored maisi_engine, dataio                 (#134, #140)
+- ``ctmr.wiring``     — composition root (ADR-0019 §2, #270): the one home of
+                        concrete implementation knowledge, one module per
+                        subcommand family; ``ctmr.cli`` dispatches through it
 
 The legacy phase-shell and instrument-execution forwarding shims retired
 with issue #175 (ADR-0016 M5); their canonical homes are
 ``ctmr.application`` (train_cli / shell) and
-``ctmr.infrastructure.nnunet_runner`` (``ctmr measure predict``).
+``ctmr.infrastructure.nnunet_runner`` (the adapter behind
+``ctmr measure predict``, assembled by ``ctmr.wiring.measure``).
 """

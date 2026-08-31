@@ -26,7 +26,9 @@ parser), and adding a verb is provably one registry entry. The stdlib-only
 purity of ``ctmr.cli`` keeps the light sci-stack CI job able to exercise these
 paths (ADR-0013 §4); the dispatch gates pre-seed fake handler modules into
 ``sys.modules`` so the torch/monai/nnunetv2 stacks stay out (lazy import hits
-``sys.modules`` first).
+``sys.modules`` first). Pure dispatch (ADR-0019 §2, issue #270) is pinned here
+too: the interface layer spells no ``ctmr.infrastructure`` address -- concrete
+implementation knowledge lives in the composition root ``ctmr.wiring``.
 """
 
 import os
@@ -42,23 +44,6 @@ from ctmr import cli
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FAMILIES = ["generate", "measure", "accept", "experiment"]
 NOT_MIGRATED_FAMILIES = ["experiment"]  # generate/measure/accept have live verbs; unknown accept layers/verbs are argparse errors
-
-_HEAVY_DEPS = [
-    "torch",
-    "monai",
-    "numpy",
-    "scipy",
-    "skimage",
-    "nibabel",
-    "SimpleITK",
-    "PIL",
-    "matplotlib",
-    "einops",
-    "huggingface_hub",
-    "tqdm",
-    "fire",
-    "tensorboard",
-]
 
 
 def test_help_lists_all_four_command_families(capsys):
@@ -275,13 +260,32 @@ def test_python_dash_m_matches_console_behavior():
     assert all(family in result.stdout for family in FAMILIES)
 
 
-def test_cli_import_pulls_no_third_party_dependency():
-    probe = "import ctmr.cli, sys\nprint(sorted(name for name in sys.argv[1:] if name in sys.modules))\n"
-    result = subprocess.run(
-        [sys.executable, "-c", probe, *_HEAVY_DEPS],
-        capture_output=True,
-        text=True,
-        check=True,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
-    )
-    assert result.stdout.strip() == "[]"
+def test_cli_import_pulls_no_third_party_dependency(light_import_probe):
+    # the shared fresh-interpreter probe lives in tests/conftest (ADR-0013 §4)
+    assert light_import_probe("ctmr.cli") == "[]"
+
+
+# ------------------------------------------------- pure dispatch (ADR-0019 §2, issue #270)
+
+
+def _infrastructure_spells(path):
+    """(lineno, line) for every ``ctmr.infrastructure`` spelling in one file."""
+    return [(lineno, line) for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1) if "ctmr.infrastructure" in line]
+
+
+def test_cli_carries_no_infrastructure_knowledge():
+    """Pure dispatch (ADR-0019 §2): the interface layer holds zero concrete
+    implementation knowledge -- neither cli.py's source (imports or VERBS
+    registry rows) may spell a ctmr.infrastructure address. That knowledge
+    settles in the composition root (``ctmr.wiring``, issue #270); the layer
+    gate is deliberately silent on interface sources (its negative probe in
+    tests/test_endstate_guards pins the silence), so this gate is the
+    pure-dispatch discipline's home."""
+    assert _infrastructure_spells(Path(cli.__file__)) == []
+    assert [route.module for route in cli.VERBS.values() if route.module.startswith("ctmr.infrastructure.")] == []
+
+
+def test_cli_infrastructure_purity_gate_detects_a_seeded_violation(tmp_path):
+    stale = tmp_path / "cli.py"
+    stale.write_text('VERBS = {("measure", "predict"): VerbRoute("ctmr.infrastructure.nnunet_runner")}\n', encoding="utf-8")
+    assert len(_infrastructure_spells(stale)) == 1 and stale.read_text(encoding="utf-8").count("ctmr.infrastructure") == 1

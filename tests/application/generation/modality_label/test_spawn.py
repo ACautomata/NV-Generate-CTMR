@@ -12,15 +12,17 @@
 
 """torchrun spawn derivation for the modality-label train entry (ticket 10).
 
-``ctmr generate modality-label train`` arrives WITHOUT torchrun; the application layer
-derives the ``torchrun --nproc_per_node=<num_gpus> -m <module> <argv>`` child (spawn
-precedent #123: no fork). These gates demonstrate that derivation: the exact child
-command and the CLI's WORLD_SIZE fork (already a torchrun worker -> dispatch
-in-process; otherwise spawn).
+``ctmr generate modality-label train`` arrives WITHOUT torchrun; the
+composition root's train assembly (``ctmr.wiring.generate``, ADR-0019 §2)
+derives the ``torchrun --nproc_per_node=<num_gpus> -m <module> <argv>`` child
+(spawn precedent #123: no fork). These gates demonstrate that derivation: the
+exact child command and the CLI's WORLD_SIZE fork (already a torchrun worker
+-> dispatch in-process; otherwise spawn).
 
-Both ``ctmr.cli`` and ``ctmr.application.generation.launcher`` are stdlib-only, so
-this module needs no torch mark. The CLI fork gates pre-seed a fake ``train`` module
-into ``sys.modules`` so the in-process branch never imports the torch stack; the
+All three hops -- ``ctmr.cli``, ``ctmr.wiring.generate`` and
+``ctmr.application.generation.launcher`` -- are stdlib-only, so this module
+needs no torch mark. The CLI fork gates pre-seed a fake ``train`` module into
+``sys.modules`` so the in-process branch never imports the torch stack; the
 spawn is observed by stubbing ``subprocess.run`` (no real child is started).
 """
 
