@@ -282,7 +282,7 @@ class DevMonitorSampler:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dev-list", required=True, help="the P1 dev list json (the ONLY population input -- never the holdout)")
-    parser.add_argument("--raw-root", required=True, help="raw BraTS root for the real-side pass-through paths (dev-list relative)")
+    parser.add_argument("--raw-root", default=None, help="raw BraTS root for the real-side pass-through paths (dev-list relative; plan build only)")
     parser.add_argument("--emb-root", default=None, help="embedding companion root for per-case spacings (t1n entry; sampling only)")
     parser.add_argument("--ckpt", default=None, help="the frozen candidate checkpoint, loaded read-only")
     parser.add_argument("-e", "--env_config_path", default=None)
@@ -291,8 +291,13 @@ def main(argv=None):
     parser.add_argument("--samples-dir", required=True, help="artifact directory for the per-case volumes (never git)")
     parser.add_argument("--output-dir", required=True, help="monitor work root for cohort.json + plan.json")
     parser.add_argument("--plan-only", action="store_true", help="skip sampling: (re)build cohort + plan from an existing samples dir")
+    parser.add_argument(
+        "--sampling-only", action="store_true", help="skip the plan: sample the cohort + write cohort.json only (the plan needs the real-side root)"
+    )
     parser.add_argument("--run-id", default=None, help="the candidate's run id, recorded into the plan")
     args = parser.parse_args(argv)
+    if args.plan_only and args.sampling_only:
+        parser.error("--plan-only and --sampling-only are mutually exclusive")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -321,6 +326,12 @@ def main(argv=None):
         spacings = CohortSpacingSource(args.dev_list, args.emb_root)
         written = DevMonitorSampler(merged, device, engine).sample_cohort(args.ckpt, cohort, spacings, samples_dir)
         print(f"[dev-monitor] {len(cohort)} cases x 4 modalities; written {written} new volumes -> {samples_dir}", flush=True)
+
+    if args.sampling_only:
+        print("[dev-monitor] --sampling-only: plan deferred until the real-side root is available", flush=True)
+        return 0
+    if not args.raw_root:
+        parser.error("--raw-root is required for the plan build (omit only with --sampling-only)")
 
     plan = DevMonitorPlanBuilder(args.dev_list, args.raw_root, samples_dir, run_id=args.run_id).build(cohort)
     plan_path = output_dir / "plan.json"

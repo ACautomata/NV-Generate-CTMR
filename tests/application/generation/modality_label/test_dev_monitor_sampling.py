@@ -226,3 +226,40 @@ def test_plan_only_cli_writes_cohort_and_plan_without_touching_the_gpu(tmp_path)
     assert len(cohort_doc["cohort"]) == 130
     plan = json.loads((tmp_path / "monitor" / "plan.json").read_text())
     assert plan["schema"] == PLAN_SCHEMA and plan["population"] == "dev"
+
+
+def test_sampling_only_cli_defers_the_plan_without_raw_root(tmp_path):
+    """--sampling-only: cohort written, plan deferred — the sampling arm runs
+    before the real-side root is available; mutually exclusive with --plan-only."""
+    population = {challenge: _cases(challenge, quota) for challenge, quota in MONITOR_QUOTAS.items()}
+    dev_list = _dev_list(tmp_path / "dev.json", population)
+    _make_samples(tmp_path / "samples", DevMonitorCohort(dev_list).build())
+
+    rc = main(
+        [
+            "--dev-list",
+            str(dev_list),
+            "--samples-dir",
+            str(tmp_path / "samples"),
+            "--output-dir",
+            str(tmp_path / "monitor"),
+            "--sampling-only",
+        ]
+    )
+    assert rc == 0
+    assert (tmp_path / "monitor" / "cohort.json").is_file()
+    assert not (tmp_path / "monitor" / "plan.json").exists()
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--dev-list",
+                str(dev_list),
+                "--samples-dir",
+                str(tmp_path / "samples"),
+                "--output-dir",
+                str(tmp_path / "monitor"),
+                "--sampling-only",
+                "--plan-only",
+            ]
+        )
