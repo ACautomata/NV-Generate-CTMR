@@ -314,7 +314,7 @@ def main(argv=None):
             (args.emb_root, "--emb-root"),
         ):
             if not required:
-                parser.error(f"{flag_name} is required unless --plan-only")
+                parser.error(f"{flag_name} is required for sampling (omit only with --plan-only)")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[dev-monitor] device={device}; variant=diagnostic -- dev 选择面采样,零 holdout 接触,checkpoint 只读", flush=True)
         engine = modality_label_engine()
