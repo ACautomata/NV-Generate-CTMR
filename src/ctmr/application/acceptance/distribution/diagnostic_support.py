@@ -73,10 +73,13 @@ class DiagnosticReportWriter:
     jobs (#205 series-③) reuse this writer as-is.
     """
 
-    def __init__(self, schema: str, title: str, issue: int, job_label: str, stem: str, inputs: dict, run_id: str | None = None):
+    def __init__(
+        self, schema: str, title: str, issue: int, job_label: str, stem: str, inputs: dict, run_id: str | None = None, parent_issue: int = 205
+    ):
         self._schema = schema
         self._title = title
         self._issue = issue
+        self._parent_issue = parent_issue
         self._job_label = job_label
         self._stem = stem
         self._inputs = inputs
@@ -85,7 +88,7 @@ class DiagnosticReportWriter:
     @property
     def disclaimer(self) -> str:
         return (
-            f"诊断读数,不产生任何验收判定;与正式 L2 验收面严格分离(#205 {self._job_label})。"
+            f"诊断读数,不产生任何验收判定;与正式 L2 验收面严格分离(#{self._parent_issue} {self._job_label})。"
             f"bootstrap 种子独立于正式判定链(诊断基 {DIAGNOSTIC_SEED_BASE})。"
         )
 
@@ -107,7 +110,7 @@ class DiagnosticReportWriter:
         return [
             f"# {payload['title']}",
             "",
-            f"**Issue**: [#{self._issue}](https://github.com/ACautomata/NV-Generate-CTMR/issues/{self._issue})(父 #205 {self._job_label})"
+            f"**Issue**: [#{self._issue}](https://github.com/ACautomata/NV-Generate-CTMR/issues/{self._issue})(父 #{self._parent_issue} {self._job_label})"
             f" · **run**: `{payload['run_id'] or '未绑定'}`",
             f"**variant: diagnostic —— {payload['disclaimer']}**",
             "",
