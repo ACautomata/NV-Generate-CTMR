@@ -82,15 +82,23 @@ def load_config(env_config_path: str, model_config_path: str, model_def_path: st
     return args
 
 
-def initialize_distributed(num_gpus: int) -> tuple:
+def initialize_distributed(num_gpus: int, timeout=None) -> tuple:
     """
     Initialize distributed training.
+
+    Args:
+        num_gpus (int): the world size torchrun derived.
+        timeout (datetime.timedelta, optional): process-group timeout; the
+            default (None) keeps the backend's own default.
 
     Returns:
         tuple: local_rank, world_size, and device.
     """
     if torch.cuda.is_available() and num_gpus > 1:
-        dist.init_process_group(backend="nccl", init_method="env://")
+        if timeout is None:
+            dist.init_process_group(backend="nccl", init_method="env://")
+        else:
+            dist.init_process_group(backend="nccl", init_method="env://", timeout=timeout)
         local_rank = dist.get_rank()
         world_size = dist.get_world_size()
     else:

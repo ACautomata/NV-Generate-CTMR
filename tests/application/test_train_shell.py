@@ -458,3 +458,38 @@ def test_validation_failure_does_not_kill_the_run(tmp_path):
 def test_validation_phase_requires_both_collaborators(tmp_path):
     with pytest.raises(ValueError, match="validator and the early-stop rule"):
         _build_harness(SpyKernel(n_batches=1), tmp_path, validation=ValidationPhase(every=2, validator=None, rule=None))
+
+
+class RngPollutingValidator:
+    """Fake validator that resets and burns the global RNG, as the live sampler's
+    per-sample ``torch.manual_seed`` does (codex review, PR #301)."""
+
+    cohort_file = "dev_cohort.json"
+
+    def __init__(self, fields_by_epoch):
+        self._fields_by_epoch = fields_by_epoch
+
+    def validate(self, ctx, epoch, eval_root=None):
+        torch.manual_seed(12345)
+        torch.randn(64)  # burn the stream, like the per-sample latent draws
+        return dict(self._fields_by_epoch[epoch]), f"m={self._fields_by_epoch[epoch]['m']}"
+
+
+def test_validation_isolates_its_rng_from_the_training_stream(tmp_path):
+    """The stage's sampling randomness must not leak into training: the shell forks
+    the RNG around the validation call, so enabling ``--val-every`` leaves the
+    training random stream (shuffling, RF timesteps, modality perturbation)
+    bit-identical to a validation-free run."""
+
+    def training_draws(with_validation):
+        torch.manual_seed(0)
+        draws = []
+        kernel = SpyKernel(n_batches=2, on_train_batch=lambda _x: draws.append(torch.rand(1).item()))
+        validation = None
+        if with_validation:
+            validator = RngPollutingValidator({2: {"m": 1.0}, 4: {"m": 0.9}})
+            validation = ValidationPhase(every=2, validator=validator, rule=EarlyStopRule(patience=5, min_epoch=0, max_epoch=100))
+        _build_harness(kernel, tmp_path / ("with" if with_validation else "without"), n_epochs=4, validation=validation).run()
+        return draws
+
+    assert training_draws(True) == training_draws(False)  # the boundary's RNG pollution never reaches training

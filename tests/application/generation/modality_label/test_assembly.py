@@ -77,7 +77,7 @@ def _fake_distributed_bootstrap(monkeypatch, order=None):
     bootstrap's firing, to pin the config-before-collective ordering."""
     from ctmr.infrastructure.maisi_engine import diff_model_setting
 
-    def _initialize(num_gpus):
+    def _initialize(num_gpus, timeout=None):
         if order is not None:
             order.append("dist")
         return 0, 1, CPU

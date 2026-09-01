@@ -176,7 +176,7 @@ def _validator_worker(rank, world_size, model_dir, backend, master_port=None):
     root = Path(model_dir)
     try:
         scorer = SumScorer()
-        validator = PeriodicValidator(_items(), FeatureSampler(device), scorer, local_rank=rank, cohort_file="dev_cohort.json")
+        validator = PeriodicValidator(_items(), FeatureSampler(device), scorer, local_rank=rank, device=device, cohort_file="dev_cohort.json")
         fields, _log_line = validator.validate(ctx=None, epoch=2)
         outcome = {
             "rank": rank,
@@ -216,7 +216,7 @@ def _harness_worker(rank, world_size, model_dir, backend, master_port=None):
                 return {"m": scripted_m[entries[0]["epoch"]]}, f"m={scripted_m[entries[0]['epoch']]}"
 
         sampler = EpochSampler()
-        validator = PeriodicValidator(_items(), sampler, ScriptedScorer(), local_rank=rank, cohort_file="dev_cohort.json")
+        validator = PeriodicValidator(_items(), sampler, ScriptedScorer(), local_rank=rank, device=device, cohort_file="dev_cohort.json")
         phase = ValidationPhase(every=1, validator=validator, rule=EarlyStopRule(patience=1, min_epoch=0, max_epoch=100))
         harness = PhaseHarness(
             kernel=ValidatorKernel(device),
@@ -266,7 +266,61 @@ def _harness_fail_worker(rank, world_size, model_dir, backend, master_port=None)
                     raise RuntimeError("rank-0 scoring boom")
                 return {"m": float(epoch)}, f"m={epoch}"
 
-        validator = PeriodicValidator(_items(), EpochSampler(), FlakyScorer(), local_rank=rank, cohort_file="dev_cohort.json")
+        validator = PeriodicValidator(_items(), EpochSampler(), FlakyScorer(), local_rank=rank, device=device, cohort_file="dev_cohort.json")
+        phase = ValidationPhase(every=1, validator=validator, rule=EarlyStopRule(patience=5, min_epoch=0, max_epoch=100))
+        harness = PhaseHarness(
+            kernel=ValidatorKernel(device),
+            model_dir=root,
+            n_epochs=3,
+            local_rank=rank,
+            logger=logging.getLogger(f"rank-{rank}"),
+            gradient_executor=PlainGradientExecutor(),
+            checkpoint_repository=CheckpointRepository(root),
+            validation=phase,
+        )
+        harness.run()
+        outcome = {"rank": rank, "trend_points": [(record["epoch"], record["m"]) for record in phase.records]}
+    except Exception as error:
+        (root / f"worker_rank_{rank}.json").write_text(json.dumps({"rank": rank, "error": f"{type(error).__name__}: {error}"}) + "\n")
+        return
+    (root / f"worker_rank_{rank}.json").write_text(json.dumps(outcome) + "\n")
+
+
+def _harness_sampler_fail_worker(rank, world_size, model_dir, backend, master_port=None):
+    """A rank-0-only SAMPLER failure (BEFORE the gather) must skip on every rank, never hang."""
+    if backend == "nccl":
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
+    dist.init_process_group(
+        backend=backend,
+        init_method="env://" if backend == "nccl" else f"file://{model_dir}/_init",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=GROUP_TIMEOUT_SECONDS),
+    )
+    device = torch.device("cuda" if backend == "nccl" else "cpu")
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
+    root = Path(model_dir)
+    try:
+
+        class FlakySampler:
+            """Fails this rank's shard on the second boundary (epoch 2), before the gather."""
+
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, ctx, shard_items, out_dir):
+                self.calls += 1
+                if rank == 0 and self.calls == 2:
+                    raise RuntimeError("rank-0 shard OOM")
+                return [{"epoch": self.calls, "idx": item["idx"]} for item in shard_items]
+
+        class EpochScorer:
+            def __call__(self, entries):
+                epoch = entries[0]["epoch"]
+                return {"m": float(epoch)}, f"m={epoch}"
+
+        validator = PeriodicValidator(_items(), FlakySampler(), EpochScorer(), local_rank=rank, device=device, cohort_file="dev_cohort.json")
         phase = ValidationPhase(every=1, validator=validator, rule=EarlyStopRule(patience=5, min_epoch=0, max_epoch=100))
         harness = PhaseHarness(
             kernel=ValidatorKernel(device),
@@ -356,6 +410,25 @@ def test_harness_skips_a_failed_validation_point_on_every_rank_on_gloo(tmp_path,
     assert [record["epoch"] for record in records] == [1, 3]  # the ledger matches the in-memory trend
     assert not (tmp_path / STOP_FILE).exists()
     for epoch in (1, 2, 3):  # training ran to completion: a failed stage never kills the run
+        assert (tmp_path / f"epoch_{epoch}.pt").exists()
+
+
+def test_harness_skips_a_shard_local_sampler_failure_without_hanging_on_gloo(tmp_path, monkeypatch):
+    """codex P1 (PR #301): a shard-local sampling failure happens BEFORE the
+    all_gather. The failed rank must not leave its peers stranded inside the
+    gather -- the pre-gather MIN consensus makes the skip unanimous, so the run
+    completes and no partial trend point lands (a hang would surface as a worker
+    ``error`` after the process-group timeout)."""
+    _spawn(monkeypatch, tmp_path, _harness_sampler_fail_worker, "gloo")
+    outcomes = _outcomes(tmp_path)
+    for rank, outcome in outcomes.items():
+        assert "error" not in outcome, f"rank {rank} failed/hung: {outcome.get('error')}"
+        # epoch 2 unanimously skipped: rank 0's shard never reached the gather
+        assert outcome["trend_points"] == [[1, 1.0], [3, 3.0]]
+    records = [json.loads(line) for line in (tmp_path / "dev_eval" / "dev_trend.jsonl").read_text().splitlines() if line.strip()]
+    assert [record["epoch"] for record in records] == [1, 3]  # no partial point from the failed epoch
+    assert not (tmp_path / STOP_FILE).exists()
+    for epoch in (1, 2, 3):  # training ran to completion despite the shard failure
         assert (tmp_path / f"epoch_{epoch}.pt").exists()
 
 

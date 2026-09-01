@@ -324,8 +324,14 @@ class PhaseHarness:
         ctx.trainable.eval()
         ok = True
         fields, log_line = {}, ""
+        # Fork the RNG around the stage: the live sampler reseeds per sample, and
+        # that must never reach the training stream (shuffling, RF timesteps,
+        # modality perturbation) -- enabling --val-every leaves the training math
+        # bit-identical to a validation-free run (codex review, PR #301).
+        rng_devices = [ctx.device] if ctx.device.type == "cuda" else []
         try:
-            fields, log_line = phase.validator.validate(ctx, epoch_number, eval_root)
+            with torch.random.fork_rng(devices=rng_devices):
+                fields, log_line = phase.validator.validate(ctx, epoch_number, eval_root)
         except Exception as error:
             ok = False
             self._logger.warning(f"periodic validation epoch {epoch_number} failed; training continues: {error}")
@@ -648,6 +654,13 @@ class SelectionEmitter:
         return 0
 
 
+class ValidationSkippedError(Exception):
+    """The whole world agreed to skip a validation point: a shard's sampler failed
+    before the gather, so no entry set exists to score. Raised on every rank by
+    the pre-gather MIN consensus -- the shell's catch degrades it to a logged,
+    unanimous skip (training is the main job)."""
+
+
 class PeriodicValidator:
     """The embedded validation stage's domain (ADR-0019 §5, #278): shard, sample, all_gather, score.
 
@@ -662,20 +675,50 @@ class PeriodicValidator:
     and the ledger; this object owns only the sharding and reduction shape.
     """
 
-    def __init__(self, items, sampler, scorer, local_rank, cohort_file="dev_cohort.json"):
+    def __init__(self, items, sampler, scorer, local_rank, device, cohort_file="dev_cohort.json"):
         self._items = list(items)
         self._sampler = sampler
         self._scorer = scorer
         self._local_rank = local_rank
+        self._device = device
         self.cohort_file = cohort_file
 
     def validate(self, ctx, epoch, eval_root=None):
-        """Sample this rank's shard, all_gather the entries, score the full cohort."""
+        """Sample this rank's shard, all_gather the entries, score the full cohort.
+
+        A shard-local sampling failure (OOM, a missing spacing file, output I/O)
+        must not strand the healthy ranks inside ``all_gather_object``: the
+        sampler's exception is caught into a flag and EVERY rank reaches the
+        pre-gather MIN consensus, so the whole world agrees to skip the point
+        before anyone gathers (codex review, PR #301). The scorer runs only on
+        the gathered full cohort, after that rendezvous.
+        """
         rank, world = self._rank_and_world()
         shard = self._items[rank::world]
         out_dir = None if eval_root is None else Path(eval_root) / f"epoch_{epoch}" / "samples"
-        entries = self._sampler(ctx, shard, out_dir)
+        entries, ok, error = self._sampled(ctx, shard, out_dir)
+        if not self._ranks_ok(ok):
+            raise ValidationSkippedError(f"a shard failed to sample at epoch {epoch}: {error}")
         return self._scorer(self._gathered(entries))
+
+    def _sampled(self, ctx, shard, out_dir):
+        """Run the sampler, folding any failure into a flag so every rank (failed or
+        not) reaches the pre-gather consensus instead of diverging at the gather."""
+        try:
+            return self._sampler(ctx, shard, out_dir), True, None
+        except Exception as error:
+            return [], False, error
+
+    def _ranks_ok(self, ok):
+        """MIN all_reduce over the per-rank sampler success: all succeed or all skip.
+
+        The collective lives on the construction-injected device -- ``ctx`` is only
+        the sampler's payload and may be None (validator-only call sites)."""
+        if not dist.is_initialized():
+            return ok
+        flag = torch.tensor(1 if ok else 0, dtype=torch.int64, device=self._device)
+        dist.all_reduce(flag, op=dist.ReduceOp.MIN)
+        return bool(flag.item())
 
     def _rank_and_world(self):
         if dist.is_initialized():

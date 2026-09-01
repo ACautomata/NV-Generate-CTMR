@@ -48,6 +48,7 @@ import importlib
 import json
 import os
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -244,7 +245,12 @@ def modality_label_validation(args, merged, session, kernel):
     return shell.ValidationPhase(
         every=args.val_every,
         validator=shell.PeriodicValidator(
-            items, sampler, monitor.CohortFeatureScorer(trend.TrendFid(bank)), session.local_rank, cohort_file=str(eval_root / "dev_cohort.json")
+            items,
+            sampler,
+            monitor.CohortFeatureScorer(trend.TrendFid(bank)),
+            session.local_rank,
+            session.device,
+            cohort_file=str(eval_root / "dev_cohort.json"),
         ),
         rule=rule,
     )
@@ -278,7 +284,12 @@ def modality_label_train_session(args, engine=None):
     setting = importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting")
     executors = importlib.import_module("ctmr.infrastructure.gradient_executors")
     checkpoints = importlib.import_module("ctmr.infrastructure.checkpoints")
-    local_rank, _world, device = setting.initialize_distributed(args.num_gpus)
+    # The 2h process-group timeout covers the first-run bank build: rank 0
+    # preprocesses the whole dev list (RadImageNet inference) alone before the
+    # peers' barrier rendezvous, the same allowance the heavy quantitative
+    # path pins (fid_2d5; codex review, PR #301). Cached runs rendezvous in
+    # seconds -- the timeout only bounds a genuinely stranded peer.
+    local_rank, _world, device = setting.initialize_distributed(args.num_gpus, timeout=timedelta(seconds=7200))
     if args.amp and args.amp_dtype == "fp16":
         gradient_executor = executors.Fp16GradientExecutor()
     elif args.amp:

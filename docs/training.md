@@ -118,22 +118,25 @@ The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-C
 - **Hyperparameters are frozen** in `configs/config_brats_p1_train.json`: `lr=2e-6`, `batch=1`, `cache_rate=0`, `n_epochs<=100`, L1 loss, Rectified Flow uniform timestep sampling (scale 1.4, `config_network_rflow.json`), PolynomialLR power 2.0, `augment_modality_label prob=0.1` with the t1c token 34 frozen (`frozen_modality_tokens: [34]`, series-② T3 / issue #250 — the token keeps P(retain)=1, every other token's augmentation unchanged; an absent key is the historical unfrozen semantics);
 - **1:1 replay** — the training list is the concatenation of the #52 BraTS `p1_image_only.json` (7404 entries) and the MR-RATE replay cohort (prep tooling retired to git history in #143; cohort rules in ADR-0005); replay entries keep the original whole-brain tokens `mri_t1/mri_t2/mri_flair`;
 - **bf16 autocast by default** (DCU), fp32 fallback via `--no_amp`, DDP via `torchrun` (RCCL);
-- **Per-epoch checkpoints** `epoch_<N>.pt` (upstream key layout) feed the dev-eval sidecar and the phase-run contract selection.
+- **Per-epoch checkpoints** `epoch_<N>.pt` (upstream key layout) feed the phase-run contract selection; the embedded periodic validation (below) samples the live weights directly and reads no checkpoint.
 
 ### Dev light acceptance and early stopping
 
-`ctmr generate modality-label dev-eval` (`ctmr.application.generation.modality_label.monitor`) runs beside the trainer on a reserved GPU. Every 5 epochs it generates the fixed 16-case dev cohort (4 modalities x fixed seeds, cfg=10, 30 steps), records the per-modality 2.5D RadImageNet FID trend against the dev real bank, and runs the frozen L2 instruments on the generated pseudo-four-modality volumes (WT/TC/ET volume medians + failure counts; trend only). The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100) halts the trainer through `<ckpt_dir>/.early_stop`; the candidate is the `argmin` mean-FID epoch. See ADR-0005 for the exact rule text.
+The dev light acceptance runs **embedded in the trainer** (issue #278, ADR-0019 §5): every `--val-every N` epochs (default 10, `0` disables) the trainer itself generates the fixed 16-case dev cohort (4 modalities x fixed seeds, cfg=10, 30 steps), records the per-modality 2.5D RadImageNet FID trend against the dev real bank, and runs the frozen L2 instruments on the generated pseudo-four-modality volumes (WT/TC/ET volume medians + failure counts; trend only).
+All ranks shard the cohort; a validation-stage failure skips the point on every rank and training continues. The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100 — the trainer's own `n_epochs`) is evaluated at the boundary and halts the run on every rank through `<ckpt_dir>/.early_stop`; the candidate is the `argmin` mean-FID epoch. See ADR-0005 for the exact rule text.
+
+The records land at `<ckpt_dir>/dev_eval/dev_trend.jsonl` + per-epoch `trend.json` — the retired sidecar's record contract, now written by the trainer. The standalone sidecar (`ctmr generate modality-label dev-eval`, running beside the trainer on a reserved GPU) is the reference description of the same instruments; its offline rework and the reserved-GPU documentation rewrite are tracked in #279.
 
 ### Launch (sugon DCU, P1)
 
 ```bash
 ctmr generate modality-label train -e run/environment.json -c configs/config_brats_p1_train.json \
-    -t configs/config_network_rflow.json --replay-list run/lists/p1_mrrate_replay.json -g 8
-# torchrun spawn is derived by the launcher; the dev-eval sidecar runs separately:
-ctmr generate modality-label dev-eval ...
+    -t configs/config_network_rflow.json --replay-list run/lists/p1_mrrate_replay.json \
+    --val-every 10 --dev-list run/lists/dev_cohort.json --raw-root run/raw --emb-root run/emb -g 8
+# torchrun spawn is derived by the launcher; the dev validation above is embedded (--val-every 0 disables it)
 ```
 
-Prerequisites (controlled storage only): the #52 phase lists/embeddings, the MR-RATE replay cohort (its prep/encode tooling retired to git history in #143; cohort rules in ADR-0005), the v1 base checkpoint, and the dev real feature bank (`ctmr generate modality-label dev-eval reference`).
+Prerequisites (controlled storage only): the #52 phase lists/embeddings, the MR-RATE replay cohort (its prep/encode tooling retired to git history in #143; cohort rules in ADR-0005), the v1 base checkpoint, and the dev real feature bank (`ctmr generate modality-label dev-eval reference`). A skipped bank pre-build is tolerated — on the first boundary rank 0 builds it alone (minutes of RadImageNet inference) while the peers hold the rendezvous, covered by the trainer's 2 h process-group timeout — and the run-local cache makes every later start rendezvous in seconds.
 
 ## BraTS2023 P2 Mask→Image Candidate (ControlNet-only bypass)
 
