@@ -76,6 +76,7 @@ from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 from ctmr.application.generation.cross_modal.baseline import ReferenceGridWriter
 from ctmr.application.generation.cross_modal.plan import MODALITY_PAIRS, seed_of
+from ctmr.application.generation.devices import add_device_flag, resolve_device
 from ctmr.application.shell import (
     MODALITY_TOKENS,
     EarlyStopRule,
@@ -419,6 +420,7 @@ def parse_args(argv=None):
     p.add_argument("--poll-seconds", type=float, default=60.0)
     p.add_argument("--score-workers", type=int, default=32, help="parallel CPU workers for reference resampling + PSNR/SSIM")
     p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
+    add_device_flag(p)
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
     p.add_argument("--eval-root", required=True)
@@ -478,7 +480,7 @@ def main(argv=None):
     # the engine adapter behind the GenerationEngine port.
     runtime = GenerateRuntime()
     dev_list = DevList(args.dev_list, eval_root).build()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     cohort_source = DevCohort(dev_list)
     cohort = cohort_source.cases()
     phase_root = Path(args.phase_root)

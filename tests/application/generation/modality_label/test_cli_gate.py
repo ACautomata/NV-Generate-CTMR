@@ -129,7 +129,11 @@ def _reference_finetune_parser():
 
 
 def _reference_dev_eval_parser():
-    """The retired dev-eval entry's argparse surface, verbatim (minus the retired selftest verb)."""
+    """The retired dev-eval entry's argparse surface, verbatim (minus the retired selftest verb).
+
+    One declared evolution since the migration (issue #280, ADR-0019 §8, not
+    drift): the device-consuming reference/watch verbs carry the unified
+    ``--device`` injection flag."""
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -137,6 +141,7 @@ def _reference_dev_eval_parser():
     p.add_argument("--dev-list", required=True)
     p.add_argument("--raw-root", required=True)
     p.add_argument("--eval-root", required=True)
+    p.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
 
     p = sub.add_parser("watch", help="sidecar loop: evaluate epoch checkpoints as they land")
     p.add_argument("--ckpt-dir", required=True)
@@ -157,6 +162,7 @@ def _reference_dev_eval_parser():
     p.add_argument("--nnunet-raw", default="/root/private_data/ctmr/data/nnunet_raw")
     p.add_argument("--nnunet-preprocessed", default="/root/private_data/ctmr/data/nnunet_preprocessed")
     p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
+    p.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
     p.add_argument("--eval-root", required=True)

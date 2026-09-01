@@ -72,6 +72,7 @@ import numpy as np
 import torch
 from monai.networks.schedulers import RFlowScheduler
 
+from ctmr.application.generation.devices import add_device_flag, resolve_device
 from ctmr.application.generation.mask.inference import binarize_labels, crop_img_body_mask
 from ctmr.application.shell import MODALITY_TOKENS, TARGET_MODALITIES
 from ctmr.domain.engine import GenerationEngine
@@ -372,6 +373,7 @@ def parse_args(argv=None):
     parser.add_argument("--limit", type=int, default=None, help="max holdout cases per challenge")
     parser.add_argument("--challenge", default=None, help="restrict to one challenge")
     parser.add_argument("--only-cases", nargs="*", default=None)
+    add_device_flag(parser)
     return parser.parse_args(argv)
 
 
@@ -387,7 +389,7 @@ def main(argv=None):
     merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
     merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
     merged.cfg_guidance_scale = 10.0
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     cohort = HoldoutCohortBuilder(manifest, args.shard, args.num_shards, args.limit, args.challenge, args.only_cases).build()
     if not cohort:
         print("empty cohort after sharding/filters; nothing to generate", file=sys.stderr)

@@ -51,13 +51,13 @@ import sys
 from pathlib import Path
 
 import nibabel as nib
-import torch
 
 from ctmr.application.acceptance.distribution.token_dilution import (
     ARM_ORDER,
     TOKEN_ARMS,
     SeedAnchor,
 )
+from ctmr.application.generation.devices import add_device_flag, resolve_device
 from ctmr.application.generation.modality_label.monitor import CandidateSampler, CohortSpacingSource
 from ctmr.application.generation.trend import DevCohortBuilder
 from ctmr.domain.dm_output_grid import V1_DM_OUTPUT_GRID
@@ -113,8 +113,9 @@ def main(argv=None):
     parser.add_argument("-c", "--model_config_path", required=True)
     parser.add_argument("-t", "--model_def_path", required=True)
     parser.add_argument("--samples-dir", required=True, help="artifact directory for the five per-case volumes (never git)")
+    add_device_flag(parser)
     args = parser.parse_args(argv)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     print(f"[job-d] device={device}; variant=diagnostic -- 冻结 checkpoint 只读,不产生任何验收判定", flush=True)
 
     engine = modality_label_engine()  # the composition root's engine assembly (ADR-0019 §2)
