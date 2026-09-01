@@ -45,8 +45,10 @@ composition root too.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ctmr.application.generation.launcher import TorchrunLauncher, num_gpus_of
@@ -183,6 +185,69 @@ class MaskTrainSession:
 def modality_label_engine():
     """The modality-label family's GenerationEngine assembly (ADR-0019 §2, #272)."""
     return importlib.import_module("ctmr.infrastructure.engine").MaisiEngine()
+
+
+def modality_label_validation(args, merged, session, kernel):
+    """The modality-label embedded periodic validation assembly (ADR-0019 §2+§5, #278).
+
+    The shell-side mechanics live in ``ctmr.application.shell``; here settles
+    the concrete knowledge: the fixed dev cohort unfolded to 64
+    (case, modality) shard items, the real reference bank (rank 0 builds and
+    writes it, the barrier publishes it, every other rank loads the cache), the
+    dev-eval sampling recipe pinned on the parsed config (cfg=10, 30 steps --
+    the retired sidecar's identical constants), the live-weight shard sampler,
+    the FID scorer and the pre-registered early-stop rule (the ADR-0005 values
+    with the trainer's own n_epochs as the cap). Missing dev inputs refuse at
+    assembly, on every rank, before the first epoch.
+    """
+    monitor = importlib.import_module("ctmr.application.generation.modality_label.monitor")
+    shell = importlib.import_module("ctmr.application.shell")
+    trend = importlib.import_module("ctmr.application.generation.trend")
+    dist = importlib.import_module("torch.distributed")
+    recipe = importlib.import_module("ctmr.domain.recipe")
+    for name in ("dev_list", "raw_root", "emb_root"):
+        if getattr(args, name, None) is None:
+            raise ValueError(f"--val-every {args.val_every} requires --{name.replace('_', '-')} (the embedded validation's dev cohort inputs)")
+    eval_root = Path(merged.model_dir) / shell.DEV_EVAL_DIR
+    cohort = monitor.DevCohortBuilder(args.dev_list).build()
+    items = [{**entry, "modality": modality} for entry in cohort for modality in shell.TARGET_MODALITIES]
+    features = trend.MrTrendFeatures(session.device)
+    rule = shell.EarlyStopRule(
+        patience=recipe.P1_DEV_EARLY_STOP["patience"],
+        min_epoch=recipe.P1_DEV_EARLY_STOP["min_epoch"],
+        max_epoch=merged.diffusion_unet_train["n_epochs"],
+    )
+    if session.local_rank == 0:
+        monitor.DevCohortBuilder(args.dev_list).write(eval_root / "dev_cohort.json")
+        bank = trend.RealReferenceBank(args.dev_list, args.raw_root, features, eval_root / "reference").build()
+        (eval_root / "early_stop_rule.json").write_text(
+            json.dumps(
+                {
+                    "rule": rule.rule_text(),
+                    "patience": rule.patience,
+                    "min_epoch": rule.min_epoch,
+                    "max_epoch": rule.max_epoch,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    if dist.is_initialized():
+        dist.barrier()
+    if session.local_rank != 0:
+        bank = trend.RealReferenceBank(args.dev_list, args.raw_root, features, eval_root / "reference").build()
+    merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
+    merged.cfg_guidance_scale = 10.0
+    sampler = monitor.LiveCohortSampler(
+        merged, session.device, session.engine, kernel, monitor.CohortSpacingSource(args.dev_list, args.emb_root), features
+    )
+    return shell.ValidationPhase(
+        every=args.val_every,
+        validator=shell.PeriodicValidator(
+            items, sampler, monitor.CohortFeatureScorer(trend.TrendFid(bank)), session.local_rank, cohort_file=str(eval_root / "dev_cohort.json")
+        ),
+        rule=rule,
+    )
 
 
 def modality_label_reencode_runtime():

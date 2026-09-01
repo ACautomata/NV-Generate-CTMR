@@ -128,7 +128,7 @@ The project recipe (spec [issue #51](https://github.com/ACautomata/NV-Generate-C
 
 ```bash
 ctmr generate modality-label train -e run/environment.json -c configs/config_brats_p1_train.json \
-    -t configs/config_network_rflow.json --replay-list run/lists/p1_mrrate_replay.json -g 7
+    -t configs/config_network_rflow.json --replay-list run/lists/p1_mrrate_replay.json -g 8
 # torchrun spawn is derived by the launcher; the dev-eval sidecar runs separately:
 ctmr generate modality-label dev-eval ...
 ```
@@ -156,7 +156,7 @@ The pre-recorded early-stop rule (patience 3 evals, min epoch 30, cap 100) halts
 
 ```bash
 ctmr generate mask train -e run/environment.json -c configs/config_brats_p2_train.json \
-    -t configs/config_network_rflow.json -g 7
+    -t configs/config_network_rflow.json -g 8
 # torchrun spawn is derived by the launcher; the dev-eval sidecar runs separately:
 ctmr generate mask dev-eval watch ...
 ```

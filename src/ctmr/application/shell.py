@@ -47,7 +47,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -59,6 +59,7 @@ from ctmr.domain.checkpoints import CheckpointRepository
 from ctmr.domain.generation import GradientExecutor
 
 STOP_FILE = ".early_stop"
+DEV_EVAL_DIR = "dev_eval"
 
 # Fixed dev cohort quotas per challenge (spec #51), shared by every family's
 # dev sidecar; the 16-case cohort order is sha256((sub, case)) within quota.
@@ -154,6 +155,7 @@ class PhaseHarness:
         checkpoint_repository: CheckpointRepository | None = None,
         recipe_check: Callable[[], Any] | None = None,
         provenance: TrainProvenanceWriter | None = None,
+        validation: ValidationPhase | None = None,
     ):
         self._kernel = kernel
         self._model_dir = model_dir
@@ -166,11 +168,22 @@ class PhaseHarness:
             raise ValueError("no gradient_executor was injected (ADR-0016/ADR-0019: the composition root assembles the precision strategy)")
         if checkpoint_repository is None:
             raise ValueError("no checkpoint_repository was injected (ADR-0015 §4/ADR-0019: the composition root assembles the weight store)")
+        if validation is not None and (validation.validator is None or validation.rule is None):
+            raise ValueError("the validation phase requires both the validator and the early-stop rule (ADR-0019 §5)")
         self._gradient_executor = gradient_executor
         self._repository = checkpoint_repository
+        self._validation = validation
 
     def run(self):
-        """Drive one full training run: recipe guard -> provenance -> loop -> cleanup."""
+        """Drive one full training run: recipe guard -> provenance -> loop -> cleanup.
+
+        The loop tail carries the embedded periodic validation stage (ADR-0019
+        §5, #278): after an epoch has trained and published, every
+        ``ValidationPhase.every`` epochs the shell runs the sharded validation
+        and evaluates the early-stop rule on the accumulated trend -- a fired
+        rule ends the run on every rank through a MAX consensus (never through
+        file-polling timing).
+        """
         if self._local_rank == 0:
             if self._recipe_check is not None:
                 self._recipe_check()
@@ -182,6 +195,8 @@ class PhaseHarness:
         torch.set_float32_matmul_precision("highest")
         for epoch in range(self._n_epochs):
             if self._train_one_epoch(epoch, loader, ctx):
+                break
+            if self._validation is not None and self._run_validation(epoch, ctx):
                 break
         if dist.is_initialized():
             dist.destroy_process_group()
@@ -203,6 +218,21 @@ class PhaseHarness:
             return stop_seen
         flag = torch.tensor(1 if stop_seen else 0, dtype=torch.int64, device=ctx.device)
         dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+        return bool(flag.item())
+
+    def _validation_ok_consensus(self, ctx, ok: bool) -> bool:
+        """Merge every rank's stage success into one verdict: ALL must succeed (MIN).
+
+        The mirror of the MAX stop consensus: any rank whose validation stage
+        raised folds the skip into a unanimous one, so no rank appends a trend
+        point the others lack -- the rank-0 ledger never leads the in-memory
+        trend, and a MAX stop verdict never fires on a record rank 0 did not
+        append. Single-rank runs take the local flag.
+        """
+        if not dist.is_initialized():
+            return ok
+        flag = torch.tensor(1 if ok else 0, dtype=torch.int64, device=ctx.device)
+        dist.all_reduce(flag, op=dist.ReduceOp.MIN)
         return bool(flag.item())
 
     def _train_one_epoch(self, epoch, loader, ctx):
@@ -267,6 +297,65 @@ class PhaseHarness:
         # observe a partial write) + latest.json pointer protocol (ADR-0015 §4).
         path = self._repository.save(payload, epoch + 1)
         self._logger.info(f"epoch {epoch + 1} average loss: {average:.4f} -> {path}")
+
+    def _run_validation(self, epoch, ctx):
+        """The embedded periodic validation stage (ADR-0019 §5, #278); True ends the run.
+
+        Called only on ``every``-epoch boundaries, after the epoch has trained
+        and published (the trend point's ``checkpoint`` therefore exists, the
+        same contract the retired sidecar's records kept). The mechanical
+        sequence is the shell's: swap the model to eval, drive the injected
+        validator (shard → sample → all_gather → score), append the WatchEngine
+        record skeleton to the ledger (rank 0) and the in-memory trend (every
+        rank), evaluate the pre-recorded rule, and merge the stop verdict with
+        a MAX all_reduce so the exit is unanimous by construction -- never by
+        file-visibility timing. A failing stage degrades to a logged skip:
+        training is the main job and the next boundary retries. The skip is
+        itself unanimous (a MIN consensus): any rank whose stage raised folds
+        the whole world into skipping the point, so the rank-0 ledger and the
+        in-memory trend advance in lockstep and no stop verdict fires on a
+        record rank 0 did not append.
+        """
+        phase = self._validation
+        epoch_number = epoch + 1
+        if epoch_number % phase.every != 0:
+            return False
+        eval_root = Path(self._model_dir) / DEV_EVAL_DIR
+        ctx.trainable.eval()
+        ok = True
+        fields, log_line = {}, ""
+        try:
+            fields, log_line = phase.validator.validate(ctx, epoch_number, eval_root)
+        except Exception as error:
+            ok = False
+            self._logger.warning(f"periodic validation epoch {epoch_number} failed; training continues: {error}")
+        finally:
+            ctx.trainable.train()
+        if not self._validation_ok_consensus(ctx, ok):
+            return False
+        record = {
+            "eval_utc": datetime.now(UTC).isoformat(),
+            "epoch": epoch_number,
+            "checkpoint": str(Path(self._model_dir) / f"epoch_{epoch_number}.pt"),
+            **fields,
+            "cohort_file": phase.validator.cohort_file,
+        }
+        if self._local_rank == 0:
+            TrendLedger(eval_root).append(record)
+            epoch_dir = eval_root / f"epoch_{epoch_number}"
+            epoch_dir.mkdir(parents=True, exist_ok=True)
+            (epoch_dir / "trend.json").write_text(json.dumps(record, indent=2) + "\n")
+        # Every rank keeps the trend in memory: the boundary evaluation below
+        # must not depend on when rank 0's append becomes visible on the share.
+        phase.records.append(record)
+        stop, reason = phase.rule.should_stop(phase.records)
+        stop = self._stop_consensus(ctx, stop)
+        self._logger.info(f"[eval] epoch {epoch_number}: {log_line} stop={stop} ({reason})")
+        if stop:
+            if self._local_rank == 0:
+                (Path(self._model_dir) / STOP_FILE).write_text(json.dumps({"reason": reason, "epoch": epoch_number}) + "\n")
+            self._logger.info(f"early-stop fired at the epoch {epoch_number} validation boundary")
+        return stop
 
 
 class TrainProvenanceWriter:
@@ -557,3 +646,69 @@ class SelectionEmitter:
             summary += summary_extra(selection)
         print(summary)
         return 0
+
+
+class PeriodicValidator:
+    """The embedded validation stage's domain (ADR-0019 §5, #278): shard, sample, all_gather, score.
+
+    The injected ``sampler`` ``(ctx, shard_items, out_dir) -> entries`` renders
+    this rank's cohort shard with the live training weights and returns one
+    entry per item (the family carries its own entry shape -- e.g. the
+    plane-mean feature vectors); the shell-level ``all_gather_object`` merges
+    every rank's entries so the injected ``scorer`` ``(entries) -> (fields,
+    log_line)`` always sees the FULL cohort no matter the world size -- the
+    gathered view is the single-card full-cohort view up to floating-point
+    summation order. The shell owns the boundary trigger, the eval/train swap
+    and the ledger; this object owns only the sharding and reduction shape.
+    """
+
+    def __init__(self, items, sampler, scorer, local_rank, cohort_file="dev_cohort.json"):
+        self._items = list(items)
+        self._sampler = sampler
+        self._scorer = scorer
+        self._local_rank = local_rank
+        self.cohort_file = cohort_file
+
+    def validate(self, ctx, epoch, eval_root=None):
+        """Sample this rank's shard, all_gather the entries, score the full cohort."""
+        rank, world = self._rank_and_world()
+        shard = self._items[rank::world]
+        out_dir = None if eval_root is None else Path(eval_root) / f"epoch_{epoch}" / "samples"
+        entries = self._sampler(ctx, shard, out_dir)
+        return self._scorer(self._gathered(entries))
+
+    def _rank_and_world(self):
+        if dist.is_initialized():
+            return dist.get_rank(), dist.get_world_size()
+        return self._local_rank, 1
+
+    @staticmethod
+    def _gathered(entries):
+        """The all-object gather: rank-interleaved shard inputs, rank-ordered outputs.
+
+        Every rank contributes one entry list; the concatenation in rank order
+        is the full cohort. Identical items never collide -- the shards are
+        disjoint by construction (``items[rank::world]``).
+        """
+        if not dist.is_initialized():
+            return entries
+        world = dist.get_world_size()
+        chunks = [None] * world
+        dist.all_gather_object(chunks, entries)
+        return [entry for chunk in chunks for entry in chunk]
+
+
+@dataclass
+class ValidationPhase:
+    """The embedded periodic validation collaborators (ADR-0019 §5, #278).
+
+    The shell consumes ``every``/``validator``/``rule``; ``records`` is the
+    run's in-memory trend (one validated point per boundary, appended on every
+    rank) -- the boundary evaluation's view, pinned equal to the rank-0
+    ``dev_trend.jsonl`` ledger by test.
+    """
+
+    every: int
+    validator: PeriodicValidator | None
+    rule: EarlyStopRule | None
+    records: list = field(default_factory=list)

@@ -33,6 +33,8 @@ import nibabel as nib
 import numpy as np
 import pytest
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 
 from ctmr.application.generation.modality_label.train import (
     SCALE_FACTOR_RELATIVE_TOLERANCE,
@@ -254,6 +256,20 @@ def test_rflow_sampling_step_closes_on_cpu():
     prev_sample = prev[0] if isinstance(prev, tuple) else prev.prev_sample
     assert prev_sample.shape == sample.shape
     assert torch.isfinite(prev_sample).all()
+
+
+def test_sampling_unet_unwraps_the_ddp_module(tmp_path):
+    """The embedded-validation sampling face (issue #278): the live weights,
+    DDP wrapper stripped -- sampling never touches the training DDP stream."""
+    kernel, _loader, _ctx = _loaded_kernel(tmp_path)
+    assert kernel.sampling_unet() is kernel._unet  # the bare module passes through
+
+    dist.init_process_group("gloo", init_method=f"file://{tmp_path}/_init", rank=0, world_size=1)
+    try:
+        kernel._unet = DistributedDataParallel(kernel._unet)
+        assert kernel.sampling_unet() is kernel._unet.module
+    finally:
+        dist.destroy_process_group()
 
 
 def test_checkpoint_payload_keeps_the_upstream_key_layout(tmp_path):

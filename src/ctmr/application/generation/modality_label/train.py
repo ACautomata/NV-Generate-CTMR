@@ -44,9 +44,21 @@ torchrun worker face -- reuses that one assembly. The CLI face is unchanged.
 
 Usage (CLI, torchrun spawn is derived by the ctmr launcher):
     ctmr generate modality-label train -e run/environment.json -c configs/config_brats_p1_train.json \
-        -t configs/config_network_rflow.json --replay-list run/lists/p1_mrrate_replay.json
+        -t configs/config_network_rflow.json --replay-list run/lists/p1_mrrate_replay.json \
+        [--val-every 10 --dev-list ... --raw-root ... --emb-root ...]
     # or directly under torchrun (same argv namespace):
-    torchrun --nproc_per_node=7 -m ctmr.application.generation.modality_label.train ...
+    torchrun --nproc_per_node=8 -m ctmr.application.generation.modality_label.train ...
+
+Embedded periodic validation (ADR-0019 §5, issue #278): with ``--val-every N``
+(default 10; 0 disables) the trainer itself runs the validation stage after
+every Nth epoch has trained and published -- all ranks shard the fixed
+16-case x 4-modality dev cohort, sample it with the live weights (the DDP
+wrapper stripped, the training weights never mutated), all_gather the
+plane-mean features, score the injected FID scorer against the dev real bank,
+append the ledger (``<model_dir>/dev_eval/dev_trend.jsonl`` + per-epoch
+``trend.json``, the retired sidecar's record contract) and evaluate the
+pre-registered early-stop rule at the boundary (a fired rule ends the run on
+every rank through a MAX consensus and writes ``<model_dir>/.early_stop``).
 """
 
 from __future__ import annotations
@@ -69,7 +81,7 @@ from ctmr.domain.engine import GenerationEngine
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.generation.objective import ModalityLabelPerturber
 from ctmr.domain.recipe import P1RecipeSpec
-from ctmr.wiring.generate import modality_label_train_session
+from ctmr.wiring.generate import modality_label_train_session, modality_label_validation
 
 SCALE_FACTOR_RELATIVE_TOLERANCE = 0.5  # issue #10 §7: sanity assert, not a re-pin
 
@@ -251,6 +263,14 @@ class TrainKernel:
         modality = batch["modality"].to(self._device)
         return self._model.train_step(images, spacing, modality, gradient_executor)
 
+    def sampling_unet(self):
+        """The live sampling face for the embedded periodic validation (ADR-0019
+        §5, #278): the DM UNet with the training weights, DDP wrapper stripped
+        -- the sharded sampling never issues a collective through the training
+        stream, and the wrapper itself stays untouched (no training-math drift).
+        """
+        return self._unet.module if isinstance(self._unet, DistributedDataParallel) else self._unet
+
     def checkpoint_payload(self, epoch, avg_loss, scale):
         unet_module = self._unet.module if isinstance(self._unet, DistributedDataParallel) else self._unet
         return {
@@ -279,6 +299,10 @@ def main(argv=None):
     merged.model_def_path = args.model_def_path
 
     kernel = TrainKernel(merged, session.device, session.logger, session.local_rank, session.engine, session.base_checkpoints)
+    # Embedded periodic validation (ADR-0019 §5, #278): --val-every N > 0
+    # assembles the sharded dev-cohort stage against the live training weights;
+    # 0 leaves the harness validation-free (the pre-#278 behaviour).
+    validation = modality_label_validation(args, merged, session, kernel) if args.val_every > 0 else None
     return PhaseHarness(
         kernel=kernel,
         model_dir=merged.model_dir,
@@ -299,6 +323,7 @@ def main(argv=None):
         ),
         gradient_executor=session.gradient_executor,
         checkpoint_repository=session.checkpoint_repository,
+        validation=validation,
     ).run()
 
 

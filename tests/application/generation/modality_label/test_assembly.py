@@ -27,6 +27,7 @@ with only the distributed bootstrap faked (no GPU on this tier).
 from __future__ import annotations
 
 import ast
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,9 +35,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from ctmr.application.generation import trend as trend_mod
+from ctmr.application.shell import PeriodicValidator, ValidationPhase
 from ctmr.domain.checkpoints import CheckpointRepository
 from ctmr.domain.engine import GenerationEngine
-from ctmr.wiring.generate import MonaiCheckpointArchive, modality_label_engine, modality_label_train_session
+from ctmr.wiring.generate import MonaiCheckpointArchive, modality_label_engine, modality_label_train_session, modality_label_validation
 
 pytestmark = pytest.mark.torch
 
@@ -151,3 +154,90 @@ def test_train_session_base_checkpoint_archive_loads_published_payloads(tmp_path
     assert loaded["scale_factor"] == pytest.approx(0.87)
     # the archive stands behind the CheckpointRepository port's load face
     assert isinstance(MonaiCheckpointArchive(CPU).load(tmp_path / "base.pt"), dict)
+
+
+# ----------------------------------------- embedded periodic validation assembly (#278)
+
+
+class _FakeBank:
+    """Stands in for the real-reference bank: no GPU, no raw volumes."""
+
+    builds = []
+
+    def __init__(self, dev_list_path, raw_root, features, out_dir):
+        self._out_dir = Path(out_dir)
+
+    def build(self):
+        _FakeBank.builds.append(str(self._out_dir))
+        return {"t1n": {"xy": [[0.0]]}}
+
+
+def _validation_args(tmp_path):
+    dev_list = tmp_path / "dev_list.json"
+    cases = []
+    for challenge, quota in (("GLI", 4), ("SSA", 2), ("MEN", 4), ("METS", 3), ("PED", 3)):
+        cases += [
+            {"sub": challenge, "case": f"{challenge}-{index:03d}", "image": f"{challenge}-{index:03d}.nii.gz", "modality": "mri_t1_skull_stripped"}
+            for index in range(quota)
+        ]
+    dev_list.write_text(json.dumps({"training": cases}) + "\n")
+    return SimpleNamespace(
+        val_every=10,
+        dev_list=str(dev_list),
+        raw_root=str(tmp_path / "raw"),
+        emb_root=str(tmp_path / "emb"),
+    )
+
+
+def _validation_session(tmp_path):
+    return SimpleNamespace(local_rank=0, device=CPU, engine=_FakeSessionEngine(), logger=logging.getLogger("test-session"))
+
+
+def _validation_merged(tmp_path):
+    return SimpleNamespace(model_dir=str(tmp_path / "models"), diffusion_unet_train={"n_epochs": 100})
+
+
+def test_modality_label_validation_assembles_the_periodic_stage(tmp_path, monkeypatch):
+    monkeypatch.setattr(trend_mod, "RealReferenceBank", _FakeBank)
+    _FakeBank.builds.clear()
+    args = _validation_args(tmp_path)
+    merged = _validation_merged(tmp_path)
+
+    phase = modality_label_validation(args, merged, _validation_session(tmp_path), kernel=None)
+
+    assert isinstance(phase, ValidationPhase)
+    assert phase.every == 10
+    # the 16-case cohort unfolded to 64 (case, modality) shard items
+    assert isinstance(phase.validator, PeriodicValidator)
+    assert len(phase.validator._items) == 64
+    assert {tuple(item) for item in ((entry["sub"], entry["case"], entry["modality"]) for entry in phase.validator._items)} == {
+        (entry["sub"], entry["case"], modality)
+        for entry in json.loads(Path(args.dev_list).read_text())["training"]
+        for modality in ("t1n", "t1c", "t2w", "t2f")
+    }
+    assert phase.validator.cohort_file == str(Path(merged.model_dir) / "dev_eval" / "dev_cohort.json")
+    # the pre-registered rule rides in verbatim (patience 3, min epoch 30, cap = trainer n_epochs)
+    assert (phase.rule.patience, phase.rule.min_epoch, phase.rule.max_epoch, phase.rule.direction) == (3, 30, 100, "min")
+    # rank 0 wrote the cohort + rule contracts under the ledger root
+    eval_root = Path(merged.model_dir) / "dev_eval"
+    cohort_doc = json.loads((eval_root / "dev_cohort.json").read_text())
+    assert len(cohort_doc["cohort"]) == 16 and "quotas" in cohort_doc
+    rule_doc = json.loads((eval_root / "early_stop_rule.json").read_text())
+    assert rule_doc["patience"] == 3 and rule_doc["min_epoch"] == 30 and rule_doc["max_epoch"] == 100
+    assert _FakeBank.builds == [str(eval_root / "reference")]  # the bank is pre-built once, at assembly
+
+
+def test_modality_label_validation_refuses_missing_dev_inputs(tmp_path):
+    merged = _validation_merged(tmp_path)
+    args = _validation_args(tmp_path)
+    args.dev_list = None
+    with pytest.raises(ValueError, match="--dev-list"):
+        modality_label_validation(args, merged, _validation_session(tmp_path), kernel=None)
+    args = _validation_args(tmp_path)
+    args.raw_root = None
+    with pytest.raises(ValueError, match="--raw-root"):
+        modality_label_validation(args, merged, _validation_session(tmp_path), kernel=None)
+    args = _validation_args(tmp_path)
+    args.emb_root = None
+    with pytest.raises(ValueError, match="--emb-root"):
+        modality_label_validation(args, merged, _validation_session(tmp_path), kernel=None)

@@ -45,10 +45,11 @@ class TorchrunLauncher:
 
 
 def num_gpus_of(argv):
-    """The ``-g/--num_gpus`` value from the train argv (default 1, the TrainCli default)."""
+    """The ``-g/--num_gpus`` value from the train argv (default 8 = the whole
+    node, the TrainCli default since issue #278 / ADR-0019 §4)."""
     for flag in ("-g", "--num_gpus"):
         if flag in argv:
             index = argv.index(flag)
             if index + 1 < len(argv):
                 return int(argv[index + 1])
-    return 1
+    return 8

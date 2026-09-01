@@ -47,8 +47,8 @@ def test_command_is_the_spawn_torchrun_invocation():
     [
         (["-e", "env.json", "-g", "7"], 7),
         (["-e", "env.json", "--num_gpus", "2"], 2),
-        (["-e", "env.json"], 1),  # the TrainCli default
-        (["-g"], 1),  # a valueless trailing flag falls back to the default
+        (["-e", "env.json"], 8),  # the TrainCli default (whole node, issue #278)
+        (["-g"], 8),  # a valueless trailing flag falls back to the default
     ],
 )
 def test_num_gpus_is_extracted_from_the_train_argv(argv, expected):

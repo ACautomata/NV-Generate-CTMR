@@ -203,6 +203,11 @@ class TrendFid:
         valid = [report[m]["mean"] for m in TARGET_MODALITIES if report[m]["mean"] is not None]
         return report, (float(np.mean(valid)) if valid else None)
 
+    def trend_fields(self, generated_features):
+        """The (fields, log_line) trend contract both scorer seams return."""
+        report, mean_fid = self.score(generated_features)
+        return {"fid": report, "m": mean_fid}, f"mean_fid={mean_fid}"
+
 
 class L2TrendRunner:
     """Frozen-instrument measurements on the generated pseudo-four-modality cohort.
