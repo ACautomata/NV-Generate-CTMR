@@ -30,10 +30,10 @@ deleted with issue #175):
   the common finetune argparse surface lives in the stdlib-only sibling
   ``ctmr.application.train_cli`` (``TrainCli``);
 - the **dev-eval engine**: ``CheckpointWatcher`` / ``EarlyStopRule`` /
-  ``TrendLedger`` plus the shared cohort constants, and the ``WatchEngine`` /
-  ``SelectionEmitter`` watch/select skeletons every family's dev
-  light-acceptance sidecar builds on (the stage sampler factory, scorer and
-  optional post-score extension ride in as collaborators).
+  ``TrendLedger`` plus the shared cohort constants, and the offline
+  ``WatchEngine`` / ``SelectionEmitter`` watch/select forms every family's dev
+  light acceptance builds on (the stage sampler factory, scorer and optional
+  post-score extension ride in as collaborators).
 
 The shell holds no recipe value and no domain decision; the stage kernel and
 the recipe guard ride in as collaborators. Torch-level: import only where
@@ -45,7 +45,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -62,7 +61,7 @@ STOP_FILE = ".early_stop"
 DEV_EVAL_DIR = "dev_eval"
 
 # Fixed dev cohort quotas per challenge (spec #51), shared by every family's
-# dev sidecar; the 16-case cohort order is sha256((sub, case)) within quota.
+# dev evaluation; the 16-case cohort order is sha256((sub, case)) within quota.
 COHORT_QUOTAS = {"GLI": 4, "SSA": 2, "MEN": 4, "METS": 3, "PED": 3}
 MODALITY_TOKENS = {"t1n": 29, "t1c": 34, "t2w": 30, "t2f": 31}
 TARGET_MODALITIES = ("t1n", "t1c", "t2w", "t2f")
@@ -293,8 +292,9 @@ class PhaseHarness:
         average = (loss_totals[0] / loss_totals[1]).item()
         payload = self._kernel.checkpoint_payload(epoch + 1, average, ctx.scale)
         # The shell's single publication call point: the repository owns the
-        # tmp atomic publish (the dev sidecar polls epoch_*.pt and must never
-        # observe a partial write) + latest.json pointer protocol (ADR-0015 §4).
+        # tmp atomic publish (the offline dev watch scans epoch_*.pt and must
+        # never observe a partial write) + latest.json pointer protocol
+        # (ADR-0015 §4).
         path = self._repository.save(payload, epoch + 1)
         self._logger.info(f"epoch {epoch + 1} average loss: {average:.4f} -> {path}")
 
@@ -412,13 +412,13 @@ class TrainProvenanceWriter:
 
 
 class CheckpointWatcher:
-    """Polls the trainer's epoch checkpoints; yields un-evaluated eval points."""
+    """Scans a run's persisted epoch checkpoints; returns the un-evaluated eval points."""
 
     def __init__(self, ckpt_dir, eval_every, max_epoch, done_epochs=()):
         self._ckpt_dir = Path(ckpt_dir)
         self._eval_every = eval_every
         self._max_epoch = max_epoch
-        # Seed from the ledger so a sidecar restart does not re-evaluate history
+        # Seed from the ledger so a watch re-run does not re-evaluate history
         # (re-appended trend points would corrupt the early-stop patience count).
         self._done = set(done_epochs)
 
@@ -493,9 +493,9 @@ class TrendLedger:
     """Appends eval records to dev_trend.jsonl and keeps the cohort + rule on disk.
 
     ``read`` is incremental under the append-only protocol: it parses only the
-    bytes appended since the last call (the watch loop re-reads the ledger
-    after every eval point, so a full re-parse per poll would be quadratic in
-    the run length).  The accumulated view equals a full re-read -- pinned by
+    bytes appended since the last call (the watch re-reads the ledger after
+    every eval point, so a full re-parse per read would be quadratic in the
+    run length).  The accumulated view equals a full re-read -- pinned by
     test.
     """
 
@@ -526,11 +526,18 @@ class TrendLedger:
 
 
 class WatchEngine:
-    """The dev watch polling engine (ADR-0011): dedup, idle-exit, ledger, record, early-stop.
+    """The offline dev watch engine (ADR-0019 §5, #279): one pass over a run's
+    already-persisted checkpoints -- dedup, ledger, record, early-stop.
 
-    The mechanical loop only -- the stage domain rides in through three
-    collaborators: the ``sampler_factory`` (``(checkpoint_path, out_dir) ->
-    samples``, the per-candidate sampling run), the ``scorer`` (``(samples) ->
+    The retired polling form waited beside the trainer for checkpoints to
+    land; the offline form evaluates whatever ``epoch_<N>.pt`` files any run
+    already has on disk (training live or finished) and exits. The selection
+    contract is the polling engine's: the ledger's incremental read, the
+    record assembly, the early-stop file write and the select-side
+    argmin/argmax (``SelectionEmitter``) are unchanged. The mechanical pass
+    only -- the stage domain rides in through three collaborators: the
+    ``sampler_factory`` (``(checkpoint_path, out_dir) -> samples``, the
+    per-candidate sampling run), the ``scorer`` (``(samples) ->
     (record_fields, log_line)``, the stage trend metric) and the optional
     ``post_score`` extension (``(epoch, samples, epoch_dir) -> extra record
     fields``, e.g. the mask family's instrument + round-trip trends; it owns
@@ -547,8 +554,6 @@ class WatchEngine:
         rule: EarlyStopRule,
         sampler_factory: Callable,
         scorer: Callable,
-        poll_seconds: float = 60.0,
-        idle_exit_seconds: float = 0.0,
         post_score: Callable | None = None,
     ):
         self._ckpt_dir = Path(ckpt_dir)
@@ -558,58 +563,55 @@ class WatchEngine:
         self._rule = rule
         self._sampler_factory = sampler_factory
         self._scorer = scorer
-        self._poll_seconds = poll_seconds
-        self._idle_exit_seconds = idle_exit_seconds
         self._post_score = post_score
 
     def run(self, cohort_file=None):
-        """Poll, dedup, score, append and early-stop; returns the process exit code."""
+        """One offline pass over the run's pending checkpoints; returns the exit code.
+
+        A failing checkpoint (a broken file, a transient model failure) skips
+        its point -- nothing reaches the ledger -- and the pass continues to
+        the next checkpoint; a watch re-run retries exactly the skipped points
+        (they are still pending).  When the pre-recorded early-stop rule
+        fires, ``<ckpt_dir>/.early_stop`` is written and the pass returns.
+        """
         ledger = TrendLedger(self._eval_root)
         watcher = CheckpointWatcher(self._ckpt_dir, self._eval_every, self._max_epoch, {record["epoch"] for record in ledger.read()})
-        idle_since = None
-        while True:
-            pending = watcher.pending()
-            if not pending:
-                if self._idle_exit_seconds and idle_since is not None and time.time() - idle_since > self._idle_exit_seconds:
-                    break
-                if self._idle_exit_seconds and idle_since is None:
-                    idle_since = time.time()
-                time.sleep(self._poll_seconds)
+        for epoch, path in watcher.pending():
+            # Per-point ledger re-check (the incremental read only parses bytes
+            # appended since the last call): a run evaluated while its training
+            # is still live may gain points from the trainer's embedded
+            # validation mid-pass -- those are the trainer's, never re-scored.
+            if any(record["epoch"] == epoch for record in ledger.read()):
                 continue
-            idle_since = None
-            for epoch, path in pending:
-                if any(record["epoch"] == epoch for record in ledger.read()):
-                    watcher.mark_done(epoch)
-                    continue
-                epoch_dir = self._eval_root / f"epoch_{epoch}"
-                try:
-                    samples = self._sampler_factory(path, epoch_dir / "samples")
-                    fields, log_line = self._scorer(samples)
-                except Exception as error:
-                    # A broken checkpoint, a transient network/model failure, or any
-                    # single-epoch hiccup must not kill the sidecar: without it
-                    # nobody writes .early_stop. Skip and retry on the next poll.
-                    print(f"[eval] epoch {epoch} skipped: {error}", file=sys.stderr, flush=True)
-                    continue
-                record = {
-                    "eval_utc": datetime.now(UTC).isoformat(),
-                    "epoch": epoch,
-                    "checkpoint": str(path),
-                    **fields,
-                }
-                if self._post_score is not None:
-                    record.update(self._post_score(epoch, samples, epoch_dir))
-                record["cohort_file"] = cohort_file
-                epoch_dir.mkdir(parents=True, exist_ok=True)
-                ledger.append(record)
-                (epoch_dir / "trend.json").write_text(json.dumps(record, indent=2) + "\n")
-                watcher.mark_done(epoch)
-                stop, reason = self._rule.should_stop(ledger.read())
-                print(f"[eval] epoch {epoch}: {log_line} stop={stop} ({reason})", flush=True)
-                if stop:
-                    (self._ckpt_dir / STOP_FILE).write_text(json.dumps({"reason": reason, "epoch": epoch}) + "\n")
-                    print(f"early-stop fired ({reason}); wrote {self._ckpt_dir / STOP_FILE}", flush=True)
-                    return 0
+            epoch_dir = self._eval_root / f"epoch_{epoch}"
+            try:
+                samples = self._sampler_factory(path, epoch_dir / "samples")
+                fields, log_line = self._scorer(samples)
+            except Exception as error:
+                # A broken checkpoint or a transient model failure must not
+                # kill the pass: without it nobody writes .early_stop. Skip
+                # the point; a watch re-run retries it.
+                print(f"[eval] epoch {epoch} skipped: {error}", file=sys.stderr, flush=True)
+                continue
+            record = {
+                "eval_utc": datetime.now(UTC).isoformat(),
+                "epoch": epoch,
+                "checkpoint": str(path),
+                **fields,
+            }
+            if self._post_score is not None:
+                record.update(self._post_score(epoch, samples, epoch_dir))
+            record["cohort_file"] = cohort_file
+            epoch_dir.mkdir(parents=True, exist_ok=True)
+            ledger.append(record)
+            (epoch_dir / "trend.json").write_text(json.dumps(record, indent=2) + "\n")
+            watcher.mark_done(epoch)
+            stop, reason = self._rule.should_stop(ledger.read())
+            print(f"[eval] epoch {epoch}: {log_line} stop={stop} ({reason})", flush=True)
+            if stop:
+                (self._ckpt_dir / STOP_FILE).write_text(json.dumps({"reason": reason, "epoch": epoch}) + "\n")
+                print(f"early-stop fired ({reason}); wrote {self._ckpt_dir / STOP_FILE}", flush=True)
+                return 0
         return 0
 
 

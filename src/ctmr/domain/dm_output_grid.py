@@ -21,7 +21,7 @@ produced the out-of-declared-domain / centroid-coordinate artefacts the geometry
 re-audit quantified (146 cases / 431 ml above the z>=128 mm declared edge).
 
 Pure value object, numpy-only closure -- no IO, no torch, no SimpleITK -- so both
-the generation writers (the sidecar / diagnostic arms) and the acceptance
+the generation writers (the dev watch / diagnostic arms) and the acceptance
 synthetic-domain report (which re-exports the size/spacing, consumer surface
 unchanged) draw from this one home. File writing stays with the callers; this
 module owns only the geometry value.
@@ -40,7 +40,7 @@ class DmOutputGrid:
     spacing: tuple[float, float, float]
 
     def affine(self) -> np.ndarray:
-        """The sidecar write affine ``diag(spacing, 1)`` -- a fresh array per call."""
+        """The dev-watch write affine ``diag(spacing, 1)`` -- a fresh array per call."""
         return np.diag([*self.spacing, 1.0])
 
 

@@ -41,7 +41,7 @@ from ctmr.domain.measurement import InstrumentMeasurer
 NNUNET_TARGET_SIZE = INSTRUMENT_GRID.size
 PREDICTION_SHAPE = tuple(reversed(NNUNET_TARGET_SIZE))  # array layout is zyx
 
-# P2 condition combined mask -> instrument label space (mirrors the dev sidecar
+# P2 condition combined mask -> instrument label space (mirrors the dev watch's
 # COMBINED_TO_INSTRUMENT in ctmr.application.generation.mask.monitor). The
 # combined mask is stored in the BraTS 2023 label ids (22/129/130/131); the
 # instrument predicts 0/1/2/3, so the round-trip Dice must remap first --

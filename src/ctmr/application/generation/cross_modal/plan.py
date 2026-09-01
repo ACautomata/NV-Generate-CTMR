@@ -13,8 +13,8 @@
 
 The four-anchor-round protocol and the deterministic per-(case, direction)
 seed come from spec #51 decisions 4/5/8 and are shared by the baseline
-(zero-training img2img) and candidate (ControlNet) plan builders plus the dev-eval
-sidecar, so baseline / candidate / dev samples stay directly comparable.
+(zero-training img2img) and candidate (ControlNet) plan builders plus the
+dev-eval watch, so baseline / candidate / dev samples stay directly comparable.
 Pure stdlib (no torch, no IO).
 """
 
@@ -25,7 +25,7 @@ import hashlib
 MODALITIES = ("t1n", "t1c", "t2w", "t2f")
 
 # BraTS file suffix -> (modality_mapping long key, class-label token). Pinned
-# by spec #51 decision 5; t1c=34 is the modality-label-planned addition. The dev sidecar
+# by spec #51 decision 5; t1c=34 is the modality-label-planned addition. The dev watch
 # translates BraTS suffixes through these long keys when resolving list fields.
 MODALITY_PAIRS = {
     "t1n": ("mri_t1_skull_stripped", 29),

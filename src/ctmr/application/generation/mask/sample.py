@@ -14,7 +14,7 @@
 
 Generates the four target-modality samples for final-holdout cases with the
 frozen mask ControlNet candidate hung off the frozen P1-DM, using exactly the
-dev sidecar sampling convention (``CandidateSampler``: RFlowScheduler,
+dev watch sampling convention (``CandidateSampler``: RFlowScheduler,
 cfg=10, 30 steps, fp16, autoencoder decode, ``x1000`` int16 MR scale, seed =
 sha256(case|modality)). The condition is the case's ``-combined.nii.gz``
 (brain=22 union + 1/2/3 -> 129/130/131 tumour remap) built by the phase
@@ -30,7 +30,7 @@ deterministic cohort order; each shard writes ``samples_shard_<i>.json`` and
 shares the idempotent ``generated/`` tree, so shards run concurrently on
 separate GPUs and their manifests concatenate into the final samples.json.
 
-The sampler is the SAME class the dev-eval sidecar (``monitor``) drives, so
+The sampler is the SAME class the dev-eval watch (``monitor``) drives, so
 dev-trend samples and holdout deliverables share one sampling definition.
 
 Since #273 (ADR-0019 §2-§3) the family assembles no infrastructure itself:
