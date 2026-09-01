@@ -10,10 +10,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Modality-label dev light-acceptance sidecar: fixed samples + FID trend + L2 trend (issue #57, spec #51 §6).
+"""Modality-label offline dev light acceptance: fixed samples + FID trend + L2 trend (issue #57, spec #51 §6).
 
-Runs beside the modality-label finetune on a reserved GPU. For every
-``epoch_<N>.pt`` the trainer persists (N a multiple of ``--eval-every``), it:
+Offline form (ADR-0019 §5, #279 -- training-time validation runs embedded in
+the trainer, #278): one pass over ANY run's already-persisted checkpoints,
+training live or finished. For every ``epoch_<N>.pt`` on disk (N a multiple
+of ``--eval-every``) the run's ledger does not have yet, it:
 
 1. generates the FIXED dev cohort — 16 dev cases x 4 target modalities
    (t1n/t1c/t2w/t2f), one sample per (case, modality) with a fixed
@@ -35,8 +37,8 @@ The early-stop rule (recorded verbatim in the run dir before training starts):
   evals produced no new best m; never past --max-epoch (= the trainer cap).
 
 The shared trend machinery (cohort/FID bank/plane features/instrument runner)
-lives in ``ctmr.application.generation.trend``; the watch/select polling
-skeleton (``WatchEngine`` / ``SelectionEmitter``) in ``ctmr.application.shell``
+lives in ``ctmr.application.generation.trend``; the watch/select skeleton
+(``WatchEngine`` / ``SelectionEmitter``) in ``ctmr.application.shell``
 -- this module only assembles the stage sampler/scorer/post-score collaborators
 and dispatches the reference/watch/select verbs.
 
@@ -50,7 +52,7 @@ inference primitives ride the injected ``GenerationEngine`` port -- the
 concrete adapter is assembled by the composition root (``ctmr.wiring.generate``),
 which this entry reuses as its dispatch face.
 
-Usage (sugon, one reserved GPU):
+Usage:
     ctmr generate modality-label dev-eval reference --dev-list ... --raw-root ... --eval-root DIR
     ctmr generate modality-label dev-eval watch --ckpt-dir ... --eval-root ... \
         --dev-list ... --raw-root ... --emb-root ... -e env.json -c config.json -t network.json
@@ -280,7 +282,7 @@ class LiveCohortSampler:
             out = Path(out_dir) / item["sub"] / f"{item['case']}_{item['modality']}_seed{seed}.nii.gz"
             out.parent.mkdir(parents=True, exist_ok=True)
             data = renderer.sample_one(model, recon, MODALITY_TOKENS[item["modality"]], self._spacings.spacing_of(item["case"]), seed)
-            # Ruling #6 (same as the sidecar): declare the v1 DM's real sampling spacing.
+            # Ruling #6 (same as the offline sampler): declare the v1 DM's real sampling spacing.
             nib.save(nib.Nifti1Image(data, affine=V1_DM_OUTPUT_GRID.affine()), out)
             planes = self._features.volume_features(out)
             entries.append(
@@ -301,8 +303,8 @@ class L2PostScore:
     """The optional post-score extension: the frozen L2 instruments trend (``--skip-l2`` degrades to None).
 
     The extension owns its failure tolerance: a single-epoch instrument hiccup
-    records the None field and must not kill the sidecar -- the engine's skip
-    path is reserved for the score itself.
+    records the None field and must not kill the watch pass -- the engine's
+    skip path is reserved for the score itself.
     """
 
     def __init__(self, l2, cohort, skip):
@@ -322,7 +324,7 @@ class L2PostScore:
 
 
 def parse_args(argv=None):
-    """The sidecar entry argparse surface (verbatim from the retired dev-eval script entry).
+    """The dev-eval entry argparse surface (verbatim from the retired dev-eval script entry).
 
     Exposed for the argv↔namespace equivalence gate (ADR-0015 Testing: the
     assertion lives in tests/application/generation/modality_label).
@@ -336,7 +338,7 @@ def parse_args(argv=None):
     p.add_argument("--eval-root", required=True)
     add_device_flag(p)
 
-    p = sub.add_parser("watch", help="sidecar loop: evaluate epoch checkpoints as they land")
+    p = sub.add_parser("watch", help="offline pass: evaluate a run's existing epoch checkpoints, then exit")
     p.add_argument("--ckpt-dir", required=True)
     p.add_argument("--eval-root", required=True)
     p.add_argument("--dev-list", required=True)
@@ -349,12 +351,10 @@ def parse_args(argv=None):
     p.add_argument("--patience", type=int, default=3)
     p.add_argument("--min-epoch", type=int, default=30)
     p.add_argument("--max-epoch", type=int, default=100)
-    p.add_argument("--poll-seconds", type=float, default=60.0)
     p.add_argument("--skip-l2", action="store_true", help="FID-only trend (instruments unavailable)")
     p.add_argument("--instrument-results", action="append", default=[], help="CHALLENGE=nnUNet_results path")
     p.add_argument("--nnunet-raw", default="/root/private_data/ctmr/data/nnunet_raw")
     p.add_argument("--nnunet-preprocessed", default="/root/private_data/ctmr/data/nnunet_preprocessed")
-    p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
     add_device_flag(p)
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
@@ -405,8 +405,6 @@ def main(argv=None):
         rule=rule,
         sampler_factory=partial(sampler.generate_cohort, cohort=cohort, spacings=spacings),
         scorer=FidTrendScorer(features, TrendFid(bank)),
-        poll_seconds=args.poll_seconds,
-        idle_exit_seconds=args.idle_exit_seconds,
         post_score=L2PostScore(l2, cohort, args.skip_l2),
     ).run(cohort_file=str(cohort_path))
 

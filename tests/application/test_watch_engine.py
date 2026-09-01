@@ -10,17 +10,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Behaviour gates for the dev watch/select engine (issue #225, ADR-0011 candidate 2).
+"""Behaviour gates for the offline dev watch/select engine (issue #225, #279, ADR-0019 §5).
 
 Fake sampler/scorer injections drive ``WatchEngine`` through the mechanical
-sequence the shell owns -- polling, dedup, idle-exit, ledger append, record
-assembly, early-stop file write -- and ``SelectionEmitter`` through the select
-argmin/argmax contract; the event sequences are pinned item by item against
-the pre-#225 monitor loops (the first tests the watch wiring ever has).  The
-``TrendLedger`` incremental read is pinned equal to a full re-read under the
-append-only protocol.  Torch-level: the shell module imports torch, so the
-module is torch-marked and runs for real in the CI full-dependency tier
-(ADR-0015 §6).
+sequence the shell owns -- one offline pass over the run's persisted
+checkpoints, dedup, ledger append, record assembly, early-stop file write --
+and ``SelectionEmitter`` through the select argmin/argmax contract; the event
+sequences are pinned item by item against the pre-#225 monitor loops (the
+first tests the watch wiring ever had).  The ``TrendLedger`` incremental read
+is pinned equal to a full re-read under the append-only protocol.  Torch-level:
+the shell module imports torch, so the module is torch-marked and runs for
+real in the CI full-dependency tier (ADR-0015 §6).
 """
 
 from __future__ import annotations
@@ -89,8 +89,6 @@ def _engine(ckpt_dir, eval_root, rule, sampler, scorer, post_score=None):
         rule=rule,
         sampler_factory=sampler,
         scorer=scorer,
-        poll_seconds=0.0,
-        idle_exit_seconds=0.05,
         post_score=post_score,
     )
 
@@ -104,7 +102,7 @@ def test_watch_engine_drives_the_mechanical_sequence_end_to_end(tmp_path):
     code = _engine(ckpt_dir, eval_root, EarlyStopRule(patience=2, min_epoch=0, max_epoch=100), sampler, scorer).run(cohort_file="dev_cohort.json")
 
     assert code == 0
-    # the event sequence, item by item: poll -> sample -> score -> append -> trend.json -> mark_done
+    # the event sequence, item by item: ledger re-check -> sample -> score -> append -> trend.json
     assert sampler.calls == [
         ("sample", 5, str(eval_root / "epoch_5" / "samples")),
         ("sample", 10, str(eval_root / "epoch_10" / "samples")),
@@ -135,16 +133,51 @@ def test_watch_engine_dedupes_epochs_already_in_the_ledger(tmp_path):
     assert [record["epoch"] for record in _records(eval_root)] == [5, 10]
 
 
-def test_watch_engine_skips_a_failing_epoch_and_retries_on_the_next_poll(tmp_path):
+def test_watch_engine_rechecks_the_ledger_before_each_point(tmp_path):
+    """A point the ledger gains while the pass runs -- e.g. a still-live run's
+    #278 embedded validation appending concurrently -- is the trainer's, not
+    re-scored: the per-point re-check skips it."""
     ckpt_dir, eval_root = tmp_path / "ckpt", tmp_path / "eval"
     _touch_checkpoints(ckpt_dir, [5, 10])
-    sampler = ScriptedSamplerFactory({5: [{"epoch": 5}], 10: [{"epoch": 10}]})
-    scorer = ScriptedScorer({5: 1.0, 10: 0.9}, fail_once={10})
+    ledger = TrendLedger(eval_root)
+
+    class LedgerGrowingSampler:
+        """While evaluating epoch 5, a concurrent writer appends epoch 10."""
+
+        def __init__(self, samples_by_epoch):
+            self.calls = []
+            self._samples_by_epoch = samples_by_epoch
+
+        def __call__(self, checkpoint_path, out_dir):
+            epoch = int(Path(checkpoint_path).stem.split("_")[1])
+            self.calls.append(("sample", epoch))
+            if epoch == 5:
+                ledger.append({"epoch": 10, "m": 0.7, "checkpoint": str(ckpt_dir / "epoch_10.pt")})
+            return self._samples_by_epoch[epoch]
+
+    sampler = LedgerGrowingSampler({5: [{"epoch": 5}], 10: [{"epoch": 10}]})
+    scorer = ScriptedScorer({5: 1.0})
 
     code = _engine(ckpt_dir, eval_root, EarlyStopRule(patience=2, min_epoch=0, max_epoch=100), sampler, scorer).run()
 
     assert code == 0
-    assert scorer.calls.count(("score", 10)) == 2  # failed once, retried on the next poll
+    assert sampler.calls == [("sample", 5)]  # epoch 10 was re-checked and skipped before its sample call
+    assert scorer.calls == [("score", 5)]
+    records = _records(eval_root)
+    assert [record["epoch"] for record in records] == [10, 5]  # the concurrent point stays the trainer's; the watch only appended 5
+
+
+def test_watch_engine_skips_a_failing_epoch_and_a_rerun_retries_it(tmp_path):
+    ckpt_dir, eval_root = tmp_path / "ckpt", tmp_path / "eval"
+    _touch_checkpoints(ckpt_dir, [5, 10])
+    sampler = ScriptedSamplerFactory({5: [{"epoch": 5}], 10: [{"epoch": 10}]})
+    scorer = ScriptedScorer({5: 1.0, 10: 0.9}, fail_once={10})
+    engine = _engine(ckpt_dir, eval_root, EarlyStopRule(patience=2, min_epoch=0, max_epoch=100), sampler, scorer)
+
+    assert engine.run() == 0
+    assert [record["epoch"] for record in _records(eval_root)] == [5]  # the failed point never reaches the ledger
+    assert engine.run() == 0  # the offline re-run retries exactly the skipped point
+    assert scorer.calls == [("score", 5), ("score", 10), ("score", 10)]
     records = _records(eval_root)
     assert [record["epoch"] for record in records] == [5, 10]  # exactly one ledger point for the retry
     assert records[1]["m"] == 0.9
@@ -189,7 +222,7 @@ def test_watch_engine_writes_the_early_stop_file_and_halts(tmp_path):
     assert stop_text.endswith("\n")
 
 
-def test_watch_engine_exits_after_the_idle_deadline(tmp_path):
+def test_watch_engine_without_pending_checkpoints_is_a_no_op(tmp_path):
     ckpt_dir, eval_root = tmp_path / "ckpt", tmp_path / "eval"
     ckpt_dir.mkdir()
     sampler = ScriptedSamplerFactory({})

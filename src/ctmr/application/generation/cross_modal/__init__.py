@@ -12,9 +12,9 @@
 """Image-conditioned cross-modality generation family (ADR-0015 §2, issue #129).
 
 The cross-modal use case implemented as four word-named modules (ADR-0015 §7⑥):
-``train`` (ControlNet candidate finetune), ``monitor`` (dev sidecar:
-reference/watch/select assembly over the shell ``WatchEngine``, early stop
-included), ``baseline`` (zero-training
+``train`` (ControlNet candidate finetune), ``monitor`` (offline dev
+acceptance: reference/watch/select assembly over the shell ``WatchEngine``,
+early stop included), ``baseline`` (zero-training
 img2img comparison floor) and ``candidate`` (the trained ControlNet
 counterpart). ``plan`` holds the shared frozen vocabulary / seed rules /
 contract markers. The frozen marker strings keep their byte identity by rule

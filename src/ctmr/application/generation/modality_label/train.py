@@ -26,9 +26,10 @@ Deltas against the retired vendored upstream training driver
 - the training list is the concatenation of the BraTS train list
   (env ``json_data_list``) and the MR-RATE replay list(s) (``--replay-list``);
 - checkpoints persist per epoch as ``epoch_<N>.pt`` (upstream key layout) for
-  the dev-eval sidecar and the contract selection;
+  the dev-eval watch/select and the contract selection;
 - the loop polls ``<model_dir>/.early_stop`` at epoch boundaries so the
-  pre-recorded early-stop rule (sidecar) can end the run without a kill;
+  pre-recorded early-stop rule (the embedded validation, or the offline watch
+  on a re-scored run) can end the run without a kill;
 - bf16 autocast is the default (DCU), fp32 fallback via --no_amp.
 
 Migrated from the retired modality-label finetune script entry (ticket 10,

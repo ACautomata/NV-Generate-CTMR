@@ -24,11 +24,11 @@ Deltas against the upstream ``train_controlnet.py`` loop, all pinned:
   the mask recipe has no recompute sanity since the P1-DM already froze it);
 - the training list is the #52 ``p2_mask_cond.json`` (fold=0 -> train side is
   fold!=0 as the shared bypass loader partitions; the val side is never
-  constructed — the dev-eval sidecar selects the candidate, spec #51);
+  constructed — the dev-eval watch/select picks the candidate, spec #51);
 - checkpoints persist per epoch as ``epoch_<N>.pt`` (``controlnet_state_dict`` +
-  ``scale_factor``) for the dev-eval sidecar and the contract selection;
+  ``scale_factor``) for the dev-eval watch/select and the contract selection;
 - the loop polls ``<model_dir>/.early_stop`` at epoch boundaries so the
-  pre-recorded early-stop rule (sidecar) can end the run;
+  pre-recorded early-stop rule (dev watch) can end the run;
 - bf16 autocast is the default (DCU), fp32 fallback via ``--no_amp``.
 
 The ControlNet is initialized from the frozen P1-DM encoder/mid and is NEVER

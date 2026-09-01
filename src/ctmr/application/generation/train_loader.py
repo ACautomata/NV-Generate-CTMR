@@ -18,7 +18,7 @@ set rides the constructor (load keys, the mask family's region-index
 companions, the condition keys joined onto the per-list data root), the
 runtime/recipe values come in per ``build`` call. The contract returns ONLY
 the train loader: the fold split's val side is never constructed -- both
-families select their candidate by the dev-eval sidecar, never by a
+families select their candidate by the dev-eval watch/select, never by a
 validation loss (spec #51 decision 7), so the old construct-and-discard val
 loader (a startup and cache_rate>0 memory tax) is gone. Numerics of the train
 side are byte-identical to the collapsed copies; the gate is

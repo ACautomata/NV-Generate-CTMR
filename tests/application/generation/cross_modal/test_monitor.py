@@ -183,7 +183,7 @@ def test_watcher_restart_does_not_reevaluate_seeded_done_epochs(tmp_path):
     assert [epoch for epoch, _ in first.pending()] == [5, 10, 15, 20]
     first.mark_done(5)
     first.mark_done(10)
-    # a sidecar restart re-seeds from the ledger's already-scored epochs
+    # a watch re-run re-seeds from the ledger's already-scored epochs
     restarted = CheckpointWatcher(tmp_path, eval_every=5, max_epoch=100, done_epochs=first._done)
     assert [epoch for epoch, _ in restarted.pending()] == [15, 20]  # 5/10 not re-evaluated
 
@@ -192,7 +192,7 @@ def test_watcher_pending_is_repeatable_until_marked_done(tmp_path):
     _touch_checkpoints(tmp_path, epochs=[5, 10])
     watcher = CheckpointWatcher(tmp_path, eval_every=5, max_epoch=100)
     assert [epoch for epoch, _ in watcher.pending()] == [5, 10]
-    assert [epoch for epoch, _ in watcher.pending()] == [5, 10]  # polling is read-only
+    assert [epoch for epoch, _ in watcher.pending()] == [5, 10]  # pending() is read-only
     watcher.mark_done(5)
     assert [epoch for epoch, _ in watcher.pending()] == [10]
 
