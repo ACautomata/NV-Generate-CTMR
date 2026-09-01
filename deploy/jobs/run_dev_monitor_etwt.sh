@@ -87,7 +87,9 @@ doc = json.load(open(sys.argv[1]))
 doc["trained_autoencoder_path"] = sys.argv[2]
 open(sys.argv[3], "w").write(json.dumps(doc, indent=2) + "\n")
 PY
-        echo "[dev-monitor] trained_autoencoder_path 不可解析,已按 VAE_DIR 落绝对路径覆写件: $override(VAE 冻结只读)"
+        # 说明走 stderr——本函数的 stdout 被命令替换捕获为 ENV_JSON_EFFECTIVE,
+        # 只能含路径一行(双 echo 会把多行串塞进 -e 参数)。
+        echo "[dev-monitor] trained_autoencoder_path 不可解析,已按 VAE_DIR 落绝对路径覆写件: $override(VAE 冻结只读)" >&2
         echo "$override"
     else
         echo "$ENV_JSON"
