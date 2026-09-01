@@ -319,9 +319,14 @@ def main(argv=None):
         engine = modality_label_engine()
         merged = engine.load_config(args.env_config_path, args.model_config_path, args.model_def_path)
         merged.cfg_guidance_scale = MONITOR_CFG
-        merged.diffusion_unet_inference = (
-            merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": MONITOR_STEPS}
-        )
+        # The monitor recipe is protocol-pinned (T8 comparability): steps are
+        # forced like cfg, NOT taken from the config (the monitor.py /
+        # token_swap_sampling idiom passes config steps through -- here that
+        # would let MODEL_JSON drift the sampling while the plan claims 30).
+        if hasattr(merged, "diffusion_unet_inference"):
+            merged.diffusion_unet_inference["num_inference_steps"] = MONITOR_STEPS
+        else:
+            merged.diffusion_unet_inference = {"num_inference_steps": MONITOR_STEPS}
         spacings = CohortSpacingSource(args.dev_list, args.emb_root)
         written = DevMonitorSampler(merged, device, engine).sample_cohort(args.ckpt, cohort, spacings, samples_dir)
         print(f"[dev-monitor] {len(cohort)} cases x 4 modalities; written {written} new volumes -> {samples_dir}", flush=True)

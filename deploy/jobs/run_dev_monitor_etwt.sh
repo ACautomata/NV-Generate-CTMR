@@ -25,7 +25,7 @@
 #   RUN_ID        候选 run id(默认 p1-20260822T131947Z,T8 覆写)
 #   DEV_LIST      dev list(默认 /root/private_data/ctmr/data/phase/lists/p1_image_only_dev.json,
 #                 1060 条;唯一 population 输入)
-#   RAW_ROOT      real BraTS 原生数据根(real 侧直通;默认 /root/private_data/ctmr/data/raw)
+#   RAW_ROOT      real BraTS 原生数据根(real 侧直通;默认 /root/private_data/ctmr/data/phase/raw)
 #   EMB_ROOT      embedding companion 根(<case>_t1n_emb.nii.gz.json 的 spacing;
 #                 必填——embedding 树位置是部署事实,不猜)
 #   NV_ENV/MODEL_JSON/NET_JSON  训练同源 configs 三件套(默认仓库 configs/ 下同名;
