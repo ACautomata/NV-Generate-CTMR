@@ -6,21 +6,30 @@
 #     list 全量 + MR-RATE replay 经 raw 重获取后同根重编码,均 clip=True;replay raw 已随
 #     服务器重组消失,由 mrrate_replay_reacquire.py 重获取——经负责人决策,#254);
 #   ② token 34 冻结(T3,#250)——config frozen_modality_tokens=[34],该 token P(保留)=1;
-#   ③ 写出 affine(T2,#249)——推理写出侧(dev 侧车 CandidateSampler)以 V1_DM_OUTPUT_GRID
+#   ③ 写出 affine(T2,#249)——推理写出侧(dev 内嵌验证/离线 watch 的 CandidateSampler)以 V1_DM_OUTPUT_GRID
 #     实声明真实采样 spacing,已在代码,配方侧零动作。
 #   重训定位为假设检验:「协议修正包足以恢复空间保真」。epoch、lr、1:1 replay、CFG=10、
 #   采样步数一概不动;不做并行消融(z-pad 留观,触发条件见 #247)。
 #
 # 【经负责人确认的两项记录在案偏差(#254 会话决议,如实登记)】
 #   A. GPU 拓扑:基底 world_size 7(训练)+1(侧车);本作业 4×DCU 实例,取 world_size 4
-#      (训练)+侧车共享 GPU0。world_size 决定每 epoch 优化步数与 PolynomialLR total_steps
-#      (代码 total_steps = n_epochs × len(per_rank_dataset)),故有效 batch 7→4、schedule
-#      长度随之变化——此为拓扑偏差,记入配方 diff 核对表,非协议项。
+#      (训练,全卡;内嵌验证全卡分片,无预留卡)。world_size 决定每 epoch 优化步数与
+#      PolynomialLR total_steps(代码 total_steps = n_epochs × len(per_rank_dataset)),
+#      故有效 batch 7→4、schedule 长度随之变化——此为拓扑偏差,记入配方 diff 核对表,
+#      非协议项。
 #   B. replay 编码:基底 replay embedding 为 clip=False;本作业按负责人决策将 replay 与
 #      BraTS 一致改为 clip=True(扩展改动①的施用面至全部训练输入)。
 #
+# 【dev 监控形态(现役口径,#278/#279,ADR-0019 §5)】
+#   基底 run 的「常驻轮询侧车」形态已于 #279 退役;现役为 trainer 内嵌周期验证:
+#   --val-every 5(对齐基底评估网格 5/epoch,基底侧车 --eval-every 5)在全卡分片上
+#   对 16 例×4 模态 dev cohort 采样计 FID,合同与记录逐字同族(dev_trend.jsonl +
+#   trend.json),早停规则同钉值(patience 3/min 30/max=trainer n_epochs=100,ADR-0005)
+#   由 trainer 内嵌评估并经 <ckpt_dir>/.early_stop 停机。离线 dev-eval watch(单遍重评)
+#   仅作训练后重打分备用;select 出 argmin 候选的合同不变。
+#
 # 用法:
-#   bash deploy/jobs/run_p1_retrain_t7.sh            # 前置校验 + 核对表落盘 + 拉起双进程
+#   bash deploy/jobs/run_p1_retrain_t7.sh            # 前置校验 + 核对表落盘 + 拉起训练
 #   bash deploy/jobs/run_p1_retrain_t7.sh --dry-run  # 只做校验+核对表,不拉起
 #
 # 环境变量(均可覆写,默认按 2026-09-01 实例实测持久盘布局):
@@ -31,16 +40,16 @@
 #                与 reference bank)
 #   MODELS_ROOT  模型根(默认 /root/private_data/ctmr/models;底座 DM + 冻结 VAE)
 #   NUM_GPUS     训练 world_size(默认 4,偏差 A;基底为 7)
-#   SIDE_CAR_GPU 侧车可见 GPU(默认 0,与训练 rank0 共享)
-#   IDLE_EXIT    侧车空闲退出秒(默认 7200;早停触发即自行退出,此为兜底)
 #   BASE_RUN_ID  基底 run_id(默认 p1-20260822T131947Z)
 #
 # 前置条件(脚本逐项校验,任一缺失即 FATAL 不拉起):
 #   1. 底座 DM checkpoint sha256 与基底 run.json 钉值逐位一致(全参续训的初始化锚)
 #   2. 冻结 VAE md5 = 917cfb1e49631c8a713e3bb7c758fbca(冻结 canonical,只读)
 #   3. embeddings_cliptrue 覆盖训练 list 全量 7404 + replay list 全量 7404(embedding+sidecar)
-#   4. config_brats_p1_train.json 含 frozen_modality_tokens=[34](T3);P1RecipeSpec 启动时再守卫
-#   5. dev 侧车 reference bank 可复用(同 dev list 同预处理,确定性等价——拷贝即缓存命中)
+#   4. config_brats_p1_train.json = T3 终态钉值(基底 + frozen_modality_tokens=[34] 唯一差);
+#      network config 对基底 run.json 机读钉值;基底超参逐键断言;P1RecipeSpec 启动时再守卫
+#   5. dev 内嵌验证 reference bank(同仪器重提产物)可复用——拷贝即缓存命中
+#      (同 dev list 同预处理,确定性等价;eval_root=<ckpt_dir>/dev_eval)
 #   6. RadImageNet FID 特征网在 torch.hub 缓存(drive.google.com 被代理拦截,须离线就位)
 #   7. DCU 卡数 = NUM_GPUS
 set -euo pipefail
@@ -56,8 +65,6 @@ DATA_ROOT="${DATA_ROOT:-/root/private_data/ctmr/data/phase}"
 P1_ROOT="${P1_ROOT:-/root/private_data/ctmr/runs/p1}"
 MODELS_ROOT="${MODELS_ROOT:-/root/private_data/ctmr/models}"
 NUM_GPUS="${NUM_GPUS:-4}"
-SIDE_CAR_GPU="${SIDE_CAR_GPU:-0}"
-IDLE_EXIT="${IDLE_EXIT:-7200}"
 BASE_RUN_ID="${BASE_RUN_ID:-p1-20260822T131947Z}"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
@@ -71,8 +78,8 @@ BASE_CKPT="$MODELS_ROOT/diff_unet_3d_rflow-mr-brain_v1.pt"
 VAE_PATH="$MODELS_ROOT/autoencoder_v1.pt"
 BASE_RUN_JSON="$P1_ROOT/records/runs/$BASE_RUN_ID/run.json"
 # 同仪器口径(#254):服务器重组后预处理栈版本已变,基线 bank(旧栈 real 特征)与
-# T7 侧车(新栈)混栈读数带系统偏置;real bank 以当前栈从官方源重取的 dev raw
-# 重提(reference_reinstr),T7 侧车与基底 trend 重算共用此 bank,判定线零改动。
+# T7 dev 验证(新栈)混栈读数带系统偏置;real bank 以当前栈从官方源重取的 dev raw
+# 重提(reference_reinstr),T7 内嵌验证与基底 trend 重算共用此 bank,判定线零改动。
 REF_BANK_SRC="$P1_ROOT/dev_eval/reference_reinstr/real_reference_bank.pt"
 NV_CONFIGS="$DEPLOY_ROOT/configs"
 MODEL_JSON="$NV_CONFIGS/config_brats_p1_train.json"
@@ -86,7 +93,6 @@ TRAIN_CFG_SHA_PIN="6c4cdf58eac54a5024130e1ef4e5099b193924e7d37d142118e3c5fcdc495
 # AC4:P3 e39 checkpoint 不动——launch 前存在性 + sha256 观测(记入核对表,不比对历史值)
 P3_E39_CKPT="${P3_E39_CKPT:-/root/private_data/ctmr/runs/p3/ckpt/epoch_39.pt}"
 T7_CKPT_DIR="$T7_ROOT/ckpt"
-T7_EVAL_ROOT="$T7_ROOT/dev_eval"
 T7_LOGS="$T7_ROOT/logs"
 
 # ── 双 source(DTK 算 + 平台代理网;非交互 ssh 需显式)──
@@ -98,7 +104,7 @@ eval "$(grep -E '^export (HF_TOKEN|HF_ENDPOINT)=' ~/.bashrc 2>/dev/null)" || tru
 
 echo "============================================"
 echo "序列② T7:P1 整改重训(单臂三改动)(#254,父 #247)"
-echo "基底: run $BASE_RUN_ID | world_size $NUM_GPUS(偏差 A,基底 7)| 侧车 GPU$SIDE_CAR_GPU 共享"
+echo "基底: run $BASE_RUN_ID | world_size $NUM_GPUS(偏差 A,基底 7)| dev 内嵌验证(#278/#279 现役形态,网格 5)"
 echo "T7_ROOT=$T7_ROOT"
 echo "============================================"
 
@@ -232,7 +238,7 @@ def row(item, base_v, t7_v, klass, note=""):
 # —— 不动项(逐项对账;base 侧 = git 取证基底真值,非机读)——
 row("lr", 2e-06, train_cfg.get("lr"), "unchanged", "ADR-0005 钉值;preflight 已强校验")
 row("batch_size", 1, train_cfg.get("batch_size"), "unchanged", "per-rank;基底 config git 取证;preflight 已强校验")
-row("n_epochs(上限)", 100, train_cfg.get("n_epochs"), "unchanged", "早停由侧车预录规则驱动;preflight 已强校验")
+row("n_epochs(上限)", 100, train_cfg.get("n_epochs"), "unchanged", "早停由 trainer 内嵌验证评估(ADR-0005 钉值,#278);preflight 已强校验")
 row("cache_rate", 0, train_cfg.get("cache_rate"), "unchanged", "基底 config git 取证;preflight 已强校验")
 row("RF scheduler.sample_method", "uniform", sched.get("sample_method"), "unchanged", "base:ADR-0005;t7:机读 net json")
 row("RF scheduler.scale", 1.4, sched.get("scale"), "unchanged", "base:ADR-0005;t7:机读 net json")
@@ -242,8 +248,8 @@ row("PolynomialLR power", 2.0, 2.0, "unchanged", "代码常量")
 row("loss", "L1", "L1", "unchanged", "代码常量")
 row("augment_modality_label prob", 0.1, 0.1, "unchanged", "代码常量")
 row("replay 混合", "1:1(7404+7404)", "1:1(7404+7404)", "unchanged", "DataCatalog 强校验")
-row("dev 侧车 cfg_guidance_scale", 10, infer_cfg.get("cfg_guidance_scale"), "unchanged", "预录采样配方")
-row("dev 侧车 num_inference_steps", 30, infer_cfg.get("num_inference_steps"), "unchanged", "预录采样配方")
+row("dev 内嵌验证 cfg_guidance_scale", 10, infer_cfg.get("cfg_guidance_scale"), "unchanged", "预录采样配方")
+row("dev 内嵌验证 num_inference_steps", 30, infer_cfg.get("num_inference_steps"), "unchanged", "预录采样配方")
 row("amp", base_platform.get("amp_dtype") or "bf16", "bf16", "unchanged", "DCU 默认")
 row("底座 checkpoint sha256", base.get("base_ckpt", {}).get("sha256", "")[:16] + "…", sha(base_ckpt)[:16] + "…", "unchanged", "全参续训初始化锚,双侧机读一致")
 row("冻结仪器/包络/判定线", "ADR-0002/0004 冻结", "零改动", "unchanged", "#247 Out of Scope")
@@ -251,7 +257,7 @@ row("P3 e39 checkpoint", "不动", "不动", "unchanged", f"#247 Out of Scope;la
 # —— 恰三项协议改动 ——
 row("①编码 clip", "clip=False(旧 embedding)", "clip=True(T4 重编码树 + replay 同根重编码)", "protocol_change", "改动①;replay 施用面扩展经负责人决策(#254)")
 row("②token 34 冻结", "无(增广全分布)", "frozen_modality_tokens=[34]", "protocol_change", "改动②(T3,#250);config 面 git 取证唯一 delta")
-row("③写出 affine", "单位 1mm 声明", "V1_DM_OUTPUT_GRID 真实 spacing", "protocol_change", "改动③(T2,#249;代码已合入,dev 侧车写出侧生效)")
+row("③写出 affine", "单位 1mm 声明", "V1_DM_OUTPUT_GRID 真实 spacing", "protocol_change", "改动③(T2,#249;代码已合入,dev 验证写出侧生效)")
 # —— 登记偏差(非协议项)——
 row("world_size(拓扑)", base_ws or 7, int(num_gpus), "approved_delta", "偏差 A(#254 会话决议):4×DCU 实例;有效 batch 与 LR schedule 长度随拓扑变化")
 
@@ -278,11 +284,13 @@ if [ "$DRY_RUN" = "1" ]; then
     exit 0
 fi
 
-# ── 拉起:先侧车(FID-only,T7 只做 FID 选择;ET/WT 监控是 T6),再训练 ──
-mkdir -p "$T7_CKPT_DIR" "$T7_EVAL_ROOT" "$T7_LOGS"
-mkdir -p "$T7_EVAL_ROOT/reference"
-cp "$REF_BANK_SRC" "$T7_EVAL_ROOT/reference/real_reference_bank.pt"
-echo "[launch] reference bank 拷贝至 $T7_EVAL_ROOT/reference/(确定性缓存命中,同 dev list 同预处理)"
+# ── 拉起:单训练进程,dev 内嵌验证随训练走(#278/#279 现役形态;ET/WT 监控是 T6)──
+# 内嵌验证 eval_root = <ckpt_dir>/dev_eval(装配钉死);reference bank 预拷至其下
+# (同仪器重提产物,RealReferenceBank.build 缓存命中,不重提)。
+mkdir -p "$T7_CKPT_DIR" "$T7_LOGS"
+mkdir -p "$T7_CKPT_DIR/dev_eval/reference"
+cp "$REF_BANK_SRC" "$T7_CKPT_DIR/dev_eval/reference/real_reference_bank.pt"
+echo "[launch] reference bank 拷贝至 $T7_CKPT_DIR/dev_eval/reference/(内嵌验证缓存命中,同 dev list 同预处理)"
 
 ENV_JSON="$T7_ROOT/environment_brats_p1_train_t7.json"
 python3 - "$ENV_JSON" "$EMB_ROOT" "$TRAIN_LIST" "$T7_CKPT_DIR" "$VAE_PATH" "$BASE_CKPT" "$NV_CONFIGS" "$DATA_ROOT" <<'PY'
@@ -303,30 +311,24 @@ print(f"[launch] env json 覆写落盘: {dst}(data_base_dir={data_root}/raw_reli
 PY
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
-SIDE_LOG="$T7_LOGS/dev_eval_$TS.log"
 TRAIN_LOG="$T7_LOGS/train_$TS.log"
 
-setsid nohup env CUDA_VISIBLE_DEVICES="$SIDE_CAR_GPU" python3 -m ctmr generate modality-label dev-eval watch \
-    --ckpt-dir "$T7_CKPT_DIR" --eval-root "$T7_EVAL_ROOT" \
-    --dev-list "$DEV_LIST" --raw-root "$P1_ROOT/raw" --emb-root "$EMB_ROOT_LEGACY" \
-    -e "$ENV_JSON" -c "$MODEL_JSON" -t "$NET_JSON" \
-    --eval-every 5 --patience 3 --min-epoch 30 --max-epoch 100 \
-    --skip-l2 --idle-exit-seconds "$IDLE_EXIT" \
-    > "$SIDE_LOG" 2>&1 < /dev/null &
-SIDE_PID=$!
-echo "[launch] dev 侧车(FID-only,共享 GPU$SIDE_CAR_GPU)pid=$SIDE_PID log=$SIDE_LOG"
-
+# 内嵌验证:dev cohort 16 例×4 模态=64 shard item 全卡分片;grid 5/epoch(基底网格);
+# emb-root 指向旧树(clip 无关,dev cohort spacing sidecar 所在);早停规则装配钉死
+# (ADR-0005: patience 3/min 30/max=trainer n_epochs),合同记录落 <ckpt_dir>/dev_eval/。
 setsid nohup python3 -m ctmr generate modality-label train \
     -e "$ENV_JSON" -c "$MODEL_JSON" -t "$NET_JSON" --replay-list "$REPLAY_LIST" -g "$NUM_GPUS" \
+    --val-every 5 --dev-list "$DEV_LIST" --raw-root "$P1_ROOT/raw" --emb-root "$EMB_ROOT_LEGACY" \
     > "$TRAIN_LOG" 2>&1 < /dev/null &
 TRAIN_PID=$!
-echo "[launch] 训练(torchrun world_size=$NUM_GPUS)pid=$TRAIN_PID log=$TRAIN_LOG"
+echo "[launch] 训练(torchrun world_size=$NUM_GPUS,内嵌 dev 验证 grid=5)pid=$TRAIN_PID log=$TRAIN_LOG"
 
 echo "============================================"
 echo "  T7 已拉起。监控:"
-echo "    tail -f $TRAIN_LOG      # 训练"
-echo "    tail -f $SIDE_LOG       # dev 侧车(FID trend/早停)"
-echo "  完成后(侧车早停或 100 epochs):"
+echo "    tail -f $TRAIN_LOG                              # 训练(loss + 内嵌验证里程碑)"
+echo "    tail -f $T7_CKPT_DIR/dev_eval/dev_trend.jsonl   # dev FID trend(逐点 ledger)"
+echo "  完成后(内嵌早停触发或 100 epochs):"
 echo "    python3 -m ctmr generate modality-label dev-eval select \\"
-echo "      --eval-root $T7_EVAL_ROOT --ckpt-dir $T7_CKPT_DIR --out $T7_ROOT/selection.json"
+echo "      --eval-root $T7_CKPT_DIR/dev_eval --ckpt-dir $T7_CKPT_DIR --out $T7_ROOT/selection.json"
+echo "  (离线重打分备用: dev-eval watch 单遍对已存 checkpoint 重评,失败点重跑即重试,#279)"
 echo "============================================"
