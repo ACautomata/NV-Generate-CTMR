@@ -132,7 +132,9 @@ def _write_t1c(path):
 def _setup_job(tmp_path, n_cases=3):
     """A synthetic job tree: raw t1c files, the training list, the env/model/def
     json triple (env's embedding_base_dir points into the tmp tree), and an
-    encode-runner stand-in that writes a latent-shaped embedding per entry."""
+    encode-runner stand-in that writes a latent-shaped embedding per entry
+    (emb files only -- the real chain never writes the T7 sidecars). A sibling
+    "old root" carries one valid sidecar per case, the copy source."""
     data_root = tmp_path / "raw"
     entries = []
     for i in range(n_cases):
@@ -143,7 +145,14 @@ def _setup_job(tmp_path, n_cases=3):
     train_list.write_text(json.dumps({"training": entries}))
 
     emb_root = tmp_path / "embeddings_cliptrue"
+    old_root = tmp_path / "embeddings"
+    for i in range(n_cases):
+        stem = f"case_{i}-t1c"
+        sidecar = {"spacing": [1.0, 1.0, 1.2], "modality": "t1c"}
+        (old_root / f"{stem}_emb.nii.gz.json").parent.mkdir(parents=True, exist_ok=True)
+        (old_root / f"{stem}_emb.nii.gz.json").write_text(json.dumps(sidecar))
     env = {
+        "json_data_list": str(train_list),
         "data_base_dir": str(data_root),
         "embedding_base_dir": str(emb_root),
         "trained_autoencoder_path": "models/autoencoder_v1.pt",
@@ -156,8 +165,9 @@ def _setup_job(tmp_path, n_cases=3):
     model_def.write_text(json.dumps({}))
 
     def encode_runner(env_config_path, model_config_path, model_def_path, num_gpus):
+        # mirrors the real chain: encode exactly the entries of the env's list
         cfg = json.loads(Path(env_config_path).read_text())
-        listing = json.loads(Path(train_list).read_text())["training"]
+        listing = json.loads(Path(cfg["json_data_list"]).read_text())["training"]
         for entry in listing:
             stem = entry["image"].replace(".nii.gz", "")
             out = Path(cfg["embedding_base_dir"]) / f"{stem}_emb.nii.gz"
@@ -171,6 +181,8 @@ def _setup_job(tmp_path, n_cases=3):
         "model_def": str(model_def),
         "emb_root": emb_root,
         "data_root": data_root,
+        "old_root": old_root,
+        "entries": entries,
         "encode_runner": encode_runner,
     }
 
@@ -231,7 +243,9 @@ def test_main_writes_manifest_and_report(tmp_path):
 
 def test_main_records_missing_entries(tmp_path):
     """An entry the encode runner failed to write is reconciled as missing, not
-    silently dropped -- the manifest count must not just echo the list length."""
+    silently dropped -- the manifest count must not just echo the list length.
+    The job must then FAIL nonzero (after the report lands): a tree the
+    downstream training list cannot satisfy must never exit green."""
     job = _setup_job(tmp_path, n_cases=2)
 
     def encode_runner_missing_one(env_config_path, model_config_path, model_def_path, num_gpus):
@@ -257,7 +271,8 @@ def test_main_records_missing_entries(tmp_path):
         "--self-check-limit",
         "0",
     ]
-    main(argv, encode_runner=encode_runner_missing_one, decode=decode)
+    with pytest.raises(DiagnosticError, match="missing"):
+        main(argv, encode_runner=encode_runner_missing_one, decode=decode)
 
     report = json.loads((tmp_path / "report" / "embedding_reencode_report.json").read_text())
     assert report["reencode"]["n_entries"] == 1
@@ -367,3 +382,118 @@ def test_main_rejects_both_pass_flags(tmp_path):
     ]
     with pytest.raises(DiagnosticError, match="mutually exclusive"):
         main(argv, encode_runner=job["encode_runner"], decode=lambda z: z[:, :, :, 0])
+
+
+# ------------------------------------------------- PR #299 review findings (F2/F4/F5)
+
+
+def test_self_check_pool_is_t1c_only(tmp_path):
+    """Job C's anchors are t1c-only readings; the spot-check pool must be the
+    t1c subset of the primary list (the reconciliation stays full-list). A
+    mixed-modality pool would compare t1n/t2w/t2f reconstructions against
+    t1c anchors (PR #299 review F2)."""
+    job = _setup_job(tmp_path, n_cases=1)
+    # extend the primary list across modalities; raw files exist for all
+    extra_modalities = [("case_1", "t1n"), ("case_2", "t2w"), ("case_3", "t2f")]
+    entries = list(job["entries"])
+    for case, mod in extra_modalities:
+        rel = f"{case}-{mod}.nii.gz"
+        _write_t1c(job["data_root"] / rel)
+        entries.append({"image": rel, "modality": "mri"})
+    Path(job["train_list"]).write_text(json.dumps({"training": entries}))
+
+    argv = [
+        "--train-list",
+        job["train_list"],
+        "-e",
+        job["env_config"],
+        "-c",
+        job["model_config"],
+        "-t",
+        job["model_def"],
+        "--output-dir",
+        str(tmp_path / "report"),
+        "--self-check-limit",
+        "99",
+    ]
+    main(argv, encode_runner=job["encode_runner"], decode=lambda z: np.full((8, 8, 8), 0.3, dtype=np.float32))
+
+    report = json.loads((tmp_path / "report" / "embedding_reencode_report.json").read_text())
+    cases = [row["case"] for row in report["self_check"]["per_case"]]
+    assert cases == ["case_0"]  # the only t1c case: t1n/t2w/t2f never enter the pool
+    assert report["reencode"]["n_train_list"] == 4  # the reconciliation still covers the full list
+
+
+def test_main_copies_and_validates_sidecars(tmp_path):
+    """T7's loader reads <emb>.json sidecars (spacing/modality) unconditionally;
+    the encode chain never writes them. With --sidecar-source the finishing
+    pass copies each sidecar into the new root (PR #299 review F4), and a
+    source sidecar that fails validation counts the entry missing (F3)."""
+    job = _setup_job(tmp_path, n_cases=2)
+    (job["old_root"] / "case_1-t1c_emb.nii.gz.json").write_text('{"spacing": "not-a-list"}')  # invalid sidecar
+
+    argv = [
+        "--train-list",
+        job["train_list"],
+        "-e",
+        job["env_config"],
+        "-c",
+        job["model_config"],
+        "-t",
+        job["model_def"],
+        "--output-dir",
+        str(tmp_path / "report"),
+        "--sidecar-source",
+        str(job["old_root"]),
+        "--self-check-limit",
+        "0",
+    ]
+    with pytest.raises(DiagnosticError, match="missing"):
+        main(argv, encode_runner=job["encode_runner"], decode=lambda z: z[:, :, :, 0])
+
+    # the valid case's sidecar landed beside its embedding
+    copied = json.loads((job["emb_root"] / "case_0-t1c_emb.nii.gz.json").read_text())
+    assert copied["spacing"] == [1.0, 1.0, 1.2] and copied["modality"] == "t1c"
+    report = json.loads((tmp_path / "report" / "embedding_reencode_report.json").read_text())
+    assert report["reencode"]["n_entries"] == 2  # both embeddings exist on disk
+    assert report["reencode"]["missing"] == ["case_1-t1c.nii.gz"]  # unusable without a valid sidecar
+
+
+def test_extra_list_joins_the_reconciliation_but_not_the_pool(tmp_path):
+    """T7's DataCatalog concatenates the primary list with the replay list and
+    resolves both under one embedding root; the re-encode must cover both
+    cohorts (PR #299 review F5). Extra entries join the manifest/reconciliation
+    while the spot-check pool stays the primary list's t1c subset."""
+    job = _setup_job(tmp_path, n_cases=1)
+    replay_entries = []
+    for i in range(2):
+        rel = f"replay_{i}-t1c.nii.gz"
+        _write_t1c(job["data_root"] / rel)
+        replay_entries.append({"image": rel, "modality": "mri"})
+    replay_list = tmp_path / "p1_mrrate_replay.json"
+    replay_list.write_text(json.dumps({"training": replay_entries}))
+
+    argv = [
+        "--train-list",
+        job["train_list"],
+        "--extra-list",
+        str(replay_list),
+        "-e",
+        job["env_config"],
+        "-c",
+        job["model_config"],
+        "-t",
+        job["model_def"],
+        "--output-dir",
+        str(tmp_path / "report"),
+        "--self-check-limit",
+        "0",
+    ]
+    main(argv, encode_runner=job["encode_runner"], decode=lambda z: z[:, :, :, 0])
+
+    assert (job["emb_root"] / "replay_0-t1c_emb.nii.gz").exists()  # the extra cohort got encoded too
+    report = json.loads((tmp_path / "report" / "embedding_reencode_report.json").read_text())
+    assert report["reencode"]["n_train_list"] == 1
+    assert report["reencode"]["n_extra_list"] == 2
+    assert report["reencode"]["n_entries"] == 3  # manifest walks the combined corpus
+    assert report["reencode"]["missing"] == []

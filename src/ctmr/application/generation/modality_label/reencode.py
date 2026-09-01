@@ -27,16 +27,29 @@ is that pass, in three steps:
 2. Manifest: the new tree is walked and every ``*_emb.nii.gz`` registered with
    its md5/bytes/shape into ``manifest.jsonl`` beside it; entries the encode
    pass failed to produce are reconciled against the training list as
-   ``missing`` -- never silently dropped.
-3. Spot-check: a uniform-stride subsample decodes its fresh embedding and reads
-   the conditioned MAE against the clip-encoded input, tiered by the noclip
-   world's extrapolation bands (job C's clip=True reading convention) -- plus
-   a direct-chain control arm that re-encodes in-process, which must
-   reproduce job C's 0.006-magnitude in-domain MAE to prove the environment
-   (VAE load / normalization / resize) still matches job C's. The artifact
-   arm's own anchor is job C's 0.0823 in-domain reading on the retained
-   sliding-window embeddings: same magnitude means the new artifacts are
-   chain-identical to the old ones, clip aside.
+   ``missing`` -- never silently dropped -- and a missing-nonempty job exits
+   nonzero (after the report lands): a tree the downstream list cannot
+   satisfy must never exit green. T7's loader also reads ``<emb>.json``
+   sidecars (spacing/modality) the encode chain never writes, so with
+   ``--sidecar-source`` the job copies each sidecar from the retained old
+   root and validates it; an entry without a usable sidecar reconciles
+   missing exactly like a missing embedding.
+3. Spot-check: the t1c subset of the primary list (job C's anchors are
+   t1c-only readings; a mixed-modality pool would compare t1n/t2w/t2f
+   reconstructions against t1c anchors) is stride-sampled, decoded from the
+   fresh embedding, and read as the conditioned MAE against the clip-encoded
+   input, tiered by the noclip world's extrapolation bands (job C's clip=True
+   reading convention) -- plus a direct-chain control arm that re-encodes
+   in-process, which must reproduce job C's 0.006-magnitude in-domain MAE to
+   prove the environment (VAE load / normalization / resize) still matches
+   job C's. The artifact arm's own anchor is job C's 0.0823 in-domain reading
+   on the retained sliding-window embeddings: same magnitude means the new
+   artifacts are chain-identical to the old ones, clip aside.
+
+The primary list covers the BraTS corpus; T7's DataCatalog concatenates a
+replay list with it and resolves both cohorts under one embedding root, so
+``--extra-list`` joins a replay cohort into the encode/manifest/reconciliation
+scope while the spot-check pool stays the primary list's t1c subset.
 
 ``variant=diagnostic`` throughout: the frozen VAE is read-only, the evaluation
 chain and the judgment lines are untouched, and the report lands in the sugon
@@ -51,6 +64,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
+import tempfile
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -133,10 +148,51 @@ class EmbeddingManifest:
         manifest.write_text("\n".join(lines) + ("\n" if lines else ""))
         return manifest
 
-    def missing_entries(self, entries):
-        """Entries of the training list with no embedding file on disk, in list
-        order -- the encode pass's failures, reconciled instead of dropped."""
-        return [entry["image"] for entry in entries if not (self._emb_root / entry["image"].replace(".nii.gz", "_emb.nii.gz")).is_file()]
+    def missing_entries(self, entries, sidecar_statuses=None):
+        """Entries of the training list with no usable artifact on disk, in list
+        order -- the encode pass's failures, reconciled instead of dropped. A
+        sidecar-status map (from :meth:`ensure_sidecars`) tightens the check:
+        the T7 loader needs embedding AND sidecar, so an entry without a valid
+        sidecar is as unusable as one without an embedding."""
+        missing = [entry["image"] for entry in entries if not (self._emb_root / entry["image"].replace(".nii.gz", "_emb.nii.gz")).is_file()]
+        if sidecar_statuses is not None:
+            missing += [image for image, status in sidecar_statuses.items() if status in ("absent", "invalid") and image not in missing]
+        return missing
+
+    @staticmethod
+    def _sidecar_name(image):
+        return image.replace(".nii.gz", "_emb.nii.gz") + ".json"
+
+    @staticmethod
+    def _valid_sidecar(path):
+        """The T7 loader reads spacing/modality out of the sidecar unconditionally;
+        a sidecar that does not parse with both keys is loader-unusable."""
+        try:
+            payload = json.loads(Path(path).read_text())
+        except (OSError, ValueError):
+            return False
+        return "spacing" in payload and "modality" in payload
+
+    def ensure_sidecars(self, entries, source_root):
+        """Copy each entry's ``<emb>.json`` sidecar from the retained old root
+        into the new one and validate it (the encode chain writes embeddings
+        only). Returns the per-entry status map: ``present`` (already on the
+        new root, valid), ``copied`` (fetched and valid), ``invalid`` (on root
+        or fetched but unusable), ``absent`` (no source sidecar)."""
+        statuses = {}
+        for entry in entries:
+            name = self._sidecar_name(entry["image"])
+            dst = self._emb_root / name
+            if dst.is_file():
+                statuses[entry["image"]] = "present" if self._valid_sidecar(dst) else "invalid"
+                continue
+            src = Path(source_root) / name
+            if not src.is_file():
+                statuses[entry["image"]] = "absent"
+                continue
+            shutil.copyfile(src, dst)
+            statuses[entry["image"]] = "copied" if self._valid_sidecar(dst) else "invalid"
+        return statuses
 
     @staticmethod
     def _md5_of(path):
@@ -300,14 +356,18 @@ class ReencodeReport:
         return self._writer.write(payload, markdown, output_dir)
 
     def _markdown(self, payload):
+        reencode = payload["reencode"]
         lines = [
             "## 重编码对账",
             "",
-            f"- 新 embedding 根:`{payload['reencode']['embedding_root']}`",
-            f"- 训练 list 条目 {payload['reencode']['n_train_list']};落盘 embedding {payload['reencode']['n_entries']}"
-            f";缺失 {len(payload['reencode']['missing'])}",
+            f"- 新 embedding 根:`{reencode['embedding_root']}`",
+            f"- 训练 list 条目 {reencode['n_train_list']};附加 list(如 replay)条目 {reencode.get('n_extra_list', 0)}"
+            f";落盘 embedding {reencode['n_entries']};缺失 {len(reencode['missing'])}",
         ]
-        missing = payload["reencode"]["missing"]
+        sidecars = reencode.get("sidecars")
+        if sidecars is not None:
+            lines.append("- T7 sidecar(拷贝自旧根并校验):" + ", ".join(f"{status} {count}" for status, count in sorted(sidecars.items())))
+        missing = reencode["missing"]
         if missing:
             shown = ", ".join(missing[:10]) + ("…" if len(missing) > 10 else "")
             lines.append(f"- 缺失清单(前 10):{shown}")
@@ -362,7 +422,14 @@ def main(
     engine: GenerationEngine | None = None,
 ):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--train-list", required=True, help="the P1 image-only training list json (full corpus)")
+    parser.add_argument("--train-list", required=True, help="the P1 image-only training list json (the spot-check pool's source)")
+    parser.add_argument(
+        "--extra-list",
+        action="append",
+        default=[],
+        help="additional cohort list(s) encoded into and reconciled against the SAME embedding root "
+        "(T7's DataCatalog concatenates the replay list with the primary list; repeatable)",
+    )
     parser.add_argument("-e", "--env-config", required=True, help="env json with embedding_base_dir = the NEW embedding root")
     parser.add_argument("-c", "--model-config", required=True, help="model config json")
     parser.add_argument("-t", "--model-def", required=True, help="network def json")
@@ -372,6 +439,12 @@ def main(
         "--embedding-root",
         default=None,
         help="override for the new embedding root; must equal the env json's embedding_base_dir (re-encode target, never the old tree)",
+    )
+    parser.add_argument(
+        "--sidecar-source",
+        default=None,
+        help="retained old embedding root to copy the T7 sidecars (<emb>.json, spacing/modality) from; "
+        "when given, an entry without a usable sidecar reconciles missing",
     )
     parser.add_argument("--self-check-limit", type=int, default=200, help="uniform-stride spot-check subsample (0 switches it off)")
     parser.add_argument("--bootstrap-b", type=int, default=10000, help="bootstrap resamples for the spot-check CI90")
@@ -400,7 +473,9 @@ def main(
             f"--embedding-root {args.embedding_root} disagrees with the env json's "
             f"embedding_base_dir {env['embedding_base_dir']} -- the manifest must describe the root the encode chain wrote"
         )
-    entries = json.loads(Path(args.train_list).read_text())["training"]
+    primary = json.loads(Path(args.train_list).read_text())["training"]
+    extras = [entry for path in args.extra_list for entry in json.loads(Path(path).read_text())["training"]]
+    entries = [*primary, *extras]
 
     if encode_runner is None:
         from ctmr.wiring.generate import modality_label_reencode_runtime
@@ -408,9 +483,20 @@ def main(
         encode_runner = modality_label_reencode_runtime()[0]
 
     # Step 1: the vendored encode chain (skips existing files -> re-entrant);
-    # it owns creating the embedding root. The shard-worker pass stops here.
+    # it owns creating the embedding root. The chain consumes the env json's
+    # json_data_list, so the combined corpus rides a derived env (ephemeral --
+    # reproducible from the operator env plus the lists). The shard-worker
+    # pass stops here; its --train-list is the shard list, so the derived env
+    # covers exactly that shard.
     if not args.skip_encode:
-        encode_runner(args.env_config, args.model_config, args.model_def, args.num_gpus)
+        with tempfile.TemporaryDirectory(prefix="reencode_chain_") as chain_dir:
+            combined = Path(chain_dir) / "train_list_chain.json"
+            combined.write_text(json.dumps({"training": entries}))
+            chain_env = dict(env)
+            chain_env["json_data_list"] = str(combined)
+            chain_env_path = Path(chain_dir) / "env_chain.json"
+            chain_env_path.write_text(json.dumps(chain_env))
+            encode_runner(str(chain_env_path), args.model_config, args.model_def, args.num_gpus)
         if not embedding_root.is_dir():
             raise DiagnosticError(f"embedding root still missing after the encode chain ran: {embedding_root}")
         if args.encode_only:
@@ -419,14 +505,19 @@ def main(
     elif not embedding_root.is_dir():
         raise DiagnosticError(f"embedding root missing for the finishing pass: {embedding_root}")
 
-    # Step 2: the md5 manifest, registered beside the new embeddings.
+    # Step 2: the T7 sidecars (the encode chain never writes them) and the md5
+    # manifest, registered beside the new embeddings. Sidecar enforcement is
+    # opt-in via --sidecar-source; the report records the statuses either way.
     manifest = EmbeddingManifest(embedding_root)
+    sidecar_statuses = manifest.ensure_sidecars(entries, args.sidecar_source) if args.sidecar_source else None
     manifest_rows = manifest.walk()
     manifest_path = manifest.write(manifest_rows)
-    missing = manifest.missing_entries(entries)
+    missing = manifest.missing_entries(entries, sidecar_statuses=sidecar_statuses)
 
     # Step 3: the in-domain spot-check (decode arm over the fresh artifacts,
     # plus the direct-chain control arm for the environment-consistency check).
+    # The pool is the PRIMARY list's t1c subset -- job C's anchors are t1c-only
+    # readings; the reconciliation above stays over the combined corpus.
     check_body = None
     if args.self_check_limit != 0:
         if decode is None:
@@ -439,12 +530,15 @@ def main(
         else:
             encode = None
         pool = ReencodeSelfCheck(env["data_base_dir"], embedding_root, decode, encode=encode)
-        rows = pool.read_cases(pool.stride(entries, args.self_check_limit))
+        t1c_entries = [entry for entry in primary if entry["image"].endswith("-t1c.nii.gz")]
+        rows = pool.read_cases(pool.stride(t1c_entries, args.self_check_limit))
         check_body = pool.summarize(rows, bootstrap_b=args.bootstrap_b)
 
     report = ReencodeReport(
         inputs={
             "train_list": str(args.train_list),
+            "extra_lists": ", ".join(args.extra_list) if args.extra_list else None,
+            "sidecar_source": args.sidecar_source,
             "env_config": str(args.env_config),
             "embedding_root": str(embedding_root),
             "manifest": str(manifest_path),
@@ -454,7 +548,9 @@ def main(
     json_path, md_path = report.write(
         reencode={
             "embedding_root": str(embedding_root),
-            "n_train_list": len(entries),
+            "n_train_list": len(primary),
+            "n_extra_list": len(extras),
+            "sidecars": dict(Counter(sidecar_statuses.values())) if sidecar_statuses is not None else None,
             "n_entries": len(manifest_rows),
             "missing": missing,
         },
@@ -464,6 +560,11 @@ def main(
     print(f"[reencode] manifest: {manifest_path} ({len(manifest_rows)} entries, missing={len(missing)})")
     print(f"[reencode] report: {json_path}")
     print(f"[reencode] report: {md_path}")
+    if missing:
+        raise DiagnosticError(
+            f"{len(missing)} entries are unusable after the re-encode (embedding or T7 sidecar missing/invalid), "
+            f"first: {missing[:3]} -- the tree cannot serve the training list; see the report for the full list"
+        )
 
 
 if __name__ == "__main__":

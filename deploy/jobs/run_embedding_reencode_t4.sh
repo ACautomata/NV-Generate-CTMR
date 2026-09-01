@@ -34,6 +34,12 @@
 #                    零浪费;分片 list/env 落 OUTPUT_DIR/,worker 日志 shard_i.log)
 #   SELF_CHECK_LIMIT 抽检例数(默认 200,作业 C 同规模;0 关闭)
 #   BOOTSTRAP_B      bootstrap 重采样数(默认 10000)
+#   REPLAY_LISTS     附加 cohort list(空格分隔,默认空;T7 的 DataCatalog 把 replay list
+#                    与主 list 拼接后在同一 embedding root 下解析,故 replay 需同根编码;
+#                    对账覆盖合并集,抽检池仍取主 list 的 t1c 子集)
+#   SIDE_CAR_SOURCE  旧 embedding 根(默认 $PHASE_ROOT/embeddings;T7 loader 无条件读
+#                    <emb>.json sidecar,编码链不写,收尾进程从旧根拷贝并校验;
+#                    设为空串关闭拷贝——此时 sidecar 缺失不记 missing)
 #   OUTPUT_DIR       报告输出目录(默认 $P1_ROOT/reencode_t4)
 #
 # 前置条件:
@@ -65,10 +71,15 @@ NUM_GPUS="${NUM_GPUS:-1}"
 SHARDS="${SHARDS:-1}"
 SELF_CHECK_LIMIT="${SELF_CHECK_LIMIT:-200}"
 BOOTSTRAP_B="${BOOTSTRAP_B:-10000}"
+REPLAY_LISTS="${REPLAY_LISTS:-}"
+SIDE_CAR_SOURCE="${SIDE_CAR_SOURCE-$PHASE_ROOT/embeddings}"
 OUTPUT_DIR="${OUTPUT_DIR:-$P1_ROOT/reencode_t4}"
 
 for f in "$TRAIN_LIST" "$ENV_JSON" "$MODEL_JSON" "$NET_JSON" "$VAE_PATH"; do
     [ -f "$f" ] || { echo "[FATAL] 前置文件不存在: $f(raw 根 $DATA_ROOT 需为目录)" >&2; exit 1; }
+done
+for f in $REPLAY_LISTS; do
+    [ -f "$f" ] || { echo "[FATAL] replay list 不存在: $f" >&2; exit 1; }
 done
 [ -d "$DATA_ROOT" ] || { echo "[FATAL] raw 根不是目录: $DATA_ROOT(重组后位置待核对,见脚本头注)" >&2; exit 1; }
 
@@ -84,16 +95,26 @@ fi
 
 mkdir -p "$OUTPUT_DIR" "$EMB_OUT_ROOT"
 
-# ── 覆写 env json:embedding_base_dir 指新根,数据面指向本次作业的绝对路径 ──
+# ── 覆写 env json:embedding_base_dir 指新根,数据面指向本次作业的绝对路径;
+#    附加 cohort(replay)与主 list 拼成合并 list——编码链、分片与对账都吃合并集 ──
 REENCODE_ENV="$OUTPUT_DIR/env_reencode.json"
-python - "$ENV_JSON" "$REENCODE_ENV" "$TRAIN_LIST" "$DATA_ROOT" "$EMB_OUT_ROOT" "$VAE_PATH" <<'PY'
+python - "$ENV_JSON" "$REENCODE_ENV" "$TRAIN_LIST" "$DATA_ROOT" "$EMB_OUT_ROOT" "$VAE_PATH" "$OUTPUT_DIR" $REPLAY_LISTS <<'PY'
 import json, sys
-src, dst, train_list, data_root, emb_root, vae = sys.argv[1:7]
+src, dst, train_list, data_root, emb_root, vae, out_dir = sys.argv[1:8]
+replay_lists = sys.argv[8:]
 cfg = json.load(open(src))
-cfg["json_data_list"] = train_list
 cfg["data_base_dir"] = data_root
 cfg["embedding_base_dir"] = emb_root
 cfg["trained_autoencoder_path"] = vae
+combined = train_list
+if replay_lists:
+    entries = json.load(open(train_list))["training"]
+    for path in replay_lists:
+        entries += json.load(open(path))["training"]
+    combined = f"{out_dir}/train_list_combined.json"
+    json.dump({"training": entries}, open(combined, "w"))
+    print(f"[reencode] 合并 list 落盘: {combined}({len(entries)} 条)")
+cfg["json_data_list"] = combined
 json.dump(cfg, open(dst, "w"), indent=2)
 print(f"[reencode] env 覆写落盘: {dst}")
 PY
@@ -110,6 +131,15 @@ echo "variant=diagnostic — 不产生任何验收判定"
 echo "============================================"
 
 # ── 单次作业调用(分片 worker 传 --encode-only,收尾传 --skip-encode)──
+# EXTRA_LIST_ARGS / SIDE_CAR_ARGS 只进收尾进程(对账覆盖合并集、sidecar 拷贝校验);
+# worker 的 --train-list 是分片 list(已含合并集条目),派生链 env 即覆盖该片。
+EXTRA_LIST_ARGS=()
+for f in $REPLAY_LISTS; do
+    EXTRA_LIST_ARGS+=(--extra-list "$f")
+done
+SIDE_CAR_ARGS=()
+[ -n "$SIDE_CAR_SOURCE" ] && SIDE_CAR_ARGS=(--sidecar-source "$SIDE_CAR_SOURCE")
+
 run_reencode() {
     local env_json="$1"; local train_list="$2"; local device="$3"; shift 3
     python -m ctmr.application.generation.modality_label.reencode \
@@ -126,38 +156,42 @@ run_reencode() {
 
 if [ "${SHARDS:-1}" -le 1 ]; then
     run_reencode "$REENCODE_ENV" "$TRAIN_LIST" "$DEVICE" \
-        --self-check-limit "$SELF_CHECK_LIMIT" --bootstrap-b "$BOOTSTRAP_B"
+        --self-check-limit "$SELF_CHECK_LIMIT" --bootstrap-b "$BOOTSTRAP_B" \
+        ${EXTRA_LIST_ARGS[@]+"${EXTRA_LIST_ARGS[@]}"} ${SIDE_CAR_ARGS[@]+"${SIDE_CAR_ARGS[@]}"}
 else
-    # ── 阶段 1:按 idx%SHARDS 均分训练 list,每片一个单卡 worker(--encode-only)──
-    python - "$TRAIN_LIST" "$REENCODE_ENV" "$OUTPUT_DIR" "$SHARDS" <<'PY'
+    # ── 阶段 1:按 idx%SHARDS 均分合并 list,每片一个单卡 worker(--encode-only)。
+    # GPU 绑定用 CUDA_VISIBLE_DEVICES 隔离:vendored 编码链内部 initialize_distributed
+    # 在 num_gpus=1 时恒取 cuda:0(--device 旗标只进收尾抽检臂),不做可见性隔离则
+    # 所有 worker 挤物理卡 0(PR #299 review F1)。worker 传 --device cuda:0,经
+    # 可见性映射即各自物理卡。──
+    python - "$REENCODE_ENV" "$OUTPUT_DIR" "$SHARDS" <<'PY'
 import json, sys
-train_list, base_env_path, out_dir, n_shards_s = sys.argv[1:5]
+env_path, out_dir, n_shards_s = sys.argv[1:4]
 n_shards = int(n_shards_s)
-listing = json.load(open(train_list))["training"]
+listing = json.load(open(env_path))["json_data_list"]
+entries = json.load(open(listing))["training"]
 shards = [[] for _ in range(n_shards)]
-for idx, entry in enumerate(listing):
+for idx, entry in enumerate(entries):
     shards[idx % n_shards].append(entry)
-base_env = json.load(open(base_env_path))
+base_env = json.load(open(env_path))
 for i, shard in enumerate(shards):
     shard_list = f"{out_dir}/train_list_shard_{i}.json"
     json.dump({"training": shard}, open(shard_list, "w"))
-    env = dict(base_env)
-    env["json_data_list"] = shard_list
-    json.dump(env, open(f"{out_dir}/env_shard_{i}.json", "w"), indent=2)
-print(f"[reencode] {n_shards} 片分片落盘: {[len(s) for s in shards]}")
+print(f"[reencode] {n_shards} 片分片落盘: {[len(s) for s in shards]}(env_shard 由 worker 自派生,链吃分片 list)")
 PY
     pids=()
     for i in $(seq 0 $((SHARDS - 1))); do
-        run_reencode "$OUTPUT_DIR/env_shard_$i.json" "$OUTPUT_DIR/train_list_shard_$i.json" "cuda:$i" --encode-only \
+        CUDA_VISIBLE_DEVICES="$i" run_reencode "$REENCODE_ENV" "$OUTPUT_DIR/train_list_shard_$i.json" "cuda:0" --encode-only \
             > "$OUTPUT_DIR/shard_$i.log" 2>&1 &
         pids+=($!)
     done
     for i in $(seq 0 $((SHARDS - 1))); do
         wait "${pids[$i]}" || { echo "[FATAL] shard $i 退出码非零,见 $OUTPUT_DIR/shard_$i.log" >&2; exit 1; }
     done
-    # ── 阶段 2:收尾进程(全量 list)——manifest 对账 + 抽检 + 报告,单卡──
+    # ── 阶段 2:收尾进程(全量 list)——sidecar 拷贝校验 + manifest 对账 + 抽检 + 报告──
     run_reencode "$REENCODE_ENV" "$TRAIN_LIST" "$DEVICE" \
-        --skip-encode --self-check-limit "$SELF_CHECK_LIMIT" --bootstrap-b "$BOOTSTRAP_B"
+        --skip-encode --self-check-limit "$SELF_CHECK_LIMIT" --bootstrap-b "$BOOTSTRAP_B" \
+        ${EXTRA_LIST_ARGS[@]+"${EXTRA_LIST_ARGS[@]}"} ${SIDE_CAR_ARGS[@]+"${SIDE_CAR_ARGS[@]}"}
 fi
 
 echo ""
