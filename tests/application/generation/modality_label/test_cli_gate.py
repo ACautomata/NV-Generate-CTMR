@@ -103,12 +103,15 @@ DEV_EVAL_SELECT_ARGV = ["select", "--eval-root", "/phase/dev", "--ckpt-dir", "/p
 
 
 def _reference_finetune_parser():
-    """The retired modality-label finetune entry's argparse surface, verbatim."""
+    """The retired modality-label finetune entry's argparse surface, verbatim.
+
+    The two declared evolutions since the migration (issue #278, ADR-0019 §4-§5,
+    not drift): ``-g`` defaults to 8 and the entry carries ``--val-every``."""
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-e", "--env_config_path", required=True)
     parser.add_argument("-c", "--model_config_path", required=True)
     parser.add_argument("-t", "--model_def_path", required=True)
-    parser.add_argument("-g", "--num_gpus", type=int, default=1)
+    parser.add_argument("-g", "--num_gpus", type=int, default=8)
     parser.add_argument(
         "--replay-list",
         dest="replay_list",
@@ -116,6 +119,10 @@ def _reference_finetune_parser():
         required=True,
         help="MR-RATE replay data list (spec: list-level 1:1 mix; append once per list)",
     )
+    parser.add_argument("--val-every", dest="val_every", type=int, default=10, help="embedded periodic validation interval in epochs (0 disables)")
+    parser.add_argument("--dev-list", dest="dev_list", default=None, help="dev cohort list json (embedded validation)")
+    parser.add_argument("--raw-root", dest="raw_root", default=None, help="raw volume root for the dev real bank (embedded validation)")
+    parser.add_argument("--emb-root", dest="emb_root", default=None, help="phase embedding root for per-case spacing (embedded validation)")
     parser.add_argument("--no_amp", dest="amp", action="store_false")
     parser.add_argument("--amp_dtype", default="bf16", choices=["fp16", "bf16"], help="bf16 default (DCU)")
     return parser
@@ -207,7 +214,7 @@ def test_replay_mix_flag_is_required():
 
 def test_train_cli_derives_num_gpus_from_the_entry_argv():
     assert num_gpus_of(FINETUNE_ARGV) == 7
-    assert num_gpus_of(["-e", "e.json", "-c", "c.json", "-t", "t.json"]) == 1  # the TrainCli default
+    assert num_gpus_of(["-e", "e.json", "-c", "c.json", "-t", "t.json"]) == 8  # the TrainCli default (issue #278)
 
 
 @pytest.mark.parametrize("verb", ["generate", "sample", "batch"])

@@ -34,7 +34,7 @@ import SimpleITK as sitk
 import torch
 
 from ctmr.application.acceptance.distribution.token_dilution import ARM_ORDER
-from ctmr.application.generation.modality_label.monitor import CandidateSampler, FidTrendScorer, L2PostScore
+from ctmr.application.generation.modality_label.monitor import CandidateSampler, CohortFeatureScorer, FidTrendScorer, L2PostScore
 from ctmr.application.generation.modality_label.token_swap_sampling import TokenSwapSampler
 from ctmr.application.generation.trend import (
     DevCohortBuilder,
@@ -182,9 +182,9 @@ class _ScriptedFid:
     def __init__(self):
         self.seen = None
 
-    def score(self, generated):
+    def trend_fields(self, generated):
         self.seen = generated
-        return {"fid": "report"}, 0.42
+        return {"fid": {"fid": "report"}, "m": 0.42}, "mean_fid=0.42"
 
 
 def test_fid_trend_scorer_assembles_the_plane_means():
@@ -200,6 +200,40 @@ def test_fid_trend_scorer_assembles_the_plane_means():
     assert fid.seen["t1n"]["yz"] == []
     assert len(fid.seen["t1n"]["zx"]) == 1
     assert fid.seen["t2w"] == {"xy": [], "yz": [], "zx": []}  # no samples -> empty buckets
+
+
+def test_cohort_feature_scorer_assembles_the_gathered_entries():
+    """The embedded-validation scorer (issue #278): the all_gathered per-item
+    plane-mean features fold into the same {modality: {plane: [...]}} view the
+    sidecar scorer built -- the gathered ordering survives (summation order is
+    the only allowed drift vs the single-card full cohort)."""
+    fid = _ScriptedFid()
+    entries = [
+        {
+            "sub": "GLI",
+            "case": "case-a",
+            "modality": "t1n",
+            "path": "a.nii.gz",
+            "features": {"xy": np.ones(4), "yz": None, "zx": np.zeros(4)},
+        },
+        {
+            "sub": "GLI",
+            "case": "case-b",
+            "modality": "t1n",
+            "path": "b.nii.gz",
+            "features": {"xy": np.full(4, 2.0), "yz": None, "zx": np.ones(4)},
+        },
+    ]
+
+    fields, log_line = CohortFeatureScorer(fid)(entries)
+
+    assert fields == {"fid": {"fid": "report"}, "m": 0.42}
+    assert log_line == "mean_fid=0.42"
+    xy = fid.seen["t1n"]["xy"]
+    assert len(xy) == 2 and np.all(xy[0] == 1.0) and np.all(xy[1] == 2.0)  # gathered order kept
+    assert fid.seen["t1n"]["yz"] == []  # the None plane is skipped
+    assert fid.seen["t1n"]["zx"][1].sum() == 4.0
+    assert fid.seen["t2w"] == {"xy": [], "yz": [], "zx": []}
 
 
 class _ScriptedL2:

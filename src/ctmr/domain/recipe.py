@@ -20,6 +20,12 @@ convergence gate runs on any machine (ADR-0013 §4).
 
 from __future__ import annotations
 
+# P1's pre-registered dev-side early-stop rule values (ADR-0005; the identical
+# defaults the retired dev-eval sidecar's CLI carried): the embedded periodic
+# validation (issue #278, ADR-0019 §5) evaluates the trend against these -- the
+# max cap is the trainer's own n_epochs, supplied at assembly time.
+P1_DEV_EARLY_STOP = {"patience": 3, "min_epoch": 30}
+
 
 class MaskRecipeSpec:
     """Pinned-recipe guard for the frozen mask-conditioned recipe (ADR-0007).

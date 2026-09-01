@@ -171,7 +171,7 @@ def _reference_finetune_parser():
     parser.add_argument("-e", "--env_config_path", required=True)
     parser.add_argument("-c", "--model_config_path", required=True)
     parser.add_argument("-t", "--model_def_path", required=True)
-    parser.add_argument("-g", "--num_gpus", type=int, default=1)
+    parser.add_argument("-g", "--num_gpus", type=int, default=8)  # declared evolution: issue #278 (whole node)
     parser.add_argument("--data-list", default=None, help="p3_pairs.json (defaults to env json_data_list)")
     parser.add_argument("--no_amp", dest="amp", action="store_false")
     parser.add_argument("--amp_dtype", default="bf16", choices=["fp16", "bf16"], help="bf16 default (DCU)")
@@ -290,7 +290,7 @@ def test_entry_namespace_is_unchanged_against_the_retired_parsers(name):
 def test_train_cli_derives_num_gpus_from_the_entry_argv():
     assert num_gpus_of(FINETUNE_ARGV) == 7
     assert num_gpus_of(["ctmr", "x", "-e", "e.json", "-c", "c.json", "-t", "t.json", "-g", "2"]) == 2
-    assert num_gpus_of(["-e", "e.json"]) == 1  # the TrainCli default
+    assert num_gpus_of(["-e", "e.json"]) == 8  # the TrainCli default (whole node, issue #278)
 
 
 def test_cross_modal_generate_variant_is_not_consumed_as_entry_argv():

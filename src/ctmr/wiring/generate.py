@@ -45,8 +45,11 @@ composition root too.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 from dataclasses import dataclass
+from datetime import timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ctmr.application.generation.launcher import TorchrunLauncher, num_gpus_of
@@ -185,6 +188,74 @@ def modality_label_engine():
     return importlib.import_module("ctmr.infrastructure.engine").MaisiEngine()
 
 
+def modality_label_validation(args, merged, session, kernel):
+    """The modality-label embedded periodic validation assembly (ADR-0019 §2+§5, #278).
+
+    The shell-side mechanics live in ``ctmr.application.shell``; here settles
+    the concrete knowledge: the fixed dev cohort unfolded to 64
+    (case, modality) shard items, the real reference bank (rank 0 builds and
+    writes it, the barrier publishes it, every other rank loads the cache), the
+    dev-eval sampling recipe pinned on the parsed config (cfg=10, 30 steps --
+    the retired sidecar's identical constants), the live-weight shard sampler,
+    the FID scorer and the pre-registered early-stop rule (the ADR-0005 values
+    with the trainer's own n_epochs as the cap). Missing dev inputs refuse at
+    assembly, on every rank, before the first epoch.
+    """
+    monitor = importlib.import_module("ctmr.application.generation.modality_label.monitor")
+    shell = importlib.import_module("ctmr.application.shell")
+    trend = importlib.import_module("ctmr.application.generation.trend")
+    dist = importlib.import_module("torch.distributed")
+    recipe = importlib.import_module("ctmr.domain.recipe")
+    for name in ("dev_list", "raw_root", "emb_root"):
+        if getattr(args, name, None) is None:
+            raise ValueError(f"--val-every {args.val_every} requires --{name.replace('_', '-')} (the embedded validation's dev cohort inputs)")
+    eval_root = Path(merged.model_dir) / shell.DEV_EVAL_DIR
+    cohort = monitor.DevCohortBuilder(args.dev_list).build()
+    items = [{**entry, "modality": modality} for entry in cohort for modality in shell.TARGET_MODALITIES]
+    features = trend.MrTrendFeatures(session.device)
+    rule = shell.EarlyStopRule(
+        patience=recipe.P1_DEV_EARLY_STOP["patience"],
+        min_epoch=recipe.P1_DEV_EARLY_STOP["min_epoch"],
+        max_epoch=merged.diffusion_unet_train["n_epochs"],
+    )
+    if session.local_rank == 0:
+        monitor.DevCohortBuilder(args.dev_list).write(eval_root / "dev_cohort.json")
+        bank = trend.RealReferenceBank(args.dev_list, args.raw_root, features, eval_root / "reference").build()
+        (eval_root / "early_stop_rule.json").write_text(
+            json.dumps(
+                {
+                    "rule": rule.rule_text(),
+                    "patience": rule.patience,
+                    "min_epoch": rule.min_epoch,
+                    "max_epoch": rule.max_epoch,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    if dist.is_initialized():
+        dist.barrier()
+    if session.local_rank != 0:
+        bank = trend.RealReferenceBank(args.dev_list, args.raw_root, features, eval_root / "reference").build()
+    merged.diffusion_unet_inference = merged.diffusion_unet_inference if hasattr(merged, "diffusion_unet_inference") else {"num_inference_steps": 30}
+    merged.cfg_guidance_scale = 10.0
+    sampler = monitor.LiveCohortSampler(
+        merged, session.device, session.engine, kernel, monitor.CohortSpacingSource(args.dev_list, args.emb_root), features
+    )
+    return shell.ValidationPhase(
+        every=args.val_every,
+        validator=shell.PeriodicValidator(
+            items,
+            sampler,
+            monitor.CohortFeatureScorer(trend.TrendFid(bank)),
+            session.local_rank,
+            session.device,
+            cohort_file=str(eval_root / "dev_cohort.json"),
+        ),
+        rule=rule,
+    )
+
+
 def modality_label_reencode_runtime():
     """The embedding re-encode assembly (issue #251, series-② T4): the vendored
     ``diff_model_create_training_data`` execution (the clip=True recipe's
@@ -213,7 +284,12 @@ def modality_label_train_session(args, engine=None):
     setting = importlib.import_module("ctmr.infrastructure.maisi_engine.diff_model_setting")
     executors = importlib.import_module("ctmr.infrastructure.gradient_executors")
     checkpoints = importlib.import_module("ctmr.infrastructure.checkpoints")
-    local_rank, _world, device = setting.initialize_distributed(args.num_gpus)
+    # The 2h process-group timeout covers the first-run bank build: rank 0
+    # preprocesses the whole dev list (RadImageNet inference) alone before the
+    # peers' barrier rendezvous, the same allowance the heavy quantitative
+    # path pins (fid_2d5; codex review, PR #301). Cached runs rendezvous in
+    # seconds -- the timeout only bounds a genuinely stranded peer.
+    local_rank, _world, device = setting.initialize_distributed(args.num_gpus, timeout=timedelta(seconds=7200))
     if args.amp and args.amp_dtype == "fp16":
         gradient_executor = executors.Fp16GradientExecutor()
     elif args.amp:
