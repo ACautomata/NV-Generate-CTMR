@@ -179,7 +179,11 @@ def _reference_finetune_parser():
 
 
 def _reference_dev_eval_parser():
-    """The retired dev-eval entry's argparse surface, verbatim."""
+    """The retired dev-eval entry's argparse surface, verbatim.
+
+    One declared evolution since the migration (issue #280, ADR-0019 §8, not
+    drift): the device-consuming watch verb carries the unified ``--device``
+    injection flag (the reference verb is pure-CPU resampling, no device)."""
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -205,6 +209,7 @@ def _reference_dev_eval_parser():
     p.add_argument("--poll-seconds", type=float, default=60.0)
     p.add_argument("--score-workers", type=int, default=32, help="parallel CPU workers for reference resampling + PSNR/SSIM")
     p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
+    p.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
     p.add_argument("--eval-root", required=True)
@@ -215,7 +220,10 @@ def _reference_dev_eval_parser():
 
 
 def _add_generation_flags(parser, with_stage0_pairs):
-    """The shared baseline/candidate generate flag block, verbatim."""
+    """The shared baseline/candidate generate flag block, verbatim.
+
+    One declared evolution since the migration (issue #280, ADR-0019 §8, not
+    drift): the entries carry the unified ``--device`` injection flag."""
     parser.add_argument("--run", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--out-root", required=True)
@@ -232,6 +240,7 @@ def _add_generation_flags(parser, with_stage0_pairs):
     parser.add_argument("--only-cases", nargs="*", default=None)
     if with_stage0_pairs:
         parser.add_argument("--stage0-pairs", required=True)
+    parser.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
     return parser
 
 

@@ -65,8 +65,8 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-import torch
 
+from ctmr.application.generation.devices import add_device_flag, resolve_device
 from ctmr.application.generation.mask.sample import CandidateSampler
 from ctmr.application.generation.trend import (
     PLANES,
@@ -297,6 +297,7 @@ def parse_args(argv=None):
     p.add_argument("--dev-list", required=True)
     p.add_argument("--raw-root", required=True)
     p.add_argument("--eval-root", required=True)
+    add_device_flag(p)
 
     p = sub.add_parser("watch", help="sidecar loop: evaluate epoch checkpoints as they land")
     p.add_argument("--ckpt-dir", required=True)
@@ -317,6 +318,7 @@ def parse_args(argv=None):
     p.add_argument("--nnunet-raw", default="/root/private_data/ctmr/data/nnunet_raw")
     p.add_argument("--nnunet-preprocessed", default="/root/private_data/ctmr/data/nnunet_preprocessed")
     p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
+    add_device_flag(p)
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
     p.add_argument("--eval-root", required=True)
@@ -333,7 +335,7 @@ def main(argv=None):
 
     if args.command == "reference":
         dev_list = DevList(args.dev_list, eval_root).build()
-        features = MrTrendFeatures(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        features = MrTrendFeatures(resolve_device(args.device))
         RealReferenceBank(dev_list, args.raw_root, features, eval_root / "reference").build()
         print(f"real reference bank -> {eval_root / 'reference' / 'real_reference_bank.pt'}")
         return 0
@@ -343,7 +345,7 @@ def main(argv=None):
 
     # watch mode: assemble the stage collaborators, the shell engine drives the loop
     dev_list = DevList(args.dev_list, eval_root).build()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     cohort_path = eval_root / "dev_cohort.json"
     cohort = DevCohortBuilder(dev_list).write(cohort_path) if not cohort_path.is_file() else json.loads(cohort_path.read_text())["cohort"]
     spacings = CohortSpacingSource(dev_list)

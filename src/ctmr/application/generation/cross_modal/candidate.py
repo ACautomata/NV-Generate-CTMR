@@ -93,6 +93,7 @@ from ctmr.application.generation.cross_modal.baseline import (
     SideCohortBuilder,
 )
 from ctmr.application.generation.cross_modal.plan import MODALITIES, seed_of
+from ctmr.application.generation.devices import add_device_flag, resolve_device
 from ctmr.domain.generation.bypass import ControlNetBypass
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.identity import WeightsRef
@@ -490,6 +491,7 @@ def parse_args(argv=None):
     parser.add_argument("--limit", type=int, default=None, help="max cases per challenge (dev smoke)")
     parser.add_argument("--challenge", default=None)
     parser.add_argument("--only-cases", nargs="*", default=None)
+    add_device_flag(parser)
     return parser.parse_args(argv)
 
 
@@ -528,7 +530,7 @@ def main(argv=None):
         print("empty cohort after sharding/filters; nothing to generate", file=sys.stderr)
         return 1
     layout = RawCaseLayout(args.raw_root, manifest)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     logger = runtime.logger("cross-modal-candidate")
     writer = CandidateSampleWriter(merged, run_record, args.side, config, device, args.out_root, logger, engine)
     entries, pairs = writer.write(cohort, layout, stage0_records)

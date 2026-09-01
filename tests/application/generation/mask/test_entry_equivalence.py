@@ -146,7 +146,11 @@ def _reference_finetune_parser():
 
 
 def _reference_dev_eval_parser():
-    """The retired dev-eval entry's argparse surface, verbatim (selftest retired with the entry)."""
+    """The retired dev-eval entry's argparse surface, verbatim (selftest retired with the entry).
+
+    One declared evolution since the migration (issue #280, ADR-0019 §8, not
+    drift): the device-consuming reference/watch verbs carry the unified
+    ``--device`` injection flag."""
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -154,6 +158,7 @@ def _reference_dev_eval_parser():
     p.add_argument("--dev-list", required=True)
     p.add_argument("--raw-root", required=True)
     p.add_argument("--eval-root", required=True)
+    p.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
 
     p = sub.add_parser("watch", help="sidecar loop: evaluate epoch checkpoints as they land")
     p.add_argument("--ckpt-dir", required=True)
@@ -174,6 +179,7 @@ def _reference_dev_eval_parser():
     p.add_argument("--nnunet-raw", default="/root/private_data/ctmr/data/nnunet_raw")
     p.add_argument("--nnunet-preprocessed", default="/root/private_data/ctmr/data/nnunet_preprocessed")
     p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
+    p.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
     p.add_argument("--eval-root", required=True)
@@ -184,7 +190,10 @@ def _reference_dev_eval_parser():
 
 
 def _reference_sample_parser():
-    """The retired holdout-generate entry's argparse surface, verbatim."""
+    """The retired holdout-generate entry's argparse surface, verbatim.
+
+    One declared evolution since the migration (issue #280, ADR-0019 §8, not
+    drift): the entry carries the unified ``--device`` injection flag."""
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run", required=True, help="mask brats-phase-run record with a recorded selection")
     parser.add_argument("--manifest", required=True, help="pinned phase phase_manifest.json")
@@ -199,6 +208,7 @@ def _reference_sample_parser():
     parser.add_argument("--limit", type=int, default=None, help="max holdout cases per challenge")
     parser.add_argument("--challenge", default=None, help="restrict to one challenge")
     parser.add_argument("--only-cases", nargs="*", default=None)
+    parser.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
     return parser
 
 
