@@ -15,7 +15,8 @@ deploy/
 │   ├── run_et_discrimination_b.sh       #   #207 诊断作业 B：冻结仪器 ET 甄别（ET 缺失定量化，只读、不入 git）
 │   ├── run_intensity_domain_c.sh        #   #208 诊断作业 C：t1c 强度域甄别（三方直方图+条件 MAE+>1000 占比，只读、不入 git）
 │   ├── run_token_dilution_d.sh          #   #209 诊断作业 D：同 seed 换 token 采样亮核甄别（GPU 采样 + CPU 统计，不入 git）
-│   └── run_zcrop_geometry_audit_217.sh  #   #217 复核作业 A：工件 affine 几何基座复核（对照读数，只读、不入 git）
+│   ├── run_zcrop_geometry_audit_217.sh  #   #217 复核作业 A：工件 affine 几何基座复核（对照读数，只读、不入 git）
+│   └── run_dev_monitor_etwt.sh          #   #253 dev 监控作业：dev 选择点 ET/WT 观察线全链（分层采样→冻结仪器→观察线黄旗，选择面不入 git）
 ├── data/
 │   └── synapse_download_wizard.sh  # Synapse 数据集下载交互式向导（曙光 login 节点运行）
 └── experiments/                    # 实验记录住址（书写约定见 experiments/README.md）
@@ -96,6 +97,7 @@ echo $! > /root/private_data/<run_dir>/predict.pid
 | `run_intensity_domain_c.sh` | #208 诊断作业 C（父 #205）：real/VAE 重建/生成三方直方图与瘤内/全脑分层顶部统计（P99/P99.9/top-0.5% 均值）、VAE 条件 MAE 双臂（clip=False 现网臂 vs clip=True 对照臂，裁决归一化 clip 取舍）、生成 >1000 int16 体素占比（>1.0 输出域假说检验；variant=diagnostic，不产生验收判定） | `LIMIT=200 DEVICE=cuda:0 bash deploy/jobs/run_intensity_domain_c.sh`（路径可用 `PHASE_ROOT`/`P1_ROOT`/`OUTPUT_DIR` 等覆写；`SKIP_EMB_POOL=1` 只跑 gen 池） | gen 池纯 CPU 零推理；emb 池需 torch（VAE encode/decode，DCU 上 `DEVICE=cuda:0` 快、CPU 可跑但慢）；报告落运行树 `diagnostics/intensity_domain/`（工件区，不入 git），核心统计为带单测的纯函数 |
 | `run_token_dilution_d.sh` | #209 诊断作业 D（父 #205）：固定 16 例 dev cohort 上冻结候选 checkpoint 同 seed 换 token 五臂采样（t1n/t1c/t2w/t2f + 对照泛 MR 8；每例一 seed 五臂共用），亮核顶部统计 + 34 对 8 增益份额分带，定量模态标签增广稀释（RC-2/L3 甄别；variant=diagnostic，不产生验收判定） | `EMB_ROOT=<...> bash deploy/jobs/run_token_dilution_d.sh`（其余路径可用 `P1_ROOT`/`CKPT`/`DEV_LIST`/`SAMPLES_DIR`/`OUTPUT_DIR` 覆写） | 需一张 DCU 卡（16 例 × 5 臂 = 80 次采样，可重入续采）；亮核统计第二步纯 CPU；报告与采样产物落 `$P1_ROOT/token_dilution/`（工件区，不入 git），核心统计为带单测的纯函数 |
 | `run_zcrop_geometry_audit_217.sh` | #217 复核作业 A（父 #205）：holdout 生成工件携带单位 1mm affine，作业 A 注册的 z-crop 19 层在工件上不发生（实为 pad 13/14）；按两种几何各重算一遍 centroid_wt_z，产出对照读数＋越窗重判＋视场缺口定量（variant=diagnostic，不产生验收判定，不回改已落盘的作业 A） | `bash deploy/jobs/run_zcrop_geometry_audit_217.sh`（路径可用 `L2_RUN_TREE`/`MEASUREMENTS_CSV`/`PREDICT_DIR` 覆写） | 纯 CPU 重算，无需 DCU 卡；报告落运行树 `diagnostics/zcrop_geometry_audit/`（工件区，不入 git），核心统计为带单测的纯函数 |
+| `run_dev_monitor_etwt.sh` | #253 dev 监控作业（序列②T6，父 #247）：dev list 分层样本（GLI 50/MEN 40/METS 24/PED 10/SSA 6，零 holdout 接触）以候选 checkpoint 采样伪四模态体→冻结仪器只读路径→作业 B 口径 ET 甄别 + WT 添注→观察线黄旗判定（METS ET 检出率 <0.9 或 vol_et_rel 中位 >2；选择面，非验收判定）；现候选基线即 T8 重训候选 go/no-go 的对照锚 | `EMB_ROOT=<...> bash deploy/jobs/run_dev_monitor_etwt.sh`（其余路径可用 `P1_ROOT`/`CKPT`/`DEV_LIST`/`RAW_ROOT`/`MONITOR_ROOT`/`RUN_ID` 覆写；T8 重训候选换 `CKPT`+`RUN_ID` 重跑） | 需一张 DCU 卡（130 例 × 4 模态 = 520 次采样 + 五挑战冻结仪器推理，可断点重入）；测量与报告步纯 CPU；报告与采样产物落 `$P1_ROOT/dev_monitor/`（工件区，不入 git），观察线评估为带单测的纯函数 |
 
 三个配方的仪器调用全部走 canonical 入口 `ctmr measure predict`（ADR-0009 收编，#140 迁至 `src/ctmr/infrastructure/nnunet_runner.py`），逐挑战 dataset/plans/config 由收编门禁测试钉死与 `INSTRUMENT_SPECS` 逐字一致——改 spec 请改 `src/ctmr/domain/instrument_spec.py`，勿手调配方参数。
 

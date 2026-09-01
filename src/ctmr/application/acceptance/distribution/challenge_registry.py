@@ -51,12 +51,12 @@ CHALLENGE_SEED_OFFSET = {"GLI": 1, "SSA": 2, "MEN": 3, "METS": 4, "PED": 5}
 # judge band's reach so a diagnostic CI can never be mistaken for the
 # registered TOST bit-stream. Slots are allocated here, once: job A (#206)
 # holds the uncompensated block 0/1 and the compensated block 100/101 of each
-# band, job B (#207) slot 200 -- the pre-#232 job-module constants reproduced
-# byte-exactly. Registered slots are drawn only through
-# ``diagnostic_support.DiagnosticSeedAllocator``. KNOWN DEBT: jobs C/D's
-# bandless slot blocks (base+300..307 / base+300..320, overlapping on
-# base+300..304) and the geometry audit's banded slot 300 are still
-# job-local constants pending their follow-up registration -- registering
+# band, job B (#207) slot 200, the dev monitor (#253) block 400 -- the
+# pre-#232 job-module constants reproduced byte-exactly. Registered slots are
+# drawn only through ``diagnostic_support.DiagnosticSeedAllocator``. KNOWN
+# DEBT: jobs C/D's bandless slot blocks (base+300..307 / base+300..320,
+# overlapping on base+300..304) and the geometry audit's banded slot 300 are
+# still job-local constants pending their follow-up registration -- registering
 # them here is what extends the no-collision invariant over those draws.
 DIAGNOSTIC_SEED_BASE = 900_000_000
 DIAGNOSTIC_SEED_BAND = 1000
@@ -66,6 +66,8 @@ DIAGNOSTIC_SEED_SLOTS = {
     "zcrop_vol_comp": 100,  # job A: vol_wt_rel, compensated block
     "zcrop_centroid_comp": 101,  # job A: centroid_wt_z, compensated block
     "et_rel_diff": 200,  # job B: per-case relative-difference CI90
+    "dev_monitor_wt_rel_diff": 400,  # dev monitor (#253): WT relative-difference CI90;
+    # next free block -- the C/D bandless blocks occupy 300..320 (#247 seed discipline)
 }
 
 # ADR-0002 frozen envelopes (published 4-dp literals; the authoritative source

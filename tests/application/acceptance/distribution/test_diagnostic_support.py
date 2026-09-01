@@ -15,8 +15,10 @@ import json
 
 import pytest
 
+import ctmr.application.acceptance.distribution.dev_monitor as dev_monitor
 import ctmr.application.acceptance.distribution.et_discrimination as et_discrimination
 import ctmr.application.acceptance.distribution.intensity_domain as intensity_domain
+import ctmr.application.acceptance.distribution.observation_line as observation_line
 import ctmr.application.acceptance.distribution.token_dilution as token_dilution
 import ctmr.application.acceptance.distribution.zcrop_compensation as zcrop_compensation
 import ctmr.application.acceptance.distribution.zcrop_geometry_audit as zcrop_geometry_audit
@@ -47,13 +49,16 @@ def test_diagnostic_namespace_constants_are_pinned_byte_exact():
 
 def test_diagnostic_seed_slot_table_is_pinned_byte_exact():
     """Job A (#206) holds the uncompensated block 0/1 and the compensated block
-    100/101 of each challenge band; job B (#207) takes slot 200."""
+    100/101 of each challenge band; job B (#207) takes slot 200; the dev
+    monitor (#253) takes the next free block 400 (the C/D bandless blocks
+    occupy 300..320)."""
     assert DIAGNOSTIC_SEED_SLOTS == {
         "zcrop_vol_uncomp": 0,
         "zcrop_centroid_uncomp": 1,
         "zcrop_vol_comp": 100,
         "zcrop_centroid_comp": 101,
         "et_rel_diff": 200,
+        "dev_monitor_wt_rel_diff": 400,
     }
 
 
@@ -120,7 +125,14 @@ def test_no_diagnostic_seed_collides_with_any_derived_judge_seed():
 
 
 def test_diagnostic_error_has_a_single_definition_across_the_fleet():
-    for module in (zcrop_compensation, et_discrimination, intensity_domain, token_dilution):
+    for module in (
+        zcrop_compensation,
+        et_discrimination,
+        intensity_domain,
+        token_dilution,
+        observation_line,
+        dev_monitor,
+    ):
         assert module.DiagnosticError is DiagnosticError, module.__name__
     assert issubclass(zcrop_geometry_audit.GeometryAuditError, DiagnosticError)
 
@@ -150,7 +162,7 @@ def test_writer_payload_carries_the_diagnostic_prologue_in_the_recorded_order():
 def test_writer_disclaimer_reproduces_the_recorded_text_byte_exact():
     writer = DiagnosticReportWriter(schema="s/1", title="t", issue=206, job_label="作业 A", stem="s", inputs={}, run_id=None)
     assert writer.disclaimer == (
-        "诊断读数,不产生任何验收判定;与正式 L2 验收面严格分离(#205 作业 A)。" "bootstrap 种子独立于正式判定链(诊断基 900000000)。"
+        "诊断读数,不产生任何验收判定;与正式 L2 验收面严格分离(#205 作业 A)。bootstrap 种子独立于正式判定链(诊断基 900000000)。"
     )
 
 
