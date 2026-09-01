@@ -185,6 +185,17 @@ def modality_label_engine():
     return importlib.import_module("ctmr.infrastructure.engine").MaisiEngine()
 
 
+def modality_label_reencode_runtime():
+    """The embedding re-encode assembly (issue #251, series-② T4): the vendored
+    ``diff_model_create_training_data`` execution (the clip=True recipe's
+    encoding chain) and the distribution family's engine for the self-eval
+    decode arm. The re-encode entry consumes only these injected callables --
+    the infrastructure addresses settle here (ADR-0019 §2)."""
+    create_training_data = importlib.import_module("ctmr.infrastructure.maisi_engine.create_training_data").diff_model_create_training_data
+    engine = importlib.import_module("ctmr.wiring.distribution").intensity_domain_engine()
+    return create_training_data, engine
+
+
 def mask_engine():
     """The mask family's GenerationEngine assembly (ADR-0019 §2, #273)."""
     return importlib.import_module("ctmr.infrastructure.engine").MaisiEngine()
