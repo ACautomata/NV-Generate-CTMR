@@ -75,10 +75,41 @@ check_dataset 504_BraTS2023METS 166
 check_dataset 503_BraTS2023MEN 700
 check_dataset 501_BraTS2023GLI 876
 
+# ── 派生 plans(加法式,冻结母本零改动)──
+# nnunetv2 的 plans batch_size 是全局 batch,DDP 断言 global >= world:标准
+# 3d_fullres bs=2 在 4 卡下非法(亦是原 SSA bs16 特例的机械成因)。沿 ADR-0001
+# 的 batch-only 派生机制,五挑战统一派生 nnUNetPlans_v2bs8:全局 2→8(每卡本地
+# 2,与原单卡足迹一致);配置键 3d_fullres_bs8 仅 {batch_size, inherits_from},
+# data_identifier 继承 3d_fullres,复用既有预处理数据,零重预处理。
+derive_plans() {
+    local name="$1"
+    python3 - "$nnUNet_preprocessed" "$name" <<'PY'
+import json, sys
+from pathlib import Path
+pre, ds = Path(sys.argv[1]), sys.argv[2]
+dst = pre / ds / "nnUNetPlans_v2bs8.json"
+if dst.is_file():
+    print(f"[skip] {ds} nnUNetPlans_v2bs8 已存在")
+else:
+    doc = json.loads((pre / ds / "nnUNetPlans.json").read_text())
+    parent = doc["configurations"]["3d_fullres"]
+    assert parent["batch_size"] == 2, f"{ds}: parent batch != 2"
+    doc["plans_name"] = "nnUNetPlans_v2bs8"
+    doc["configurations"]["3d_fullres_bs8"] = {"batch_size": 8, "inherits_from": "3d_fullres"}
+    dst.write_text(json.dumps(doc, indent=4) + "\n")
+    print(f"[derive] {ds}: 3d_fullres(bs=2) -> 3d_fullres_bs8(bs=8), batch-only delta, 母本未动")
+PY
+}
+derive_plans 502_BraTS2023SSA
+derive_plans 505_BraTS2023PED
+derive_plans 504_BraTS2023METS
+derive_plans 503_BraTS2023MEN
+derive_plans 501_BraTS2023GLI
+
 # ── 顺序训练(小挑战先行作 shakedown);每挑战一条审计目录 ──
 train_one() {
     local name="$1"
-    local fold_dir="$RESULTS_ROOT/Dataset$name/nnUNetTrainer_250epochs_bf16__nnUNetPlans__3d_fullres/fold_0"
+    local fold_dir="$RESULTS_ROOT/Dataset$name/nnUNetTrainer_250epochs_bf16__nnUNetPlans_v2bs8__3d_fullres_bs8/fold_0"
     local audit="$AUDIT_ROOT/$name"
     if [ -f "$audit/completion.json" ]; then
         echo "[skip] $name 已有 completion 审计"
@@ -88,12 +119,12 @@ train_one() {
     echo "[$(date -u +%FT%TZ)] train Dataset$name start"
     # 单卡异常/训练失败以非零退出;set -e 直接终止整链,由人判读后续
     if [ -f "$fold_dir/checkpoint_latest.pth" ]; then
-        nnUNetv2_train "Dataset$name" 3d_fullres 0 \
-            -tr nnUNetTrainer_250epochs_bf16 -p nnUNetPlans -num_gpus 4 --c \
+        nnUNetv2_train "Dataset$name" 3d_fullres_bs8 0 \
+            -tr nnUNetTrainer_250epochs_bf16 -p nnUNetPlans_v2bs8 -num_gpus 4 --c \
             > "$LOG_DIR/train_$name.log" 2>&1
     else
-        nnUNetv2_train "Dataset$name" 3d_fullres 0 \
-            -tr nnUNetTrainer_250epochs_bf16 -p nnUNetPlans -num_gpus 4 \
+        nnUNetv2_train "Dataset$name" 3d_fullres_bs8 0 \
+            -tr nnUNetTrainer_250epochs_bf16 -p nnUNetPlans_v2bs8 -num_gpus 4 \
             > "$LOG_DIR/train_$name.log" 2>&1
     fi
     # 完成核验:final checkpoint + 日志覆盖 Epoch 249 + hash 证据
@@ -105,8 +136,9 @@ train_one() {
         echo "{"
         echo "  \"dataset\": \"Dataset$name\","
         echo "  \"trainer\": \"nnUNetTrainer_250epochs_bf16\","
-        echo "  \"plans\": \"nnUNetPlans\","
-        echo "  \"configuration\": \"3d_fullres\","
+        echo "  \"plans\": \"nnUNetPlans_v2bs8\","
+        echo "  \"configuration\": \"3d_fullres_bs8\","
+        echo "  \"global_batch_size\": 8,"
         echo "  \"fold\": 0,"
         echo "  \"world_size\": 4,"
         echo "  \"precision\": \"bf16-autocast\","
