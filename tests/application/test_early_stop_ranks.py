@@ -50,7 +50,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import socket
 from datetime import timedelta
 from pathlib import Path
 
@@ -137,18 +136,21 @@ def _dist_worker(rank, world_size, model_dir, scenario, backend):
     per-rank assertion failure (a clean return of every worker IS the "no
     NCCL error, all ranks exited" gate).
     """
-    if backend == "nccl":
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     dist.init_process_group(
         backend=backend,
-        init_method="env://" if backend == "nccl" else f"file://{model_dir}/_init",
+        init_method=f"file://{model_dir}/_init",
         rank=rank,
         world_size=world_size,
         timeout=timedelta(seconds=GROUP_TIMEOUT_SECONDS),
     )
+    # The torchrun local_rank convention: no per-rank CUDA_VISIBLE_DEVICES
+    # writes (ignored on the HIP/DCU stack, where every rank then lands on
+    # the same GPU and RCCL aborts with Duplicate GPU) -- each rank takes its
+    # own index in the caller-masked visible set.
     device = torch.device("cuda" if backend == "nccl" else "cpu")
     if device.type == "cuda":
-        torch.cuda.set_device(device)
+        torch.cuda.set_device(rank)
+        device = torch.device("cuda", rank)
     kernel = RankKernel(device=device)
     if scenario == "uniform":
 
@@ -185,13 +187,10 @@ def _dist_worker(rank, world_size, model_dir, scenario, backend):
     (root / f"worker_rank_{rank}.json").write_text(json.dumps({"rank": rank, "batches": kernel.batches}) + "\n")
 
 
-def _spawn_ranks(monkeypatch, model_dir, scenario, backend, master_port=None):
+def _spawn_ranks(monkeypatch, model_dir, scenario, backend):
     # spawn children re-import this module, so its directory must resolve in a
     # fresh interpreter (pytest's in-memory sys.path does not propagate).
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(Path(__file__).resolve().parent), os.environ.get("PYTHONPATH", "")])))
-    if backend == "nccl":
-        monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
-        monkeypatch.setenv("MASTER_PORT", str(master_port))
     torch.multiprocessing.spawn(
         _dist_worker,
         args=(WORLD, str(model_dir), scenario, backend),
@@ -206,12 +205,6 @@ def _outcomes(model_dir):
 
 def _published_epochs(model_dir):
     return sorted(int(path.stem.split("_")[1]) for path in Path(model_dir).glob("epoch_*.pt"))
-
-
-def _free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def _assert_scenario(model_dir, scenario):
@@ -244,5 +237,5 @@ def test_early_stop_all_ranks_exit_cleanly_on_gloo(tmp_path, monkeypatch, scenar
 def test_early_stop_all_ranks_exit_cleanly_on_nccl(tmp_path, monkeypatch, scenario):
     if not torch.cuda.is_available() or torch.cuda.device_count() < WORLD:
         pytest.skip("needs >= 2 CUDA devices")
-    _spawn_ranks(monkeypatch, tmp_path, scenario, "nccl", master_port=_free_port())
+    _spawn_ranks(monkeypatch, tmp_path, scenario, "nccl")
     _assert_scenario(tmp_path, scenario)
