@@ -254,9 +254,8 @@ class DevMonitorSampler:
     files are skipped, so the arm is re-entrant.
     """
 
-    def __init__(self, args, device, engine):
-        self._sampler = CandidateSampler(args, device, None, engine)
-        self._device = device
+    def __init__(self, config, device, engine):
+        self._sampler = CandidateSampler(config, device, None, engine)
 
     def sample_cohort(self, checkpoint_path, cohort, spacings, out_dir) -> int:
         model, recon = self._sampler.load_models(checkpoint_path)

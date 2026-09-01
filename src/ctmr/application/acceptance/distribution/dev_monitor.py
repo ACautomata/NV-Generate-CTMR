@@ -138,8 +138,9 @@ class DevMonitorReport:
             run_id=self._run_id,
         )
 
-    def write(self, output_dir):
-        rows = self.read_rows()
+    def write(self, output_dir, rows=None):
+        if rows is None:
+            rows = self.read_rows()
         readings = EtDiscrimination(bootstrap_b=self._bootstrap_b).discriminate(rows)
         flag = ObservationLine().evaluate(readings)
         wt_readings = {reading["challenge"]: reading for reading in WtMonitor(bootstrap_b=self._bootstrap_b).readings(rows)}
@@ -158,8 +159,8 @@ class DevMonitorReport:
                 "per_challenge": {
                     reading["challenge"]: {key: value for key, value in reading.items() if key != "per_case_rows"} for reading in readings
                 },
-                "cross_challenge": EtDiscriminationReport._cross_challenge(readings),
-                "per_case": EtDiscriminationReport._per_case(readings),
+                "cross_challenge": EtDiscriminationReport.cross_challenge(readings),
+                "per_case": EtDiscriminationReport.per_case(readings),
             }
         )
         return self._writer.write(payload, self._markdown(payload), output_dir)
@@ -265,7 +266,7 @@ def main(argv=None):
         bootstrap_b=args.bootstrap_b,
     )
     rows = report.read_rows()
-    json_path, md_path = report.write(Path(args.output_dir))
+    json_path, md_path = report.write(Path(args.output_dir), rows=rows)
     print(f"[OK] {len(rows)} observations (variant=diagnostic, selection surface -- no verdict) -> {json_path}")
     print(f"[OK] markdown -> {md_path}")
     return 0
