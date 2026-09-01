@@ -87,17 +87,17 @@ derive_plans() {
 import json, sys
 from pathlib import Path
 pre, ds = Path(sys.argv[1]), sys.argv[2]
-dst = pre / ds / "nnUNetPlans_v2bs8.json"
+dst = pre / f"Dataset{ds}" / "nnUNetPlans_v2bs8.json"
 if dst.is_file():
-    print(f"[skip] {ds} nnUNetPlans_v2bs8 已存在")
+    print(f"[skip] Dataset{ds} nnUNetPlans_v2bs8 已存在")
 else:
-    doc = json.loads((pre / ds / "nnUNetPlans.json").read_text())
+    doc = json.loads((pre / f"Dataset{ds}" / "nnUNetPlans.json").read_text())
     parent = doc["configurations"]["3d_fullres"]
-    assert parent["batch_size"] == 2, f"{ds}: parent batch != 2"
+    assert parent["batch_size"] == 2, f"Dataset{ds}: parent batch != 2"
     doc["plans_name"] = "nnUNetPlans_v2bs8"
     doc["configurations"]["3d_fullres_bs8"] = {"batch_size": 8, "inherits_from": "3d_fullres"}
     dst.write_text(json.dumps(doc, indent=4) + "\n")
-    print(f"[derive] {ds}: 3d_fullres(bs=2) -> 3d_fullres_bs8(bs=8), batch-only delta, 母本未动")
+    print(f"[derive] Dataset{ds}: 3d_fullres(bs=2) -> 3d_fullres_bs8(bs=8), batch-only delta, 母本未动")
 PY
 }
 derive_plans 502_BraTS2023SSA
