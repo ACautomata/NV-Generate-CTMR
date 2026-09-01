@@ -32,12 +32,16 @@ P3_ARGV = COMMON_ARGV + ["--data-list", "runs/p3/p3_pairs.json"]
 
 
 def _reference_parser(stage_flags):
-    """The pre-#111 finetune argparse construction, verbatim (shared block + stage flags)."""
+    """The pre-#111 finetune argparse construction, verbatim (shared block + stage flags).
+
+    The two deliberate evolutions since the consolidation (declared, not drift):
+    ``-g`` defaults to 8 and p1 carries ``--val-every`` (issue #278, ADR-0019 §4-§5).
+    """
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-e", "--env_config_path", required=True)
     parser.add_argument("-c", "--model_config_path", required=True)
     parser.add_argument("-t", "--model_def_path", required=True)
-    parser.add_argument("-g", "--num_gpus", type=int, default=1)
+    parser.add_argument("-g", "--num_gpus", type=int, default=8)
     stage_flags(parser)
     parser.add_argument("--no_amp", dest="amp", action="store_false")
     parser.add_argument("--amp_dtype", default="bf16", choices=["fp16", "bf16"], help="bf16 default (DCU)")
@@ -52,6 +56,10 @@ def _reference_p1_flags(parser):
         required=True,
         help="MR-RATE replay data list (spec: list-level 1:1 mix; append once per list)",
     )
+    parser.add_argument("--val-every", dest="val_every", type=int, default=10, help="embedded periodic validation interval in epochs (0 disables)")
+    parser.add_argument("--dev-list", dest="dev_list", default=None, help="dev cohort list json (embedded validation)")
+    parser.add_argument("--raw-root", dest="raw_root", default=None, help="raw volume root for the dev real bank (embedded validation)")
+    parser.add_argument("--emb-root", dest="emb_root", default=None, help="phase embedding root for per-case spacing (embedded validation)")
 
 
 def _reference_p2_flags(parser):
@@ -97,6 +105,28 @@ def test_p1_replay_list_appends_and_is_required():
 def test_p3_data_list_defaults_to_none():
     args = TrainCli("description", stage="p3").parse(COMMON_ARGV)
     assert args.data_list is None
+
+
+def test_val_every_defaults_to_ten_and_can_be_overridden():
+    """The embedded periodic validation interval (issue #278): default 10, 0 disables."""
+    assert TrainCli("description", stage="p1").parse(P1_ARGV).val_every == 10
+    assert TrainCli("description", stage="p1").parse([*P1_ARGV, "--val-every", "5"]).val_every == 5
+    assert TrainCli("description", stage="p1").parse([*P1_ARGV, "--val-every", "0"]).val_every == 0
+
+
+def test_dev_cohort_flags_default_to_none():
+    """The embedded validation's dev-cohort inputs (issue #278): optional at
+    parse time, required by the assembly when the stage is enabled."""
+    args = TrainCli("description", stage="p1").parse(P1_ARGV)
+    assert args.dev_list is None and args.raw_root is None and args.emb_root is None
+    args = TrainCli("description", stage="p1").parse([*P1_ARGV, "--dev-list", "d.json", "--raw-root", "/raw", "--emb-root", "/emb"])
+    assert args.dev_list == "d.json" and args.raw_root == "/raw" and args.emb_root == "/emb"
+
+
+def test_num_gpus_defaults_to_eight():
+    """The single-node topology (ADR-0019 §4): per-GPU batch=1 pinned, world_size 7->8."""
+    args = TrainCli("description", stage="p1").parse(["-e", "e.json", "-c", "c.json", "-t", "t.json", "--replay-list", "r.json"])
+    assert args.num_gpus == 8
 
 
 @pytest.mark.parametrize(

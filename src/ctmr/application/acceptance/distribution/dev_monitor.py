@@ -29,7 +29,8 @@ no judge import, no pass/fail vocabulary (source-pinned by test). The report
 carries the per-case rows and per-challenge readings so the retrained
 candidate's T8 run compares against this baseline like-for-like. The bootstrap
 draw of the WT addendum takes the monitoring job's own registered slot
-(``dev_monitor_wt_rel_diff``, block 400); the ET axis keeps drawing job B's
+(``dev_monitor_wt_rel_diff``, block 600 -- re-registered from a 400 filing
+before its first draw, after T5's 400/500 bands landed); the ET axis keeps drawing job B's
 slot 200 through the unchanged ``EtDiscrimination``.
 
 Usage:
@@ -152,7 +153,7 @@ class DevMonitorReport:
                 "reading_conventions": {
                     "et": "ET 轴复用作业 B 甄别口径:检出 = vol_et_ml > 0,分母为 input_fail/run_fail 之外的有效观测;"
                     "ET 缺失 = real_only;相对差 = (gen − real)/real,gen 侧 ET 空保留 −1.0",
-                    "wt": "WT 添注:同排除语义的 vol_wt 分布与逐 case 相对差(median + CI90,监控槽位 400)",
+                    "wt": "WT 添注:同排除语义的 vol_wt 分布与逐 case 相对差(median + CI90,监控槽位 600)",
                     "line": "观察线:METS ET 检出率 < 0.9 或任一挑战 vol_et_rel 中位 > 2 → 黄旗(选择面,非验收判定)",
                 },
                 "observation_line": flag,

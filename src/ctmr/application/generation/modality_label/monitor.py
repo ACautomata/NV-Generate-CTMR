@@ -10,10 +10,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Modality-label dev light-acceptance sidecar: fixed samples + FID trend + L2 trend (issue #57, spec #51 §6).
+"""Modality-label offline dev light acceptance: fixed samples + FID trend + L2 trend (issue #57, spec #51 §6).
 
-Runs beside the modality-label finetune on a reserved GPU. For every
-``epoch_<N>.pt`` the trainer persists (N a multiple of ``--eval-every``), it:
+Offline form (ADR-0019 §5, #279 -- training-time validation runs embedded in
+the trainer, #278): one pass over ANY run's already-persisted checkpoints,
+training live or finished. For every ``epoch_<N>.pt`` on disk (N a multiple
+of ``--eval-every``) the run's ledger does not have yet, it:
 
 1. generates the FIXED dev cohort — 16 dev cases x 4 target modalities
    (t1n/t1c/t2w/t2f), one sample per (case, modality) with a fixed
@@ -35,8 +37,8 @@ The early-stop rule (recorded verbatim in the run dir before training starts):
   evals produced no new best m; never past --max-epoch (= the trainer cap).
 
 The shared trend machinery (cohort/FID bank/plane features/instrument runner)
-lives in ``ctmr.application.generation.trend``; the watch/select polling
-skeleton (``WatchEngine`` / ``SelectionEmitter``) in ``ctmr.application.shell``
+lives in ``ctmr.application.generation.trend``; the watch/select skeleton
+(``WatchEngine`` / ``SelectionEmitter``) in ``ctmr.application.shell``
 -- this module only assembles the stage sampler/scorer/post-score collaborators
 and dispatches the reference/watch/select verbs.
 
@@ -50,7 +52,7 @@ inference primitives ride the injected ``GenerationEngine`` port -- the
 concrete adapter is assembled by the composition root (``ctmr.wiring.generate``),
 which this entry reuses as its dispatch face.
 
-Usage (sugon, one reserved GPU):
+Usage:
     ctmr generate modality-label dev-eval reference --dev-list ... --raw-root ... --eval-root DIR
     ctmr generate modality-label dev-eval watch --ckpt-dir ... --eval-root ... \
         --dev-list ... --raw-root ... --emb-root ... -e env.json -c config.json -t network.json
@@ -71,6 +73,7 @@ import numpy as np
 import torch
 from monai.networks.schedulers import RFlowScheduler
 
+from ctmr.application.generation.devices import add_device_flag, resolve_device
 from ctmr.application.generation.trend import DevCohortBuilder, L2TrendRunner, MrTrendFeatures, RealReferenceBank, TrendFid
 from ctmr.application.shell import (
     MODALITY_TOKENS,
@@ -100,6 +103,32 @@ class CohortSpacingSource:
         return json.loads((self._emb_root / rel).read_text())["spacing"]
 
 
+class FrozenAutoencoder:
+    """Loads the frozen VAE at both samplers' fp16 conventions (shared payload allowlist).
+
+    Upstream inference convention is fp16 on the DCU (float16 latents); a
+    half-precision model keeps the conv input/weight/bias set consistent (the
+    HIP bf16 SDPA flash path emits fp16 and breaks the mixed chain). The retired
+    entry allowlisted numpy reconstruction at import time; the load keeps the
+    same exposure at its load point instead (never an import-time global mutation).
+    """
+
+    def __init__(self, args, device, engine: GenerationEngine):
+        self._args = args
+        self._device = device
+        self._engine = engine
+
+    def load(self):
+        torch.serialization.add_safe_globals([np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.Float64DType])
+        autoencoder = self._engine.define_instance(self._args, "autoencoder_def").to(self._device)
+        ae_ckpt = torch.load(self._args.trained_autoencoder_path, map_location=self._device, weights_only=True)
+        if "unet_state_dict" in ae_ckpt:
+            ae_ckpt = ae_ckpt["unet_state_dict"]
+        autoencoder.load_state_dict(ae_ckpt)
+        autoencoder.eval()
+        return autoencoder.half()
+
+
 class CandidateSampler:
     """Generates the fixed dev cohort samples with a candidate checkpoint (cfg=10, 30 steps).
 
@@ -119,24 +148,11 @@ class CandidateSampler:
         return int(hashlib.sha256(f"{case}|{modality}".encode()).hexdigest()[:8], 16) % (2**31 - 1)
 
     def load_models(self, checkpoint_path):
-        # The retired entry allowlisted numpy reconstruction at import time (the
-        # shared bank payload); the checkpoint loads here keep the same exposure
-        # at their load point instead (never an import-time global mutation).
-        torch.serialization.add_safe_globals([np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.Float64DType])
-        autoencoder = self._engine.define_instance(self._args, "autoencoder_def").to(self._device)
-        ae_ckpt = torch.load(self._args.trained_autoencoder_path, map_location=self._device, weights_only=True)
-        if "unet_state_dict" in ae_ckpt:
-            ae_ckpt = ae_ckpt["unet_state_dict"]
-        autoencoder.load_state_dict(ae_ckpt)
+        autoencoder = FrozenAutoencoder(self._args, self._device, self._engine).load()
         unet = self._engine.define_instance(self._args, "diffusion_unet_def").to(self._device)
         ckpt = torch.load(checkpoint_path, map_location=self._device, weights_only=True)
         unet.load_state_dict(ckpt["unet_state_dict"], strict=False)
-        autoencoder.eval()
         unet.eval()
-        # Upstream inference convention is fp16 on the DCU (float16 latents);
-        # a half-precision model keeps the conv input/weight/bias set consistent
-        # (the HIP bf16 SDPA flash path emits fp16 and breaks the mixed chain).
-        autoencoder = autoencoder.half()
         unet = unet.half()
         scale = float(ckpt["scale_factor"])
         # The domain entity carries the sampling rules: the RF scheduler shape
@@ -205,16 +221,90 @@ class FidTrendScorer:
                 matrix = plane_cache[sample["path"]][plane]
                 if matrix is not None:
                     generated[sample["modality"]][plane].append(matrix.mean(axis=0))
-        report, mean_fid = self._fid.score(generated)
-        return {"fid": report, "m": mean_fid}, f"mean_fid={mean_fid}"
+        return self._fid.trend_fields(generated)
+
+
+class CohortFeatureScorer:
+    """The embedded-validation scorer seam (ADR-0019 §5, #278): the all_gathered
+    per-item plane-mean features fold into the per-modality FID trend fields.
+
+    Same output contract as ``FidTrendScorer`` (``(fields, log_line)``), but the
+    input is the merged shard entries -- the features were extracted on the
+    sampling rank, never re-extracted on every rank.
+    """
+
+    def __init__(self, fid):
+        self._fid = fid
+
+    def __call__(self, entries):
+        generated = {modality: {plane: [] for plane in ("xy", "yz", "zx")} for modality in TARGET_MODALITIES}
+        for entry in entries:
+            for plane, vector in (entry.get("features") or {}).items():
+                if vector is not None:
+                    generated[entry["modality"]][plane].append(vector)
+        return self._fid.trend_fields(generated)
+
+
+class LiveCohortSampler:
+    """The embedded-validation sampler seam (ADR-0019 §5, #278): the live training
+    weights render this rank's cohort shard and each entry carries its plane-mean
+    features back for the all_gather.
+
+    Composition, never inheritance: the single-sample render is the shared
+    ``CandidateSampler.sample_one`` (the verbatim denoising loop), the plane
+    features are ``MrTrendFeatures``; the training UNet arrives DDP-stripped
+    through the kernel's ``sampling_unet`` face, so the training weights are
+    sampled but never mutated (no half(), no state_dict copy -- zero
+    training-math drift). The frozen VAE is loaded per validation call and
+    released after, keeping the training residency unchanged between stages.
+    """
+
+    def __init__(self, args, device, engine: GenerationEngine, kernel, spacings, features):
+        self._args = args
+        self._device = device
+        self._engine = engine
+        self._kernel = kernel
+        self._spacings = spacings
+        self._features = features
+
+    def __call__(self, ctx, shard_items, out_dir):
+        model = DiffusionModel(
+            unet=self._kernel.sampling_unet(),
+            scale_factor=torch.tensor(float(ctx.scale), device=self._device),
+            noise_scheduler=RFlowScheduler(**{k: v for k, v in self._args.noise_scheduler.items() if k != "_target_"}),
+        )
+        autoencoder = FrozenAutoencoder(self._args, self._device, self._engine).load()
+        recon = self._engine.recon_model(autoencoder, float(ctx.scale)).to(self._device).half()
+        renderer = CandidateSampler(self._args, self._device, None, self._engine)
+        entries = []
+        for item in shard_items:
+            seed = CandidateSampler.seed_of(item["case"], item["modality"])
+            out = Path(out_dir) / item["sub"] / f"{item['case']}_{item['modality']}_seed{seed}.nii.gz"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            data = renderer.sample_one(model, recon, MODALITY_TOKENS[item["modality"]], self._spacings.spacing_of(item["case"]), seed)
+            # Ruling #6 (same as the offline sampler): declare the v1 DM's real sampling spacing.
+            nib.save(nib.Nifti1Image(data, affine=V1_DM_OUTPUT_GRID.affine()), out)
+            planes = self._features.volume_features(out)
+            entries.append(
+                {
+                    "sub": item["sub"],
+                    "case": item["case"],
+                    "modality": item["modality"],
+                    "path": str(out),
+                    "features": {plane: (None if matrix is None else matrix.mean(axis=0)) for plane, matrix in planes.items()},
+                }
+            )
+        del model, autoencoder, recon
+        torch.cuda.empty_cache()
+        return entries
 
 
 class L2PostScore:
     """The optional post-score extension: the frozen L2 instruments trend (``--skip-l2`` degrades to None).
 
     The extension owns its failure tolerance: a single-epoch instrument hiccup
-    records the None field and must not kill the sidecar -- the engine's skip
-    path is reserved for the score itself.
+    records the None field and must not kill the watch pass -- the engine's
+    skip path is reserved for the score itself.
     """
 
     def __init__(self, l2, cohort, skip):
@@ -234,7 +324,7 @@ class L2PostScore:
 
 
 def parse_args(argv=None):
-    """The sidecar entry argparse surface (verbatim from the retired dev-eval script entry).
+    """The dev-eval entry argparse surface (verbatim from the retired dev-eval script entry).
 
     Exposed for the argv↔namespace equivalence gate (ADR-0015 Testing: the
     assertion lives in tests/application/generation/modality_label).
@@ -246,8 +336,9 @@ def parse_args(argv=None):
     p.add_argument("--dev-list", required=True)
     p.add_argument("--raw-root", required=True)
     p.add_argument("--eval-root", required=True)
+    add_device_flag(p)
 
-    p = sub.add_parser("watch", help="sidecar loop: evaluate epoch checkpoints as they land")
+    p = sub.add_parser("watch", help="offline pass: evaluate a run's existing epoch checkpoints, then exit")
     p.add_argument("--ckpt-dir", required=True)
     p.add_argument("--eval-root", required=True)
     p.add_argument("--dev-list", required=True)
@@ -260,12 +351,11 @@ def parse_args(argv=None):
     p.add_argument("--patience", type=int, default=3)
     p.add_argument("--min-epoch", type=int, default=30)
     p.add_argument("--max-epoch", type=int, default=100)
-    p.add_argument("--poll-seconds", type=float, default=60.0)
     p.add_argument("--skip-l2", action="store_true", help="FID-only trend (instruments unavailable)")
     p.add_argument("--instrument-results", action="append", default=[], help="CHALLENGE=nnUNet_results path")
     p.add_argument("--nnunet-raw", default="/root/private_data/ctmr/data/nnunet_raw")
     p.add_argument("--nnunet-preprocessed", default="/root/private_data/ctmr/data/nnunet_preprocessed")
-    p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
+    add_device_flag(p)
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
     p.add_argument("--eval-root", required=True)
@@ -281,7 +371,7 @@ def main(argv=None):
     eval_root = Path(args.eval_root)
 
     if args.command == "reference":
-        features = MrTrendFeatures(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        features = MrTrendFeatures(resolve_device(args.device))
         RealReferenceBank(args.dev_list, args.raw_root, features, eval_root / "reference").build()
         print(f"real reference bank -> {eval_root / 'reference' / 'real_reference_bank.pt'}")
         return 0
@@ -290,7 +380,7 @@ def main(argv=None):
         return SelectionEmitter(eval_root).emit(args.out, rule_text="argmin mean dev FID over eval points (pre-recorded)")
 
     # watch mode: assemble the stage collaborators, the shell engine drives the loop
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     cohort_path = eval_root / "dev_cohort.json"
     cohort = DevCohortBuilder(args.dev_list).write(cohort_path) if not cohort_path.is_file() else json.loads(cohort_path.read_text())["cohort"]
     spacings = CohortSpacingSource(args.dev_list, args.emb_root)
@@ -315,8 +405,6 @@ def main(argv=None):
         rule=rule,
         sampler_factory=partial(sampler.generate_cohort, cohort=cohort, spacings=spacings),
         scorer=FidTrendScorer(features, TrendFid(bank)),
-        poll_seconds=args.poll_seconds,
-        idle_exit_seconds=args.idle_exit_seconds,
         post_score=L2PostScore(l2, cohort, args.skip_l2),
     ).run(cohort_file=str(cohort_path))
 

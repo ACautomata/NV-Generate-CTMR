@@ -9,10 +9,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Cross-modal dev light-acceptance sidecar: fixed image-conditioned samples + PSNR/SSIM trend (issue #61).
+"""Cross-modal offline dev light acceptance: fixed image-conditioned samples + PSNR/SSIM trend (issue #61).
 
-Runs beside the candidate finetune on a reserved GPU. For every ``epoch_<N>.pt`` the
-trainer persists (N a multiple of ``--eval-every``), it:
+Offline form (ADR-0019 §5, #279): one pass over ANY run's already-persisted
+checkpoints, training live or finished. For every ``epoch_<N>.pt`` on disk
+(N a multiple of ``--eval-every``) the run's ledger does not have yet, it:
 
 1. generates the FIXED dev cohort — the dev-side cases × the 12 ordered src->tgt pairs,
    conditioned on the case's **src-image latent** (``src_image``, 4ch, no mask) with the
@@ -34,11 +35,11 @@ m(N) = mean over the four target modalities of the case-mean dev 3D SSIM at epoc
 evals produced no new best m (higher is better).
 
 The dev cohort / real bank / spacing / src-latent source are all filtered to the dev side:
-``p3_pairs.json`` mixes train (fold=1) and dev (fold=0); this sidecar uses only fold=0.
+``p3_pairs.json`` mixes train (fold=1) and dev (fold=0); this entry uses only fold=0.
 
 Migrated from the retired cross-modal dev-eval script entry (ticket 08, ADR-0015
 §2); its ``selftest`` subcommand retired with it — its assertions live as pytest
-functions.  Per ADR-0016 (issue #174) the sidecar sampling loop runs as the
+functions.  Per ADR-0016 (issue #174) the sampling loop runs as the
 domain ``DiffusionModel`` + ``ControlNetBypass`` composition with the
 candidate's pinned CFG=0 recipe; the VAE decode and int16 post-processing stay
 application adapters (``render``).
@@ -49,7 +50,7 @@ injected ``GenerationEngine`` port, and the concrete adapters are assembled by
 the composition root (``ctmr.wiring.generate``, which the main entry consults
 directly).
 
-Usage (sugon, one reserved GPU):
+Usage:
     ctmr generate cross-modal dev-eval reference --dev-list ... --raw-root ... --eval-root DIR
     ctmr generate cross-modal dev-eval watch --ckpt-dir ... --eval-root ... \
         --dev-list ... --raw-root ... --phase-root ... -e env.json -c config.json -t network_p3.json
@@ -76,6 +77,7 @@ from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 from ctmr.application.generation.cross_modal.baseline import ReferenceGridWriter
 from ctmr.application.generation.cross_modal.plan import MODALITY_PAIRS, seed_of
+from ctmr.application.generation.devices import add_device_flag, resolve_device
 from ctmr.application.shell import (
     MODALITY_TOKENS,
     EarlyStopRule,
@@ -318,7 +320,7 @@ class CandidateSampler:
         spacing_tensor = torch.tensor([[s * 1e2 for s in spacing]], device=self._device)
         modality_tensor = torch.tensor([modality_token], device=self._device)
         # The initial noise keeps the legacy initialize_noise_latents seed stream
-        # (CPU fp32 randn -> half -> device); the dev sidecar samples with the
+        # (CPU fp32 randn -> half -> device); the dev watch samples with the
         # candidate's pinned CFG=0 recipe (single conditioned forward).
         image = torch.randn([1] + list(LATENT)).half().to(self._device)
         scheduler = model.begin_sampling(image.shape, self._args.diffusion_unet_inference["num_inference_steps"])
@@ -333,7 +335,7 @@ class CandidateSampler:
 
         Matches the retired ControlNet-conditioned core's decode tail verbatim
         (git history; deleted with issue #175) — sliding-window decode with the
-        aggregation on CPU, MR → [0,1000]; the dev sidecar keeps the retired
+        aggregation on CPU, MR → [0,1000]; the dev watch keeps the retired
         wrapper's default overlap 0.6667; the autocast context flows in from
         the caller.
         """
@@ -389,7 +391,7 @@ class PairTrendScorer:
 
 
 def parse_args(argv=None):
-    """The sidecar entry argparse surface (verbatim from the retired dev-eval script entry).
+    """The dev-eval entry argparse surface (verbatim from the retired dev-eval script entry).
 
     Exposed for the argv↔namespace equivalence gate (ADR-0015 Testing: the
     assertion lives in tests/application/generation/cross_modal).
@@ -403,7 +405,7 @@ def parse_args(argv=None):
     p.add_argument("--eval-root", required=True)
     p.add_argument("--score-workers", type=int, default=32)
 
-    p = sub.add_parser("watch", help="sidecar loop: evaluate epoch checkpoints as they land")
+    p = sub.add_parser("watch", help="offline pass: evaluate a run's existing epoch checkpoints, then exit")
     p.add_argument("--ckpt-dir", required=True)
     p.add_argument("--eval-root", required=True)
     p.add_argument("--dev-list", required=True)
@@ -416,9 +418,8 @@ def parse_args(argv=None):
     p.add_argument("--patience", type=int, default=3)
     p.add_argument("--min-epoch", type=int, default=30)
     p.add_argument("--max-epoch", type=int, default=100)
-    p.add_argument("--poll-seconds", type=float, default=60.0)
     p.add_argument("--score-workers", type=int, default=32, help="parallel CPU workers for reference resampling + PSNR/SSIM")
-    p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
+    add_device_flag(p)
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
     p.add_argument("--eval-root", required=True)
@@ -478,7 +479,7 @@ def main(argv=None):
     # the engine adapter behind the GenerationEngine port.
     runtime = GenerateRuntime()
     dev_list = DevList(args.dev_list, eval_root).build()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     cohort_source = DevCohort(dev_list)
     cohort = cohort_source.cases()
     phase_root = Path(args.phase_root)
@@ -510,8 +511,6 @@ def main(argv=None):
         rule=rule,
         sampler_factory=partial(sampler.generate_cohort, cases=cohort, cohort_source=cohort_source, phase_root=phase_root),
         scorer=PairTrendScorer(scorer, cohort_source, args.raw_root, eval_root / "reference_grid"),
-        poll_seconds=args.poll_seconds,
-        idle_exit_seconds=args.idle_exit_seconds,
     ).run(cohort_file=str(dev_list))
 
 

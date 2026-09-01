@@ -83,8 +83,6 @@ DEV_EVAL_WATCH_ARGV = [
     "30",
     "--max-epoch",
     "100",
-    "--poll-seconds",
-    "30.0",
     "--skip-l2",
     "--instrument-results",
     "GLI=/results/gli",
@@ -94,8 +92,6 @@ DEV_EVAL_WATCH_ARGV = [
     "/nnunet/raw",
     "--nnunet-preprocessed",
     "/nnunet/pre",
-    "--idle-exit-seconds",
-    "120",
 ]
 DEV_EVAL_SELECT_ARGV = ["select", "--eval-root", "/phase/dev", "--ckpt-dir", "/phase/ckpt", "--out", "/phase/select.json"]
 
@@ -103,12 +99,15 @@ DEV_EVAL_SELECT_ARGV = ["select", "--eval-root", "/phase/dev", "--ckpt-dir", "/p
 
 
 def _reference_finetune_parser():
-    """The retired modality-label finetune entry's argparse surface, verbatim."""
+    """The retired modality-label finetune entry's argparse surface, verbatim.
+
+    The two declared evolutions since the migration (issue #278, ADR-0019 §4-§5,
+    not drift): ``-g`` defaults to 8 and the entry carries ``--val-every``."""
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-e", "--env_config_path", required=True)
     parser.add_argument("-c", "--model_config_path", required=True)
     parser.add_argument("-t", "--model_def_path", required=True)
-    parser.add_argument("-g", "--num_gpus", type=int, default=1)
+    parser.add_argument("-g", "--num_gpus", type=int, default=8)
     parser.add_argument(
         "--replay-list",
         dest="replay_list",
@@ -116,13 +115,23 @@ def _reference_finetune_parser():
         required=True,
         help="MR-RATE replay data list (spec: list-level 1:1 mix; append once per list)",
     )
+    parser.add_argument("--val-every", dest="val_every", type=int, default=10, help="embedded periodic validation interval in epochs (0 disables)")
+    parser.add_argument("--dev-list", dest="dev_list", default=None, help="dev cohort list json (embedded validation)")
+    parser.add_argument("--raw-root", dest="raw_root", default=None, help="raw volume root for the dev real bank (embedded validation)")
+    parser.add_argument("--emb-root", dest="emb_root", default=None, help="phase embedding root for per-case spacing (embedded validation)")
     parser.add_argument("--no_amp", dest="amp", action="store_false")
     parser.add_argument("--amp_dtype", default="bf16", choices=["fp16", "bf16"], help="bf16 default (DCU)")
     return parser
 
 
 def _reference_dev_eval_parser():
-    """The retired dev-eval entry's argparse surface, verbatim (minus the retired selftest verb)."""
+    """The retired dev-eval entry's argparse surface, verbatim (minus the retired selftest verb).
+
+    Two declared evolutions since the migration, not drift: the unified
+    ``--device`` injection flag on the device-consuming verbs (issue #280,
+    ADR-0019 §8), and the watch verb's offline rework -- ``--poll-seconds``/
+    ``--idle-exit-seconds`` retired with the polling loop (issue #279,
+    ADR-0019 §5)."""
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -130,8 +139,9 @@ def _reference_dev_eval_parser():
     p.add_argument("--dev-list", required=True)
     p.add_argument("--raw-root", required=True)
     p.add_argument("--eval-root", required=True)
+    p.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
 
-    p = sub.add_parser("watch", help="sidecar loop: evaluate epoch checkpoints as they land")
+    p = sub.add_parser("watch", help="offline pass: evaluate a run's existing epoch checkpoints, then exit")
     p.add_argument("--ckpt-dir", required=True)
     p.add_argument("--eval-root", required=True)
     p.add_argument("--dev-list", required=True)
@@ -144,12 +154,11 @@ def _reference_dev_eval_parser():
     p.add_argument("--patience", type=int, default=3)
     p.add_argument("--min-epoch", type=int, default=30)
     p.add_argument("--max-epoch", type=int, default=100)
-    p.add_argument("--poll-seconds", type=float, default=60.0)
     p.add_argument("--skip-l2", action="store_true", help="FID-only trend (instruments unavailable)")
     p.add_argument("--instrument-results", action="append", default=[], help="CHALLENGE=nnUNet_results path")
     p.add_argument("--nnunet-raw", default="/root/private_data/ctmr/data/nnunet_raw")
     p.add_argument("--nnunet-preprocessed", default="/root/private_data/ctmr/data/nnunet_preprocessed")
-    p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
+    p.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
     p.add_argument("--eval-root", required=True)
@@ -207,7 +216,7 @@ def test_replay_mix_flag_is_required():
 
 def test_train_cli_derives_num_gpus_from_the_entry_argv():
     assert num_gpus_of(FINETUNE_ARGV) == 7
-    assert num_gpus_of(["-e", "e.json", "-c", "c.json", "-t", "t.json"]) == 1  # the TrainCli default
+    assert num_gpus_of(["-e", "e.json", "-c", "c.json", "-t", "t.json"]) == 8  # the TrainCli default (issue #278)
 
 
 @pytest.mark.parametrize("verb", ["generate", "sample", "batch"])

@@ -49,16 +49,43 @@ def test_diagnostic_namespace_constants_are_pinned_byte_exact():
 
 def test_diagnostic_seed_slot_table_is_pinned_byte_exact():
     """Job A (#206) holds the uncompensated block 0/1 and the compensated block
-    100/101 of each challenge band; job B (#207) takes slot 200; the dev
-    monitor (#253) takes the next free block 400 (the C/D bandless blocks
-    occupy 300..320)."""
+    100/101 of each challenge band; job B (#207) takes slot 200; the T5
+    fixed-world baseline (#252) takes the next free blocks -- comp arm
+    400 + judge quantity index, uncomp arm 500 + index, with the two job A
+    anchor quantities (indices 0/3) exempt as gaps; the dev monitor (#253)
+    takes the next free block 600 (re-registered from a 400 filing before its
+    first draw)."""
     assert DIAGNOSTIC_SEED_SLOTS == {
         "zcrop_vol_uncomp": 0,
         "zcrop_centroid_uncomp": 1,
         "zcrop_vol_comp": 100,
         "zcrop_centroid_comp": 101,
         "et_rel_diff": 200,
-        "dev_monitor_wt_rel_diff": 400,
+        "t5_comp_centroid_wt_x": 401,
+        "t5_comp_centroid_wt_y": 402,
+        "t5_comp_vol_tc_rel": 404,
+        "t5_comp_centroid_tc_x": 405,
+        "t5_comp_centroid_tc_y": 406,
+        "t5_comp_centroid_tc_z": 407,
+        "t5_comp_vol_et_rel": 408,
+        "t5_comp_centroid_et_x": 409,
+        "t5_comp_centroid_et_y": 410,
+        "t5_comp_centroid_et_z": 411,
+        "t5_comp_wt_brain_rel": 412,
+        "t5_comp_et_wt_rel": 413,
+        "t5_uncomp_centroid_wt_x": 501,
+        "t5_uncomp_centroid_wt_y": 502,
+        "t5_uncomp_vol_tc_rel": 504,
+        "t5_uncomp_centroid_tc_x": 505,
+        "t5_uncomp_centroid_tc_y": 506,
+        "t5_uncomp_centroid_tc_z": 507,
+        "t5_uncomp_vol_et_rel": 508,
+        "t5_uncomp_centroid_et_x": 509,
+        "t5_uncomp_centroid_et_y": 510,
+        "t5_uncomp_centroid_et_z": 511,
+        "t5_uncomp_wt_brain_rel": 512,
+        "t5_uncomp_et_wt_rel": 513,
+        "dev_monitor_wt_rel_diff": 600,
     }
 
 
@@ -164,6 +191,17 @@ def test_writer_disclaimer_reproduces_the_recorded_text_byte_exact():
     assert writer.disclaimer == (
         "诊断读数,不产生任何验收判定;与正式 L2 验收面严格分离(#205 作业 A)。bootstrap 种子独立于正式判定链(诊断基 900000000)。"
     )
+
+
+def test_writer_parent_issue_defaults_to_205_and_reroutes_for_later_jobs():
+    """The recorded jobs A/B carry 父 #205 verbatim; later-series diagnostics
+    (T5, 父 #247) reroute the parent reference without touching the default."""
+    default = DiagnosticReportWriter(schema="s/1", title="t", issue=206, job_label="作业 A", stem="s", inputs={}, run_id=None)
+    t5 = DiagnosticReportWriter(schema="s/1", title="t", issue=252, job_label="序列② T5", stem="s", inputs={}, run_id=None, parent_issue=247)
+    assert "(父 #205 作业 A)" in "\n".join(default.markdown_preamble(default.payload({})))
+    t5_preamble = "\n".join(t5.markdown_preamble(t5.payload({})))
+    assert "(父 #247 序列② T5)" in t5_preamble
+    assert "(#247 序列② T5)" in t5.disclaimer
 
 
 def test_writer_markdown_preamble_matches_the_recorded_report_shape():

@@ -193,13 +193,14 @@ def test_the_line_consumes_the_et_discrimination_output_verbatim():
 
 def test_monitoring_bootstrap_seed_draws_the_new_registered_slot():
     """The monitoring job's own bootstrap draw (WT rel-diff CI90) takes the next
-    free slot after jobs A/B and the C/D blocks (#247 seed discipline: the C/D
-    bandless blocks occupy 300..320, so the monitoring slot starts at 400)."""
-    assert DIAGNOSTIC_SEED_SLOTS["dev_monitor_wt_rel_diff"] == 400
-    prior_occupancy = (0, 1, 100, 101, 200, *range(300, 321))  # jobs A/B/C/D + the geometry audit
+    free block after jobs A/B, the C/D bandless blocks (#247 seed discipline,
+    300..320) and T5's 400/500 arms (#252): block 600. Originally filed as 400;
+    re-registered before its first draw, so no shipped bit-stream changes."""
+    assert DIAGNOSTIC_SEED_SLOTS["dev_monitor_wt_rel_diff"] == 600
+    prior_occupancy = (0, 1, 100, 101, 200, *range(300, 321), 401, 402, *range(404, 414), 501, 502, *range(504, 514))
     assert DIAGNOSTIC_SEED_SLOTS["dev_monitor_wt_rel_diff"] not in prior_occupancy
     seed = DiagnosticSeedAllocator.seed("GLI", DIAGNOSTIC_SEED_SLOTS["dev_monitor_wt_rel_diff"])
-    assert seed == DIAGNOSTIC_SEED_BASE + CHALLENGE_SEED_OFFSET["GLI"] * 1000 + 400
+    assert seed == DIAGNOSTIC_SEED_BASE + CHALLENGE_SEED_OFFSET["GLI"] * 1000 + 600
     assert GLOBAL_SEED < DIAGNOSTIC_SEED_BASE
 
 

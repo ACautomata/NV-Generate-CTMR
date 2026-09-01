@@ -136,7 +136,8 @@ def test_shared_registry_pins_the_frozen_values():
     assert challenge_registry.CHALLENGE_SEED_OFFSET == {"GLI": 1, "SSA": 2, "MEN": 3, "METS": 4, "PED": 5}
     # the diagnostic seed namespace (ADR-0017 decision 5, #232): base, band
     # width and the job A/B slot table, byte-exact against the pre-#232 modules;
-    # the dev monitor (#253) joins at the next free block 400
+    # the dev monitor (#253) joins at the next free block 600 (re-registered
+    # from a 400 filing before its first draw, after T5's 400/500 bands landed)
     assert challenge_registry.DIAGNOSTIC_SEED_BASE == 900_000_000
     assert challenge_registry.DIAGNOSTIC_SEED_BAND == 1000
     assert challenge_registry.DIAGNOSTIC_SEED_SLOTS == {
@@ -145,7 +146,31 @@ def test_shared_registry_pins_the_frozen_values():
         "zcrop_vol_comp": 100,
         "zcrop_centroid_comp": 101,
         "et_rel_diff": 200,
-        "dev_monitor_wt_rel_diff": 400,
+        "t5_comp_centroid_wt_x": 401,
+        "t5_comp_centroid_wt_y": 402,
+        "t5_comp_vol_tc_rel": 404,
+        "t5_comp_centroid_tc_x": 405,
+        "t5_comp_centroid_tc_y": 406,
+        "t5_comp_centroid_tc_z": 407,
+        "t5_comp_vol_et_rel": 408,
+        "t5_comp_centroid_et_x": 409,
+        "t5_comp_centroid_et_y": 410,
+        "t5_comp_centroid_et_z": 411,
+        "t5_comp_wt_brain_rel": 412,
+        "t5_comp_et_wt_rel": 413,
+        "t5_uncomp_centroid_wt_x": 501,
+        "t5_uncomp_centroid_wt_y": 502,
+        "t5_uncomp_vol_tc_rel": 504,
+        "t5_uncomp_centroid_tc_x": 505,
+        "t5_uncomp_centroid_tc_y": 506,
+        "t5_uncomp_centroid_tc_z": 507,
+        "t5_uncomp_vol_et_rel": 508,
+        "t5_uncomp_centroid_et_x": 509,
+        "t5_uncomp_centroid_et_y": 510,
+        "t5_uncomp_centroid_et_z": 511,
+        "t5_uncomp_wt_brain_rel": 512,
+        "t5_uncomp_et_wt_rel": 513,
+        "dev_monitor_wt_rel_diff": 600,
     }
     # the ADR-0002 published 4-dp literals, verbatim (spot anchors; the full
     # table is pinned by the judge's own envelope tests)

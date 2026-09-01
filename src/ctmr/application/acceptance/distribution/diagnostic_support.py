@@ -110,8 +110,8 @@ class DiagnosticReportWriter:
         return [
             f"# {payload['title']}",
             "",
-            f"**Issue**: [#{self._issue}](https://github.com/ACautomata/NV-Generate-CTMR/issues/{self._issue})"
-            f"(父 #{self._parent_issue} {self._job_label}) · **run**: `{payload['run_id'] or '未绑定'}`",
+            f"**Issue**: [#{self._issue}](https://github.com/ACautomata/NV-Generate-CTMR/issues/{self._issue})(父 #{self._parent_issue} {self._job_label})"
+            f" · **run**: `{payload['run_id'] or '未绑定'}`",
             f"**variant: diagnostic —— {payload['disclaimer']}**",
             "",
         ]

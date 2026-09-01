@@ -18,8 +18,13 @@ latest.json, rank-0 gating) and the provenance writer's field sets are pinned
 against the pre-#111 per-stage snapshots. Since #276 (ADR-0019 §1 terminal
 state) the shell constructs nothing itself: the gradient executor and the
 checkpoint repository ride in as injected collaborators (the tests inject the
-real adapters -- tests are exempt from the layer rule). Torch-level: runs on
-CPU in the CI full-dependency tier, which installs torch (ADR-0015 §6).
+real adapters -- tests are exempt from the layer rule). Since #278 the shell
+also owns the embedded periodic validation stage (ADR-0019 §5): the N-epoch
+boundary trigger, the eval/train swap, the ledger/trend.json append and the
+early-stop boundary evaluation all stay mechanical, while the validation
+domain rides in as the injected ``ValidationPhase`` (fake validator below).
+Torch-level: runs on CPU in the CI full-dependency tier, which installs torch
+(ADR-0015 §6).
 """
 
 import json
@@ -29,7 +34,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from ctmr.application.shell import STOP_FILE, PhaseHarness, TrainContext, TrainProvenanceWriter
+from ctmr.application.shell import STOP_FILE, EarlyStopRule, PhaseHarness, TrainContext, TrainProvenanceWriter, ValidationPhase
 from ctmr.infrastructure.checkpoints import CheckpointRepository
 from ctmr.infrastructure.gradient_executors import PlainGradientExecutor
 
@@ -95,6 +100,7 @@ class SpyKernel:
         self.optimizer = torch.optim.SGD([self.param], lr=0.1)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1)
         self.batches = [{"x": float(i)} for i in range(n_batches)]
+        self.trainable = None
 
     def build_loader(self):
         self.calls.append("build_loader")
@@ -103,8 +109,9 @@ class SpyKernel:
     def load_models(self, loader):
         self.calls.append(("load_models", len(loader)))
         self.device = torch.device(CPU)
+        self.trainable = torch.nn.Linear(1, 1, bias=False)
         return TrainContext(
-            trainable=torch.nn.Linear(1, 1, bias=False),
+            trainable=self.trainable,
             optimizer=self.optimizer,
             scheduler=self.scheduler,
             scale=torch.tensor(1.0),
@@ -122,7 +129,27 @@ class SpyKernel:
         return {"epoch": epoch, "loss": avg_loss, "num_train_timesteps": 1000, "scale_factor": scale, "fake_state_dict": {}}
 
 
-def _build_harness(kernel, tmp_path, n_epochs=2, local_rank=0, recipe_check=None, provenance=None, gradient_executor=None):
+class ScriptedValidator:
+    """Fake PeriodicValidator: records (epoch, training_mode) calls, scripted trend fields.
+
+    ``fail_at`` epochs raise -- the embedded stage must degrade to a logged
+    skip (training is the main job; a broken scorer must not kill the run).
+    """
+
+    def __init__(self, fields_by_epoch, fail_at=(), cohort_file="dev_cohort.json"):
+        self.calls = []
+        self._fields_by_epoch = fields_by_epoch
+        self._fail_at = set(fail_at)
+        self.cohort_file = cohort_file
+
+    def validate(self, ctx, epoch, eval_root=None):
+        self.calls.append((epoch, ctx.trainable.training))
+        if epoch in self._fail_at:
+            raise RuntimeError(f"validation boom at {epoch}")
+        return dict(self._fields_by_epoch[epoch]), f"m={self._fields_by_epoch[epoch]['m']}"
+
+
+def _build_harness(kernel, tmp_path, n_epochs=2, local_rank=0, recipe_check=None, provenance=None, gradient_executor=None, validation=None):
     return PhaseHarness(
         kernel=kernel,
         model_dir=tmp_path,
@@ -133,6 +160,7 @@ def _build_harness(kernel, tmp_path, n_epochs=2, local_rank=0, recipe_check=None
         provenance=provenance,
         gradient_executor=gradient_executor if gradient_executor is not None else PlainGradientExecutor(),
         checkpoint_repository=CheckpointRepository(tmp_path),
+        validation=validation,
     )
 
 
@@ -314,3 +342,154 @@ def test_provenance_script_and_git_commit_are_self_referential(tmp_path):
     data = json.loads(writer.write(tmp_path / "train_provenance.json").read_text())
     assert data["script"].endswith(("shell.py", "train_shell.py", "train.py"))
     assert data["git_commit"] is None or len(data["git_commit"]) == 40  # repo HEAD, or absent git
+
+
+# --------------------------------------------------------------- embedded periodic validation (#278)
+
+DEV_EVAL = "dev_eval"
+
+
+def test_periodic_validation_runs_at_epoch_boundaries_and_leaves_training_math_untouched(tmp_path):
+    """The stage fires only on the N-epoch boundary, after that epoch's train +
+    publish, and the training math is byte-identical to a validation-free run."""
+    kernel = SpyKernel(n_batches=2)
+    validator = ScriptedValidator({2: {"m": 1.0}, 4: {"m": 0.9}})
+    phase = ValidationPhase(every=2, validator=validator, rule=EarlyStopRule(patience=2, min_epoch=0, max_epoch=100))
+
+    _build_harness(kernel, tmp_path, n_epochs=4, validation=phase).run()
+
+    # both boundary calls saw the model in eval mode (the shell owns the swap)
+    assert validator.calls == [(2, False), (4, False)]
+    assert len([c for c in kernel.calls if c[0] == "train_batch"]) == 8  # every batch still trained
+    assert len([c for c in kernel.calls if c[0] == "payload"]) == 4  # every epoch still published
+
+    plain = SpyKernel(n_batches=2)
+    _build_harness(plain, tmp_path / "plain", n_epochs=4).run()
+    assert kernel.param.item() == plain.param.item()  # zero training-math drift
+
+
+def test_validation_swaps_the_model_back_to_train_mode_after_each_stage(tmp_path):
+    modes = []
+    kernel = SpyKernel(n_batches=2, on_train_batch=lambda x: modes.append(kernel.trainable.training))
+    validator = ScriptedValidator({2: {"m": 1.0}})
+    phase = ValidationPhase(every=2, validator=validator, rule=EarlyStopRule(patience=5, min_epoch=0, max_epoch=100))
+
+    _build_harness(kernel, tmp_path, n_epochs=2, validation=phase).run()
+
+    assert modes == [True] * 4  # every training batch ran in train mode, validation never leaked
+
+
+def test_validation_record_lands_in_the_ledger_with_the_existing_contract(tmp_path):
+    """The record skeleton is the WatchEngine's: eval_utc/epoch/checkpoint open,
+    the score fields sit between, cohort_file closes; trend.json mirrors the
+    append; the in-memory trend equals the on-disk ledger."""
+    kernel = SpyKernel(n_batches=2)
+    validator = ScriptedValidator({2: {"m": 0.8}})
+    phase = ValidationPhase(every=2, validator=validator, rule=EarlyStopRule(patience=5, min_epoch=0, max_epoch=100))
+
+    _build_harness(kernel, tmp_path, n_epochs=2, validation=phase).run()
+
+    eval_root = tmp_path / DEV_EVAL
+    records = [json.loads(line) for line in (eval_root / "dev_trend.jsonl").read_text().splitlines() if line.strip()]
+    assert [record["epoch"] for record in records] == [2]
+    assert list(records[0]) == ["eval_utc", "epoch", "checkpoint", "m", "cohort_file"]
+    assert records[0]["checkpoint"] == str(tmp_path / "epoch_2.pt")
+    assert records[0]["cohort_file"] == "dev_cohort.json"
+    assert json.loads((eval_root / "epoch_2" / "trend.json").read_text()) == records[0]
+    assert [(record["epoch"], record["m"]) for record in phase.records] == [(record["epoch"], record["m"]) for record in records]
+
+
+def test_validation_skips_non_boundary_epochs(tmp_path):
+    kernel = SpyKernel(n_batches=2)
+    validator = ScriptedValidator({4: {"m": 0.9}})
+    phase = ValidationPhase(every=4, validator=validator, rule=EarlyStopRule(patience=2, min_epoch=0, max_epoch=100))
+
+    _build_harness(kernel, tmp_path, n_epochs=6, validation=phase).run()
+
+    assert validator.calls == [(4, False)]  # epochs 2 and 6 stay unvalidated (6 is past the run end)
+
+
+def test_validation_early_stop_writes_the_stop_file_and_halts_the_run(tmp_path):
+    """The boundary evaluation is the pre-recorded rule on the accumulated
+    trend; when it fires the stop file carries the same {"reason", "epoch"}
+    contract the sidecar wrote, and the remaining epochs never train."""
+    kernel = SpyKernel(n_batches=2)
+    validator = ScriptedValidator({2: {"m": 1.0}, 4: {"m": 1.1}})  # min rule: a worsening plateau
+    phase = ValidationPhase(every=2, validator=validator, rule=EarlyStopRule(patience=1, min_epoch=0, max_epoch=100))
+
+    _build_harness(kernel, tmp_path, n_epochs=6, validation=phase).run()
+
+    assert validator.calls == [(2, False), (4, False)]
+    assert len([c for c in kernel.calls if c[0] == "train_batch"]) == 8  # epochs 5-6 never ran
+    stop_text = (tmp_path / STOP_FILE).read_text()
+    stop = json.loads(stop_text)
+    assert stop["epoch"] == 4
+    assert "no new best" in stop["reason"]
+    assert stop_text.endswith("\n")
+
+
+def test_validation_respects_min_epoch_before_stopping(tmp_path):
+    kernel = SpyKernel(n_batches=2)
+    validator = ScriptedValidator({2: {"m": 1.0}, 4: {"m": 1.1}, 6: {"m": 1.2}})
+    phase = ValidationPhase(every=2, validator=validator, rule=EarlyStopRule(patience=1, min_epoch=100, max_epoch=100))
+
+    _build_harness(kernel, tmp_path, n_epochs=6, validation=phase).run()
+
+    assert validator.calls == [(2, False), (4, False), (6, False)]  # the run completes despite the plateau
+    assert not (tmp_path / STOP_FILE).exists()
+
+
+def test_validation_failure_does_not_kill_the_run(tmp_path):
+    """A broken scorer degrades to a logged skip: training is the main job, the
+    train mode is restored, and no trend point lands."""
+    kernel = SpyKernel(n_batches=2)
+    validator = ScriptedValidator({2: {"m": 1.0}, 4: {"m": 0.9}}, fail_at={2})
+    phase = ValidationPhase(every=2, validator=validator, rule=EarlyStopRule(patience=2, min_epoch=0, max_epoch=100))
+
+    _build_harness(kernel, tmp_path, n_epochs=4, validation=phase).run()
+
+    assert validator.calls == [(2, False), (4, False)]
+    assert len([c for c in kernel.calls if c[0] == "train_batch"]) == 8
+    records = [json.loads(line) for line in (tmp_path / DEV_EVAL / "dev_trend.jsonl").read_text().splitlines() if line.strip()]
+    assert [record["epoch"] for record in records] == [4]  # only the healthy point landed
+    assert not (tmp_path / STOP_FILE).exists()
+
+
+def test_validation_phase_requires_both_collaborators(tmp_path):
+    with pytest.raises(ValueError, match="validator and the early-stop rule"):
+        _build_harness(SpyKernel(n_batches=1), tmp_path, validation=ValidationPhase(every=2, validator=None, rule=None))
+
+
+class RngPollutingValidator:
+    """Fake validator that resets and burns the global RNG, as the live sampler's
+    per-sample ``torch.manual_seed`` does (codex review, PR #301)."""
+
+    cohort_file = "dev_cohort.json"
+
+    def __init__(self, fields_by_epoch):
+        self._fields_by_epoch = fields_by_epoch
+
+    def validate(self, ctx, epoch, eval_root=None):
+        torch.manual_seed(12345)
+        torch.randn(64)  # burn the stream, like the per-sample latent draws
+        return dict(self._fields_by_epoch[epoch]), f"m={self._fields_by_epoch[epoch]['m']}"
+
+
+def test_validation_isolates_its_rng_from_the_training_stream(tmp_path):
+    """The stage's sampling randomness must not leak into training: the shell forks
+    the RNG around the validation call, so enabling ``--val-every`` leaves the
+    training random stream (shuffling, RF timesteps, modality perturbation)
+    bit-identical to a validation-free run."""
+
+    def training_draws(with_validation):
+        torch.manual_seed(0)
+        draws = []
+        kernel = SpyKernel(n_batches=2, on_train_batch=lambda _x: draws.append(torch.rand(1).item()))
+        validation = None
+        if with_validation:
+            validator = RngPollutingValidator({2: {"m": 1.0}, 4: {"m": 0.9}})
+            validation = ValidationPhase(every=2, validator=validator, rule=EarlyStopRule(patience=5, min_epoch=0, max_epoch=100))
+        _build_harness(kernel, tmp_path / ("with" if with_validation else "without"), n_epochs=4, validation=validation).run()
+        return draws
+
+    assert training_draws(True) == training_draws(False)  # the boundary's RNG pollution never reaches training

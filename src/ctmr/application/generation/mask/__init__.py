@@ -14,8 +14,9 @@
 
 The mask (tumour-mask-conditioned) use case as three word-named modules
 (ADR-0015 §7⑥): ``train`` (ControlNet-only candidate finetune), ``monitor``
-(dev sidecar: FID + instrument + round-trip-Dice trend; reference/watch/select
-assembly over the shell ``WatchEngine``, early stop included) and ``sample``
+(offline dev acceptance: FID + instrument + round-trip-Dice trend;
+reference/watch/select assembly over the shell ``WatchEngine``, early stop
+included) and ``sample``
 (final-holdout sample generation with the selected candidate). ``inference``
 holds the mask-conditioned sampling wrapper shared with the user-facing
 mask→image tools. The family kernels inject into

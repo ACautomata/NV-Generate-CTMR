@@ -14,9 +14,9 @@
 
 The image-only tumour-candidate use case as word-named modules (ADR-0015 §7⑥):
 ``train`` (full-parameter DM continuation with the 1:1 MR-RATE replay mix) and
-``monitor`` (the dev light-acceptance sidecar). The shared dev-trend machinery
-lives in ``ctmr.application.generation.trend``; the watch/select polling
-engine (``WatchEngine`` / ``SelectionEmitter``) in ``ctmr.application.shell``
+``monitor`` (the offline dev light acceptance). The shared dev-trend machinery
+lives in ``ctmr.application.generation.trend``; the watch/select engine
+(``WatchEngine`` / ``SelectionEmitter``) in ``ctmr.application.shell``
 -- ``monitor`` assembles the stage sampler/scorer/post-score collaborators
 onto it. The historical phase codename stays in CONTEXT.md and ADR history
 only.

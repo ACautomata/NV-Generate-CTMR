@@ -89,12 +89,8 @@ DEV_EVAL_WATCH_ARGV = [
     "30",
     "--max-epoch",
     "100",
-    "--poll-seconds",
-    "30.0",
     "--score-workers",
     "8",
-    "--idle-exit-seconds",
-    "120",
 ]
 DEV_EVAL_SELECT_ARGV = ["select", "--eval-root", "/phase/dev", "--ckpt-dir", "/phase/ckpt", "--out", "/phase/select.json"]
 
@@ -171,7 +167,7 @@ def _reference_finetune_parser():
     parser.add_argument("-e", "--env_config_path", required=True)
     parser.add_argument("-c", "--model_config_path", required=True)
     parser.add_argument("-t", "--model_def_path", required=True)
-    parser.add_argument("-g", "--num_gpus", type=int, default=1)
+    parser.add_argument("-g", "--num_gpus", type=int, default=8)  # declared evolution: issue #278 (whole node)
     parser.add_argument("--data-list", default=None, help="p3_pairs.json (defaults to env json_data_list)")
     parser.add_argument("--no_amp", dest="amp", action="store_false")
     parser.add_argument("--amp_dtype", default="bf16", choices=["fp16", "bf16"], help="bf16 default (DCU)")
@@ -179,7 +175,14 @@ def _reference_finetune_parser():
 
 
 def _reference_dev_eval_parser():
-    """The retired dev-eval entry's argparse surface, verbatim."""
+    """The retired dev-eval entry's argparse surface, verbatim.
+
+    Two declared evolutions since the migration, not drift: the unified
+    ``--device`` injection flag on the device-consuming watch verb (issue
+    #280, ADR-0019 §8; the reference verb is pure-CPU resampling, no device),
+    and the watch verb's offline rework -- ``--poll-seconds``/
+    ``--idle-exit-seconds`` retired with the polling loop (issue #279,
+    ADR-0019 §5)."""
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -189,7 +192,7 @@ def _reference_dev_eval_parser():
     p.add_argument("--eval-root", required=True)
     p.add_argument("--score-workers", type=int, default=32)
 
-    p = sub.add_parser("watch", help="sidecar loop: evaluate epoch checkpoints as they land")
+    p = sub.add_parser("watch", help="offline pass: evaluate a run's existing epoch checkpoints, then exit")
     p.add_argument("--ckpt-dir", required=True)
     p.add_argument("--eval-root", required=True)
     p.add_argument("--dev-list", required=True)
@@ -202,9 +205,8 @@ def _reference_dev_eval_parser():
     p.add_argument("--patience", type=int, default=3)
     p.add_argument("--min-epoch", type=int, default=30)
     p.add_argument("--max-epoch", type=int, default=100)
-    p.add_argument("--poll-seconds", type=float, default=60.0)
     p.add_argument("--score-workers", type=int, default=32, help="parallel CPU workers for reference resampling + PSNR/SSIM")
-    p.add_argument("--idle-exit-seconds", type=float, default=0, help="0 = run until stopped")
+    p.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
 
     p = sub.add_parser("select", help="emit the final dev-side selection for the contract")
     p.add_argument("--eval-root", required=True)
@@ -215,7 +217,10 @@ def _reference_dev_eval_parser():
 
 
 def _add_generation_flags(parser, with_stage0_pairs):
-    """The shared baseline/candidate generate flag block, verbatim."""
+    """The shared baseline/candidate generate flag block, verbatim.
+
+    One declared evolution since the migration (issue #280, ADR-0019 §8, not
+    drift): the entries carry the unified ``--device`` injection flag."""
     parser.add_argument("--run", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--out-root", required=True)
@@ -232,6 +237,7 @@ def _add_generation_flags(parser, with_stage0_pairs):
     parser.add_argument("--only-cases", nargs="*", default=None)
     if with_stage0_pairs:
         parser.add_argument("--stage0-pairs", required=True)
+    parser.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
     return parser
 
 
@@ -290,7 +296,7 @@ def test_entry_namespace_is_unchanged_against_the_retired_parsers(name):
 def test_train_cli_derives_num_gpus_from_the_entry_argv():
     assert num_gpus_of(FINETUNE_ARGV) == 7
     assert num_gpus_of(["ctmr", "x", "-e", "e.json", "-c", "c.json", "-t", "t.json", "-g", "2"]) == 2
-    assert num_gpus_of(["-e", "e.json"]) == 1  # the TrainCli default
+    assert num_gpus_of(["-e", "e.json"]) == 8  # the TrainCli default (whole node, issue #278)
 
 
 def test_cross_modal_generate_variant_is_not_consumed_as_entry_argv():

@@ -10,14 +10,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dev-sidecar trend machinery shared by the label-conditioned families (ticket 10).
+"""Dev-trend machinery shared by the label-conditioned families (ticket 10).
 
 The FID-trend and frozen-instrument L2-trend pieces both the modality-label
-and mask dev light-acceptance sidecars build on, moved verbatim out of the
+and mask dev light-acceptance entries build on, moved verbatim out of the
 retiring P1 dev-eval script entry (ADR-0015 §2): the fixed 16-case dev cohort
 builder, the RadImageNet plane-feature extractor with the pinned MR trend
 preprocessing, the cached real reference bank, the per-modality plane FID, and
-the instrument trend runner. The watch/select polling skeleton itself stays in
+the instrument trend runner. The watch/select skeleton itself stays in
 ``ctmr.application.shell``; family-specific samplers stay in the family
 modules. The quantitative chain relocates these to its own package with its
 migration ticket.
@@ -202,6 +202,11 @@ class TrendFid:
             report[modality] = planes
         valid = [report[m]["mean"] for m in TARGET_MODALITIES if report[m]["mean"] is not None]
         return report, (float(np.mean(valid)) if valid else None)
+
+    def trend_fields(self, generated_features):
+        """The (fields, log_line) trend contract both scorer seams return."""
+        report, mean_fid = self.score(generated_features)
+        return {"fid": report, "m": mean_fid}, f"mean_fid={mean_fid}"
 
 
 class L2TrendRunner:

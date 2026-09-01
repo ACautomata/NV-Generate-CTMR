@@ -30,8 +30,8 @@ Everything downstream is statistics, and lives in
 ``ctmr.application.acceptance.distribution.token_dilution`` (variant=
 diagnostic, never an acceptance verdict); the sugon host recipe that chains
 sample → report is ``deploy/jobs/run_token_dilution_d.sh``. Per ADR-0016 the
-denoising loop runs on the domain ``DiffusionModel`` through the sidecar's
-``CandidateSampler`` (composition -- the sampler's model loading and
+denoising loop runs on the domain ``DiffusionModel`` through the dev
+watch's ``CandidateSampler`` (composition -- the sampler's model loading and
 per-sample rules are reused verbatim, no recipe value re-decided here); per
 ADR-0019 §2-§3 (#272) the engine face rides the port the composition root
 assembles (``ctmr.wiring.generate``).
@@ -51,19 +51,19 @@ import sys
 from pathlib import Path
 
 import nibabel as nib
-import torch
 
 from ctmr.application.acceptance.distribution.token_dilution import (
     ARM_ORDER,
     TOKEN_ARMS,
     SeedAnchor,
 )
+from ctmr.application.generation.devices import add_device_flag, resolve_device
 from ctmr.application.generation.modality_label.monitor import CandidateSampler, CohortSpacingSource
 from ctmr.application.generation.trend import DevCohortBuilder
 from ctmr.domain.dm_output_grid import V1_DM_OUTPUT_GRID
 from ctmr.wiring.generate import modality_label_engine
 
-# The frozen sampling recipe values (dev-sidecar convention): cfg=10 with 30
+# The frozen sampling recipe values (dev-watch convention): cfg=10 with 30
 # RF steps. Not knobs -- pinned literals matching what the candidate's
 # holdout/dev evidence was generated under.
 TOKEN_SWAP_CFG = 10.0
@@ -71,7 +71,7 @@ TOKEN_SWAP_STEPS = 30
 
 
 class TokenSwapSampler:
-    """Generates the five-arm per-case products with the sidecar's sampler.
+    """Generates the five-arm per-case products with the dev watch's sampler.
 
     Composition, not re-decision: model loading, the denoising loop, the VAE
     decode and the int16 ×1000 output convention all come from
@@ -97,7 +97,7 @@ class TokenSwapSampler:
                 data = self._sampler.sample_one(model, recon, TOKEN_ARMS[arm], spacing, seed)
                 out.parent.mkdir(parents=True, exist_ok=True)
                 # Ruling #6: the diagnostic products declare the v1 DM's real sampling
-                # spacing too -- the same write protocol as the sidecar (issue #249).
+                # spacing too -- the same write protocol as the dev watch (issue #249).
                 nib.save(nib.Nifti1Image(data, affine=V1_DM_OUTPUT_GRID.affine()), out)
                 written += 1
                 print(f"[sample] {case} {arm} (token {TOKEN_ARMS[arm]}, seed {seed}) -> {out.name}", flush=True)
@@ -113,8 +113,9 @@ def main(argv=None):
     parser.add_argument("-c", "--model_config_path", required=True)
     parser.add_argument("-t", "--model_def_path", required=True)
     parser.add_argument("--samples-dir", required=True, help="artifact directory for the five per-case volumes (never git)")
+    add_device_flag(parser)
     args = parser.parse_args(argv)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     print(f"[job-d] device={device}; variant=diagnostic -- 冻结 checkpoint 只读,不产生任何验收判定", flush=True)
 
     engine = modality_label_engine()  # the composition root's engine assembly (ADR-0019 §2)

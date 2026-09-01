@@ -51,13 +51,22 @@ CHALLENGE_SEED_OFFSET = {"GLI": 1, "SSA": 2, "MEN": 3, "METS": 4, "PED": 5}
 # judge band's reach so a diagnostic CI can never be mistaken for the
 # registered TOST bit-stream. Slots are allocated here, once: job A (#206)
 # holds the uncompensated block 0/1 and the compensated block 100/101 of each
-# band, job B (#207) slot 200, the dev monitor (#253) block 400 -- the
-# pre-#232 job-module constants reproduced byte-exactly. Registered slots are
-# drawn only through ``diagnostic_support.DiagnosticSeedAllocator``. KNOWN
-# DEBT: jobs C/D's bandless slot blocks (base+300..307 / base+300..320,
-# overlapping on base+300..304) and the geometry audit's banded slot 300 are
-# still job-local constants pending their follow-up registration -- registering
+# band, job B (#207) slot 200 -- the pre-#232 job-module constants reproduced
+# byte-exactly. Registered slots are drawn only through
+# ``diagnostic_support.DiagnosticSeedAllocator``. KNOWN DEBT: jobs C/D's
+# bandless slot blocks (base+300..307 / base+300..320, overlapping on
+# base+300..304) and the geometry audit's banded slot 300 are still
+# job-local constants pending their follow-up registration -- registering
 # them here is what extends the no-collision invariant over those draws.
+# The T5 fixed-world baseline (#252) takes the next free banded blocks: the
+# quantity-index layout of job A scaled to the full judge quantity list --
+# comp-arm slots 400+index, uncomp-arm slots 500+index, with the two job A
+# anchor quantities (vol_wt_rel index 0, centroid_wt_z index 3) exempt: their
+# arms re-draw job A's registered bit-streams exactly (0/100 and 1/101).
+# The dev monitor (#253) takes the next free block 600 -- originally filed as
+# 400 before T5's bands landed; re-registered before its first draw (the WT
+# CI90 seed is consumed at measurement time), so no bit-stream ever shipped
+# under the 400 filing.
 DIAGNOSTIC_SEED_BASE = 900_000_000
 DIAGNOSTIC_SEED_BAND = 1000
 DIAGNOSTIC_SEED_SLOTS = {
@@ -66,8 +75,33 @@ DIAGNOSTIC_SEED_SLOTS = {
     "zcrop_vol_comp": 100,  # job A: vol_wt_rel, compensated block
     "zcrop_centroid_comp": 101,  # job A: centroid_wt_z, compensated block
     "et_rel_diff": 200,  # job B: per-case relative-difference CI90
-    "dev_monitor_wt_rel_diff": 400,  # dev monitor (#253): WT relative-difference CI90;
-    # next free block -- the C/D bandless blocks occupy 300..320 (#247 seed discipline)
+    # T5 fixed-world baseline (#252): comp arm, 400 + judge quantity index
+    "t5_comp_centroid_wt_x": 401,
+    "t5_comp_centroid_wt_y": 402,
+    "t5_comp_vol_tc_rel": 404,
+    "t5_comp_centroid_tc_x": 405,
+    "t5_comp_centroid_tc_y": 406,
+    "t5_comp_centroid_tc_z": 407,
+    "t5_comp_vol_et_rel": 408,
+    "t5_comp_centroid_et_x": 409,
+    "t5_comp_centroid_et_y": 410,
+    "t5_comp_centroid_et_z": 411,
+    "t5_comp_wt_brain_rel": 412,
+    "t5_comp_et_wt_rel": 413,
+    # T5 fixed-world baseline (#252): uncomp (recorded-world context) arm, 500 + index
+    "t5_uncomp_centroid_wt_x": 501,
+    "t5_uncomp_centroid_wt_y": 502,
+    "t5_uncomp_vol_tc_rel": 504,
+    "t5_uncomp_centroid_tc_x": 505,
+    "t5_uncomp_centroid_tc_y": 506,
+    "t5_uncomp_centroid_tc_z": 507,
+    "t5_uncomp_vol_et_rel": 508,
+    "t5_uncomp_centroid_et_x": 509,
+    "t5_uncomp_centroid_et_y": 510,
+    "t5_uncomp_centroid_et_z": 511,
+    "t5_uncomp_wt_brain_rel": 512,
+    "t5_uncomp_et_wt_rel": 513,
+    "dev_monitor_wt_rel_diff": 600,  # dev monitor (#253): WT relative-difference CI90
 }
 
 # ADR-0002 frozen envelopes (published 4-dp literals; the authoritative source

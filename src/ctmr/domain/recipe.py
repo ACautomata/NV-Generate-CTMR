@@ -20,6 +20,12 @@ convergence gate runs on any machine (ADR-0013 §4).
 
 from __future__ import annotations
 
+# P1's pre-registered dev-side early-stop rule values (ADR-0005; the identical
+# defaults the retired dev-eval sidecar's CLI carried): the embedded periodic
+# validation (issue #278, ADR-0019 §5) evaluates the trend against these -- the
+# max cap is the trainer's own n_epochs, supplied at assembly time.
+P1_DEV_EARLY_STOP = {"patience": 3, "min_epoch": 30}
+
 
 class MaskRecipeSpec:
     """Pinned-recipe guard for the frozen mask-conditioned recipe (ADR-0007).
@@ -93,7 +99,7 @@ class P1RecipeSpec:
             raise ValueError(f"pinned P1 max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')} (ADR-0005)")
         if self._scheduler.get("sample_method") != self.PINNED_SAMPLE_METHOD:
             raise ValueError(
-                f"pinned P1 noise_scheduler.sample_method is {self.PINNED_SAMPLE_METHOD}, " f"got {self._scheduler.get('sample_method')} (ADR-0005)"
+                f"pinned P1 noise_scheduler.sample_method is {self.PINNED_SAMPLE_METHOD}, got {self._scheduler.get('sample_method')} (ADR-0005)"
             )
         if self._scheduler.get("scale") != self.PINNED_RF_SCALE:
             raise ValueError(f"pinned P1 noise_scheduler.scale is {self.PINNED_RF_SCALE}, got {self._scheduler.get('scale')} (ADR-0005)")
@@ -151,7 +157,7 @@ class CrossModalRecipeSpec:
             raise ValueError(f"pinned cross-modal max n_epochs is {self.MAX_EPOCHS}, got {cfg.get('n_epochs')}")
         if self._infer.get("cfg_guidance_scale", 0.0) != self.PINNED_CFG:
             raise ValueError(
-                f"cross-modal candidate is evaluated/selected with CFG OFF (cfg_guidance_scale=0); " f"got {self._infer.get('cfg_guidance_scale')}"
+                f"cross-modal candidate is evaluated/selected with CFG OFF (cfg_guidance_scale=0); got {self._infer.get('cfg_guidance_scale')}"
             )
         self._logger.info(
             f"cross-modal recipe guard OK: lr={self.PINNED_LR} batch={self.PINNED_BATCH} weighted_loss={self.PINNED_WEIGHTED_LOSS}"
