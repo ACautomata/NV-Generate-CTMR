@@ -43,7 +43,6 @@ import json
 import logging
 import math
 import os
-import socket
 from datetime import timedelta
 from pathlib import Path
 
@@ -159,20 +158,23 @@ class EpochSampler:
         return [{"epoch": self.calls, "idx": item["idx"]} for item in shard_items]
 
 
-def _validator_worker(rank, world_size, model_dir, backend, master_port=None):
+def _validator_worker(rank, world_size, model_dir, backend):
     """The validator-only arm: shard + all_gather + score against the single-card reference."""
-    if backend == "nccl":
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     dist.init_process_group(
         backend=backend,
-        init_method="env://" if backend == "nccl" else f"file://{model_dir}/_init",
+        init_method=f"file://{model_dir}/_init",
         rank=rank,
         world_size=world_size,
         timeout=timedelta(seconds=GROUP_TIMEOUT_SECONDS),
     )
+    # The torchrun local_rank convention: no per-rank CUDA_VISIBLE_DEVICES
+    # writes (ignored on the HIP/DCU stack, where every rank then lands on
+    # the same GPU and RCCL aborts with Duplicate GPU) -- each rank takes its
+    # own index in the caller-masked visible set.
     device = torch.device("cuda" if backend == "nccl" else "cpu")
     if device.type == "cuda":
-        torch.cuda.set_device(device)
+        torch.cuda.set_device(rank)
+        device = torch.device("cuda", rank)
     root = Path(model_dir)
     try:
         scorer = SumScorer()
@@ -191,20 +193,23 @@ def _validator_worker(rank, world_size, model_dir, backend, master_port=None):
     (root / f"worker_rank_{rank}.json").write_text(json.dumps(outcome) + "\n")
 
 
-def _harness_worker(rank, world_size, model_dir, backend, master_port=None):
+def _harness_worker(rank, world_size, model_dir, backend):
     """The full-harness arm: two epochs, a validation boundary after each, patience-1 rule."""
-    if backend == "nccl":
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     dist.init_process_group(
         backend=backend,
-        init_method="env://" if backend == "nccl" else f"file://{model_dir}/_init",
+        init_method=f"file://{model_dir}/_init",
         rank=rank,
         world_size=world_size,
         timeout=timedelta(seconds=GROUP_TIMEOUT_SECONDS),
     )
+    # The torchrun local_rank convention: no per-rank CUDA_VISIBLE_DEVICES
+    # writes (ignored on the HIP/DCU stack, where every rank then lands on
+    # the same GPU and RCCL aborts with Duplicate GPU) -- each rank takes its
+    # own index in the caller-masked visible set.
     device = torch.device("cuda" if backend == "nccl" else "cpu")
     if device.type == "cuda":
-        torch.cuda.set_device(device)
+        torch.cuda.set_device(rank)
+        device = torch.device("cuda", rank)
     root = Path(model_dir)
     try:
         # The scripted trend worsens from the first boundary: patience 1 fires
@@ -241,20 +246,23 @@ def _harness_worker(rank, world_size, model_dir, backend, master_port=None):
     (root / f"worker_rank_{rank}.json").write_text(json.dumps(outcome) + "\n")
 
 
-def _harness_fail_worker(rank, world_size, model_dir, backend, master_port=None):
+def _harness_fail_worker(rank, world_size, model_dir, backend):
     """A rank-0-only scoring failure must skip the point on EVERY rank (MIN consensus)."""
-    if backend == "nccl":
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     dist.init_process_group(
         backend=backend,
-        init_method="env://" if backend == "nccl" else f"file://{model_dir}/_init",
+        init_method=f"file://{model_dir}/_init",
         rank=rank,
         world_size=world_size,
         timeout=timedelta(seconds=GROUP_TIMEOUT_SECONDS),
     )
+    # The torchrun local_rank convention: no per-rank CUDA_VISIBLE_DEVICES
+    # writes (ignored on the HIP/DCU stack, where every rank then lands on
+    # the same GPU and RCCL aborts with Duplicate GPU) -- each rank takes its
+    # own index in the caller-masked visible set.
     device = torch.device("cuda" if backend == "nccl" else "cpu")
     if device.type == "cuda":
-        torch.cuda.set_device(device)
+        torch.cuda.set_device(rank)
+        device = torch.device("cuda", rank)
     root = Path(model_dir)
     try:
         # The failure lands AFTER the all_gather (every rank has merged the
@@ -286,20 +294,23 @@ def _harness_fail_worker(rank, world_size, model_dir, backend, master_port=None)
     (root / f"worker_rank_{rank}.json").write_text(json.dumps(outcome) + "\n")
 
 
-def _harness_sampler_fail_worker(rank, world_size, model_dir, backend, master_port=None):
+def _harness_sampler_fail_worker(rank, world_size, model_dir, backend):
     """A rank-0-only SAMPLER failure (BEFORE the gather) must skip on every rank, never hang."""
-    if backend == "nccl":
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     dist.init_process_group(
         backend=backend,
-        init_method="env://" if backend == "nccl" else f"file://{model_dir}/_init",
+        init_method=f"file://{model_dir}/_init",
         rank=rank,
         world_size=world_size,
         timeout=timedelta(seconds=GROUP_TIMEOUT_SECONDS),
     )
+    # The torchrun local_rank convention: no per-rank CUDA_VISIBLE_DEVICES
+    # writes (ignored on the HIP/DCU stack, where every rank then lands on
+    # the same GPU and RCCL aborts with Duplicate GPU) -- each rank takes its
+    # own index in the caller-masked visible set.
     device = torch.device("cuda" if backend == "nccl" else "cpu")
     if device.type == "cuda":
-        torch.cuda.set_device(device)
+        torch.cuda.set_device(rank)
+        device = torch.device("cuda", rank)
     root = Path(model_dir)
     try:
 
@@ -340,25 +351,15 @@ def _harness_sampler_fail_worker(rank, world_size, model_dir, backend, master_po
     (root / f"worker_rank_{rank}.json").write_text(json.dumps(outcome) + "\n")
 
 
-def _spawn(monkeypatch, model_dir, worker, backend, master_port=None):
+def _spawn(monkeypatch, model_dir, worker, backend):
     # spawn children re-import this module, so its directory must resolve in a
     # fresh interpreter (pytest's in-memory sys.path does not propagate).
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(Path(__file__).resolve().parent), os.environ.get("PYTHONPATH", "")])))
-    if backend == "nccl":
-        monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
-        monkeypatch.setenv("MASTER_PORT", str(master_port))
-    torch.multiprocessing.spawn(worker, args=(2, str(model_dir), backend, master_port), nprocs=2, join=True)
+    torch.multiprocessing.spawn(worker, args=(2, str(model_dir), backend), nprocs=2, join=True)
 
 
 def _outcomes(model_dir):
     return {rank: json.loads((Path(model_dir) / f"worker_rank_{rank}.json").read_text()) for rank in range(2)}
-
-
-@pytest.fixture()
-def _free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        yield sock.getsockname()[1]
 
 
 def test_gathered_view_matches_the_single_card_full_cohort_on_gloo(tmp_path, monkeypatch):
@@ -434,15 +435,13 @@ def test_harness_skips_a_shard_local_sampler_failure_without_hanging_on_gloo(tmp
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("world_size", [2, 8])
-def test_gathered_view_matches_the_single_card_full_cohort_on_nccl(tmp_path, monkeypatch, _free_port, world_size):
+def test_gathered_view_matches_the_single_card_full_cohort_on_nccl(tmp_path, monkeypatch, world_size):
     if not torch.cuda.is_available() or torch.cuda.device_count() < world_size:
         pytest.skip(f"needs >= {world_size} CUDA devices")
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(Path(__file__).resolve().parent), os.environ.get("PYTHONPATH", "")])))
-    monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
-    monkeypatch.setenv("MASTER_PORT", str(_free_port))
     # spawn children re-import this module: the worker is module-level
     # (picklable) with the topology passed as args (spawn precedent: no closures)
-    torch.multiprocessing.spawn(_validator_worker, args=(world_size, str(tmp_path), "nccl", _free_port), nprocs=world_size, join=True)
+    torch.multiprocessing.spawn(_validator_worker, args=(world_size, str(tmp_path), "nccl"), nprocs=world_size, join=True)
     outcomes = {rank: json.loads((tmp_path / f"worker_rank_{rank}.json").read_text()) for rank in range(world_size)}
     reference = outcomes[0]["reference_m"]
     shard_size = N_ITEMS // world_size

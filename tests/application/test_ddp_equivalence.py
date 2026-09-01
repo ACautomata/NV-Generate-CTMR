@@ -55,7 +55,6 @@ import json
 import logging
 import math
 import os
-import socket
 from datetime import timedelta
 from pathlib import Path
 
@@ -224,19 +223,27 @@ def _run_single_card_reference(model_dir, world_size):
 
 
 def _init_worker_group(rank, world_size, model_dir, backend):
-    """The shared per-worker setup: process group + device (the #277/#278 shape)."""
-    if backend == "nccl":
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
+    """The shared per-worker setup: process group + device (the #277/#278 shape).
+
+    Device selection follows the torchrun local_rank convention: no per-rank
+    CUDA_VISIBLE_DEVICES writes (on the HIP/DCU stack they are ignored, every
+    rank then lands on the same GPU and RCCL aborts with Duplicate GPU);
+    instead each rank takes its own index in the caller-masked visible set."""
     dist.init_process_group(
         backend=backend,
-        init_method="env://" if backend == "nccl" else f"file://{model_dir}/_init",
+        # FileStore rendezvous for BOTH backends: a fixed TCP port has no safe
+        # range on a shared server (torchrun's own default is 29500), while a
+        # per-model_dir file is collision-free by construction and NCCL then
+        # binds its own kernel-assigned ephemeral ports (ADR-0019 §6 gates).
+        init_method=f"file://{model_dir}/_init",
         rank=rank,
         world_size=world_size,
         timeout=timedelta(seconds=GROUP_TIMEOUT_SECONDS),
     )
     device = torch.device("cuda" if backend == "nccl" else "cpu")
     if device.type == "cuda":
-        torch.cuda.set_device(device)
+        torch.cuda.set_device(rank)
+        device = torch.device("cuda", rank)
     return device
 
 
@@ -276,20 +283,11 @@ def _roundtrip_worker(rank, world_size, model_dir, backend, n_epochs, resume_fro
 
 
 def _spawn(monkeypatch, worker, model_dir, backend, world_size, *extra):
-    """torch.multiprocessing.spawn with the re-import fix + the nccl rendezvous env;
-    the workers see ``(rank, world_size, model_dir, backend, *extra)`` (the env://
-    init reads MASTER_ADDR/MASTER_PORT from the inherited environment)."""
+    """torch.multiprocessing.spawn with the re-import fix; the workers see
+    ``(rank, world_size, model_dir, backend, *extra)`` and rendezvous through
+    the per-model_dir FileStore (no fixed TCP port anywhere)."""
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(Path(__file__).resolve().parent), os.environ.get("PYTHONPATH", "")])))
-    if backend == "nccl":
-        monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
-        monkeypatch.setenv("MASTER_PORT", str(_free_port()))
     torch.multiprocessing.spawn(worker, args=(world_size, str(model_dir), backend, *extra), nprocs=world_size, join=True)
-
-
-def _free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def _outcomes(model_dir, world_size):
