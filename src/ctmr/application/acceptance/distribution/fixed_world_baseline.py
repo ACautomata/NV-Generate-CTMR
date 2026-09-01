@@ -54,6 +54,7 @@ Usage:
         --measurements <l2 run tree>/measurements.csv \\
         --pred-root <l2 run tree>/predictions \\
         --inputs-root <l2 run tree>/inputs \\
+        --gen-root <holdout generated sources> \\
         --output-dir <artifact area>/fixed_world_baseline [--run-id <run>]
 """
 
@@ -94,6 +95,8 @@ from ctmr.application.acceptance.distribution.zcrop_geometry_audit import (
     GEN_WORKPIECE_Z,
     FieldOfViewAudit,
 )
+from ctmr.domain.dm_output_grid import V1_DM_OUTPUT_GRID
+from ctmr.domain.grid import INSTRUMENT_GRID, CenterCropOrPad, GridResampler
 from ctmr.domain.vocabulary import REGIONS as REGION_LABELS
 
 FIXED_WORLD_WINDOW = ZCropCompensation.overlap_window(GEN_RESAMPLED_Z, INSTRUMENT_Z)
@@ -391,6 +394,114 @@ class FixedWorldPairedReadings:
         return stats["ci90_low"] >= -margin - 1e-12 and stats["ci90_high"] <= margin + 1e-12
 
 
+# ── fixed-world preconditions ───────────────────────────────────────────
+
+
+class GenSourceRepository:
+    """The holdout generated NIfTI sources
+    (``<gen_root>/<CH>/<case>/<case>_<modality>_seed*.nii.gz``), discovered by
+    glob -- the plan's recorded channel paths predate the sugon aggregation and
+    no longer resolve. A case missing any of the four modalities reads as
+    ``None`` (the precondition fails loudly, never silently)."""
+
+    MODALITIES = ("t1n", "t1c", "t2w", "t2f")
+
+    def __init__(self, gen_root):
+        self._gen_root = Path(gen_root)
+
+    def channels(self, challenge: str, case: str) -> dict[str, Path] | None:
+        case_dir = self._gen_root / challenge / case
+        channels = {}
+        for modality in self.MODALITIES:
+            matches = sorted(case_dir.glob(f"{case}_{modality}_seed*.nii.gz"))
+            if len(matches) != 1:
+                return None
+            channels[modality] = matches[0]
+        return channels
+
+
+class FixedWorldPreconditions:
+    """The artifact-face binding of the fixed-world certificate (Codex #300
+    review): the baseline re-expresses the frozen readings under the #249
+    declaration, and without this check a tree that does not even carry the v1
+    DM voxel geometry would certify fine -- the fixed-edge field-of-view tally
+    is zero by construction (155-slice masks sliced at 174) and can validate
+    nothing. Per generated source case: the four channels must exist and carry
+    ``V1_DM_OUTPUT_GRID.size`` voxels (the geometry the fixed-world window
+    arithmetic -- round(256x0.94)=241, round(128x1.36)=174, crop 9 -- is
+    derived from); the declared spacing is tallied as recorded history (the
+    holdout artifacts predate #249 and declare unit 1 mm). One probe volume per
+    challenge re-runs the frozen continuum resample with the #249 spacing
+    actually declared and asserts the resampled extent the window arithmetic
+    assumes (241x241x174 -> 240x240x155). ``matched=False`` fails the run's
+    exit -- the fixed-world certificate never rides on an unvalidated tree.
+    """
+
+    EXPECTED_RESAMPLED_SIZE = (241, 241, 174)  # round(256*0.94), round(256*0.94), round(128*1.36) @ 1 mm
+    EXPECTED_ALIGNED_SIZE = tuple(INSTRUMENT_GRID.size)
+    PROBE_MODALITY = "t1c"
+
+    def __init__(self, window: OverlapWindow = FIXED_WORLD_WINDOW, probe_per_challenge: int = 1):
+        self._window = window
+        self._probe_per_challenge = probe_per_challenge
+
+    def validate(self, rows, repository: GenSourceRepository) -> dict:
+        gen_cases = sorted({(row["challenge"], row["case"]) for row in rows if row["side"] == "gen"})
+        per_challenge: dict[str, dict] = {}
+        for challenge, case in gen_cases:
+            tally = per_challenge.setdefault(
+                challenge,
+                {
+                    "cases_checked": 0,
+                    "missing_source_cases": 0,
+                    "size_mismatch_cases": 0,
+                    "declared_spacings": {},
+                    "probe": None,
+                },
+            )
+            channels = repository.channels(challenge, case)
+            if channels is None:
+                tally["missing_source_cases"] += 1
+                continue
+            tally["cases_checked"] += 1
+            size = V1_DM_OUTPUT_GRID.size
+            image = sitk.ReadImage(str(channels[self.PROBE_MODALITY]))
+            if tuple(image.GetSize()) != tuple(size):
+                tally["size_mismatch_cases"] += 1
+            spacing = " x ".join(f"{value:g}" for value in image.GetSpacing())
+            tally["declared_spacings"][spacing] = tally["declared_spacings"].get(spacing, 0) + 1
+            if tally["probe"] is None or tally["probe"]["probed"] < self._probe_per_challenge:
+                tally["probe"] = self._probe(channels[self.PROBE_MODALITY])
+        block = {
+            "per_challenge": per_challenge,
+            "expected_source_size": list(V1_DM_OUTPUT_GRID.size),
+            "expected_resampled_size": list(self.EXPECTED_RESAMPLED_SIZE),
+        }
+        block["matched"] = bool(per_challenge) and all(
+            tally["missing_source_cases"] == 0 and tally["size_mismatch_cases"] == 0 and tally["probe"]["matched"] for tally in per_challenge.values()
+        )
+        return block
+
+    def _probe(self, source: Path) -> dict:
+        """The #249 declaration applied to a real source volume, through the
+        frozen continuum resample + grid alignment (grid.py, unmodified)."""
+        image = sitk.ReadImage(str(source))
+        declared = sitk.GetImageFromArray(sitk.GetArrayFromImage(image))
+        declared.SetSpacing(V1_DM_OUTPUT_GRID.spacing)
+        resampled = GridResampler(sitk.sitkBSpline).resample(declared, INSTRUMENT_GRID)
+        aligned = CenterCropOrPad().crop_or_pad(resampled, INSTRUMENT_GRID)
+        matched = tuple(resampled.GetSize()) == self.EXPECTED_RESAMPLED_SIZE and tuple(aligned.GetSize()) == self.EXPECTED_ALIGNED_SIZE
+        return {
+            "source": str(source),
+            "declared_spacing": list(V1_DM_OUTPUT_GRID.spacing),
+            "resampled_size": list(resampled.GetSize()),
+            "aligned_size": list(aligned.GetSize()),
+            "crop_start": self._window.crop_start,
+            "probed": 1,
+            "matched": matched,
+        }
+
+
 # ── field-of-view scan ──────────────────────────────────────────────────
 
 
@@ -398,12 +509,19 @@ class FixedWorldFieldScan:
     """Real WT mass against the generated domains, both declarations.
 
     The post-fix declaration extends the generated z domain to
-    [0, GEN_RESAMPLED_Z): real mass above GEN_RESAMPLED_Z is the out-of-domain
-    readout the write-path fix exists to zero (146 cases / ~431 ml at the
-    retired 1 mm edge z >= 128, the legacy tally kept for the head-to-head).
-    The window floor (z < 9) is the crop world's own lower edge; generated
-    mass below it would be measurement-loss in the fixed world (hygiene
-    tally, expected zero on the pad-world masks whose content starts at 13).
+    [0, GEN_RESAMPLED_Z): the above-fixed-edge tally is the DEFINITIONAL
+    consequence of that extension -- real masks end at the instrument grid's
+    155th slice, so mass above GEN_RESAMPLED_Z reads zero by construction and
+    certifies nothing on its own (Codex #300 review); the load-bearing face is
+    the legacy-edge tally (z >= 128, the geometry audit's 146 cases / ~431 ml)
+    kept for the head-to-head, and the fixed-world precondition itself is
+    validated by ``FixedWorldPreconditions`` on the generated sources. The
+    window floor (z < 9) is real-side only: the real side is natively gridded,
+    so real mass below the compared window is a genuine window cut. Generated
+    hygiene counts the mass the fixed-world overlap excludes from COMPARISON
+    -- grid indices at or beyond the window's generated stop (physical
+    [155, 164), no real counterpart); generated grid [0, 9) sits at physical
+    [9, 18) and is paired, not lost.
     """
 
     def __init__(self, window: OverlapWindow = FIXED_WORLD_WINDOW, legacy_declared_hi: int = GEN_WORKPIECE_Z):
@@ -425,8 +543,8 @@ class FixedWorldFieldScan:
                     "real_above_declared_legacy_ml": 0.0,
                     "real_over_declared_legacy_cases": 0,
                     "worst_over_declared_legacy": None,
-                    "gen_below_window_ml": 0.0,
-                    "gen_below_window_cases": 0,
+                    "gen_outside_compared_window_ml": 0.0,
+                    "gen_outside_compared_window_cases": 0,
                 },
             )
             real_mask = repository.wt_mask(challenge, PairedCompensation.obs_id(case, "real"))
@@ -444,11 +562,17 @@ class FixedWorldFieldScan:
                     if tally["worst_over_declared_legacy"] is None or legacy > tally["worst_over_declared_legacy"]["ml"]:
                         tally["worst_over_declared_legacy"] = {"case": case, "ml": legacy}
             if gen_mask is not None:
-                below = FieldOfViewAudit.gen_mass_in_padding(gen_mask, window=self._window)
-                tally["gen_below_window_ml"] += below
-                if below > 0:
-                    tally["gen_below_window_cases"] += 1
+                outside = self._mass_outside_compared_window(gen_mask)
+                tally["gen_outside_compared_window_ml"] += outside
+                if outside > 0:
+                    tally["gen_outside_compared_window_cases"] += 1
         return per_challenge
+
+    def _mass_outside_compared_window(self, gen_mask: np.ndarray) -> float:
+        """Generated mass (ml, any label) at grid indices the fixed-world
+        overlap excludes from comparison: at or beyond the window's generated
+        stop (physical z >= 155 mm, past the real side's extent)."""
+        return float(np.count_nonzero(gen_mask[self._window.gen_slice.stop :])) * 0.001
 
     @staticmethod
     def _mass_above(mask, z_floor: int) -> float:
@@ -466,35 +590,69 @@ class JobAAnchor:
     with the same registered seed bit-streams, so the compensated medians of
     the two anchor quantities must equal the recorded 6-dp literals (the
     recorded table of `deploy/experiments/20260829-P1根因甄别-作业A-zcrop补偿归因.md`,
-    cross-checked bit-for-bit by the geometry audit #217). Drift beyond the
-    recorded grid's half-ulp means the window arithmetic, masks or seeds moved
-    -- the baseline would not be the recorded history's dual.
+    cross-checked bit-for-bit by the geometry audit #217). Medians alone are
+    seed- and bootstrap-B-independent, so the recorded compensated CI90
+    endpoints are compared too (Codex #300 review): a broken bootstrap, a
+    different B, or a re-seeded block fails the certificate even where the
+    medians survive. Drift beyond a recorded grid's half-ulp means the window
+    arithmetic, masks or seeds moved -- the baseline would not be the recorded
+    history's dual.
     """
 
-    TOLERANCE = 5e-7  # half-ulp of the recorded 6-dp grid
+    TOLERANCE = 5e-7  # half-ulp of the recorded 6-dp median grid
+    CI_TOLERANCE = 5e-5  # half-ulp of the recorded 4-dp CI grid
 
     RECORDED_COMP_MEDIANS = {
         "vol_wt_rel": {"GLI": 5.207930, "MEN": 0.513802, "METS": -0.992933, "PED": 16.009951, "SSA": 5.907041},
         "centroid_wt_z": {"GLI": 2.927747, "MEN": -9.854146, "METS": 7.199478, "PED": 22.425059, "SSA": -2.480662},
     }
 
+    RECORDED_COMP_CI90 = {
+        "vol_wt_rel": {
+            "GLI": (1.3619, 40.0635),
+            "MEN": (-0.9818, 161.3042),
+            "METS": (-1.0000, 8.4840),
+            "PED": (2.8068, 425.1368),
+            "SSA": (0.9136, 55.6630),
+        },
+        "centroid_wt_z": {
+            "GLI": (-29.3199, 32.1410),
+            "MEN": (-64.8605, 50.9058),
+            "METS": (-31.4032, 69.7327),
+            "PED": (-25.6315, 46.7763),
+            "SSA": (-24.4919, 36.1239),
+        },
+    }
+
     ANCHOR_QUANTITIES = ("vol_wt_rel", "centroid_wt_z")
 
     @classmethod
     def verify(cls, per_challenge: dict) -> dict:
-        """Recorded vs reproduced medians per challenge; ``matched`` False on any
-        drift or on a challenge the run did not cover (the caller owns the loud
-        exit -- the report is written either way)."""
+        """Recorded vs reproduced medians AND compensated CI90 endpoints per
+        challenge; ``matched`` False on any drift or on a challenge the run did
+        not cover (the caller owns the loud exit -- the report is written
+        either way)."""
         block = {}
         for name in cls.ANCHOR_QUANTITIES:
             block[name] = {}
             for challenge, recorded in cls.RECORDED_COMP_MEDIANS[name].items():
                 challenge_block = per_challenge.get(challenge, {})
-                reproduced = challenge_block.get(name, {}).get("comp", {}).get("median")
+                comp = challenge_block.get(name, {}).get("comp", {})
+                reproduced, ci = comp.get("median"), (comp.get("ci90_low"), comp.get("ci90_high"))
+                recorded_ci = cls.RECORDED_COMP_CI90[name][challenge]
+                ci_matched = (
+                    ci[0] is not None
+                    and ci[1] is not None
+                    and abs(ci[0] - recorded_ci[0]) <= cls.CI_TOLERANCE
+                    and abs(ci[1] - recorded_ci[1]) <= cls.CI_TOLERANCE
+                )
                 block[name][challenge] = {
                     "recorded": recorded,
+                    "recorded_ci90": list(recorded_ci),
                     "reproduced": reproduced,
-                    "matched": reproduced is not None and abs(reproduced - recorded) <= cls.TOLERANCE,
+                    "reproduced_ci90": [None if value is None else value for value in ci],
+                    "ci90_matched": ci_matched,
+                    "matched": reproduced is not None and ci_matched and abs(reproduced - recorded) <= cls.TOLERANCE,
                 }
         block["matched"] = all(entry["matched"] for quantity in cls.ANCHOR_QUANTITIES for entry in block[quantity].values())
         return block
@@ -508,20 +666,27 @@ class JobBAnchor:
     the CSV, so they must equal the recorded ones (recorded:
     `deploy/experiments/20260829-诊断作业B-ET甄别.md` §3) -- certifying both the
     reuse hook and that the write-path fix leaves the ET readings untouched.
+    The recorded real-cohort / pairing completeness (real k/n, unpaired) is
+    part of the certificate: a lost or excluded real row leaves every
+    gen-side tally unchanged (Codex #300 review).
     """
 
     RECORDED = {
-        "GLI": {"gen_k": 250, "gen_n": 250, "real_only": 0, "gen_empty_pred": 0},
-        "MEN": {"gen_k": 200, "gen_n": 200, "real_only": 0, "gen_empty_pred": 0},
-        "METS": {"gen_k": 38, "gen_n": 48, "real_only": 10, "gen_empty_pred": 5},
-        "PED": {"gen_k": 20, "gen_n": 20, "real_only": 0, "gen_empty_pred": 0},
-        "SSA": {"gen_k": 12, "gen_n": 12, "real_only": 0, "gen_empty_pred": 0},
+        "GLI": {"gen_k": 250, "gen_n": 250, "real_only": 0, "gen_empty_pred": 0, "real_k": 247, "real_n": 250, "unpaired": 0},
+        "MEN": {"gen_k": 200, "gen_n": 200, "real_only": 0, "gen_empty_pred": 0, "real_k": 199, "real_n": 200, "unpaired": 0},
+        "METS": {"gen_k": 38, "gen_n": 48, "real_only": 10, "gen_empty_pred": 5, "real_k": 48, "real_n": 48, "unpaired": 0},
+        "PED": {"gen_k": 20, "gen_n": 20, "real_only": 0, "gen_empty_pred": 0, "real_k": 17, "real_n": 20, "unpaired": 0},
+        "SSA": {"gen_k": 12, "gen_n": 12, "real_only": 0, "gen_empty_pred": 0, "real_k": 12, "real_n": 12, "unpaired": 0},
     }
 
     @classmethod
     def verify(cls, et_readings: list[dict]) -> dict:
-        """Recorded vs reproduced ET tallies per challenge, ``matched`` False on
-        drift or on a challenge the run did not cover."""
+        """Recorded vs reproduced ET tallies per challenge -- the gen detection
+        face AND the real-cohort / pairing completeness (real k/n and unpaired;
+        a lost or excluded real row leaves every gen-side tally unchanged, so
+        without it the certificate could stay green while no longer operating
+        on the recorded 530 complete pairs, Codex #300 review). ``matched``
+        False on drift or on a challenge the run did not cover."""
         by_challenge = {reading["challenge"]: reading for reading in et_readings}
         block = {}
         for challenge, recorded in cls.RECORDED.items():
@@ -529,16 +694,22 @@ class JobBAnchor:
             if reading is None:
                 block[challenge] = {"recorded": recorded, "reproduced": None, "matched": False}
                 continue
+            excluded = reading.get("excluded", {})
             reproduced = {
                 "gen_k": reading["gen"]["k_detected"],
                 "gen_n": reading["gen"]["n"],
                 "real_only": reading["pairing"]["real_only"],
                 "gen_empty_pred": reading["empty_pred"]["gen"]["k"],
+                "real_k": reading["real"]["k_detected"],
+                "real_n": reading["real"]["n"],
+                "unpaired": reading["pairing"]["unpaired"],
+                "input_fail": excluded.get("input_fail", 0),
+                "run_fail": excluded.get("run_fail", 0),
             }
             block[challenge] = {
                 "recorded": recorded,
                 "reproduced": reproduced,
-                "matched": recorded == reproduced,
+                "matched": all(recorded.get(key, 0) == value for key, value in reproduced.items()),
             }
         block["matched"] = all(entry["matched"] for entry in block.values())
         return block
@@ -558,10 +729,11 @@ class FixedWorldBaselineReport:
     SCHEMA = "fixed-world-baseline-diagnostic/1"
     TITLE = "序列②T5:修复后世界基线重跑(L2 诊断口径重测 + 作业 B 协议复用)"
 
-    def __init__(self, measurements_path, pred_root, inputs_root, bootstrap_b: int = BOOTSTRAP_B, run_id: str | None = None):
+    def __init__(self, measurements_path, pred_root, inputs_root, gen_root, bootstrap_b: int = BOOTSTRAP_B, run_id: str | None = None):
         self._measurements_path = Path(measurements_path)
         self._pred_root = Path(pred_root)
         self._inputs_root = Path(inputs_root)
+        self._gen_root = Path(gen_root)
         self._bootstrap_b = bootstrap_b
         self._run_id = run_id
         self._writer = DiagnosticReportWriter(
@@ -570,7 +742,12 @@ class FixedWorldBaselineReport:
             issue=252,
             job_label="序列② T5",
             stem="fixed_world_baseline_diagnostic",
-            inputs={"measurements": str(self._measurements_path), "pred_root": str(self._pred_root), "inputs_root": str(self._inputs_root)},
+            inputs={
+                "measurements": str(self._measurements_path),
+                "pred_root": str(self._pred_root),
+                "inputs_root": str(self._inputs_root),
+                "gen_root": str(self._gen_root),
+            },
             run_id=self._run_id,
             parent_issue=247,
         )
@@ -596,7 +773,17 @@ class FixedWorldBaselineReport:
             "attribution": AttributionJudge().classify(blocks["uncomp"]["median"], blocks["comp"]["median"]),
         }
 
-    def write(self, readings, per_challenge: dict, field_of_view: dict, et_readings: list[dict], job_a_anchor: dict, job_b_anchor: dict, output_dir):
+    def write(
+        self,
+        readings,
+        per_challenge: dict,
+        field_of_view: dict,
+        et_readings: list[dict],
+        job_a_anchor: dict,
+        job_b_anchor: dict,
+        preconditions: dict,
+        output_dir,
+    ):
         """Writes the json + markdown pair from the caller-computed quantity
         blocks (the bootstrap is the run's expensive face -- computed once)."""
         payload = self._writer.payload(
@@ -606,6 +793,7 @@ class FixedWorldBaselineReport:
                 "per_case": readings,
                 "per_challenge": per_challenge,
                 "attribution_overall": self._attribution_overall(per_challenge),
+                "fixed_world_preconditions": preconditions,
                 "job_a_anchor": job_a_anchor,
                 "job_b_anchor": job_b_anchor,
                 "field_of_view": field_of_view,
@@ -625,6 +813,7 @@ class FixedWorldBaselineReport:
                 "instrument_window_mm": [FIXED_WORLD_WINDOW.phys_lo, FIXED_WORLD_WINDOW.phys_hi],
                 "compensation_mm": COMPENSATION_MM,
                 "identity": "comp = uncomp + 9(质心轴世界由 pad(comp -13)切回 crop(comp +9);不跨窗 case 解析恒等)",
+                "precondition": "前提在源工件面验证(fixed_world_preconditions):v1 DM 体素几何 + #249 spacing 实声明重采样探针",
             },
             "legacy_world": {
                 "declaration": "单位 1 mm affine(sidecar 写出约定 np.diag([1,1,1]),#249 之前的工件现状)",
@@ -668,30 +857,56 @@ class FixedWorldBaselineReport:
             f"{worlds['legacy_world']['identity']}",
             f"- {worlds['note']}",
             f"- 输入:measurements `{payload['inputs']['measurements']}`;predictions `{payload['inputs']['pred_root']}`;"
-            f"inputs `{payload['inputs']['inputs_root']}`",
+            f"inputs `{payload['inputs']['inputs_root']}`;gen sources `{payload['inputs']['gen_root']}`",
+            "",
+            "## 修复后世界前提验证(源工件面)",
+            "",
+            "声明域扩展的「上缘归零」是 #249 声明的解析结果,自身不能作证(Codex #300 评审):本节把前提钉在源工件上——",
+            f"逐生成 case 核对四通道源文件存在且体素尺寸 = {payload['fixed_world_preconditions']['expected_source_size']}"
+            "(v1 DM 输出栅格,#249 窗口算术的推导基);声明 spacing 按史记录(holdout 工件先于 #249,声明 1 mm 属预期);"
+            "每挑战一枚探针把 #249 spacing 实际声明到真实源体积上、经冻结连续重采样 + 栅格对齐,断言重采样范围 "
+            f"{payload['fixed_world_preconditions']['expected_resampled_size']}。",
+            "",
+            "| 挑战 | 核对 case 数 | 缺源 | 尺寸不符 | 声明 spacing 分布 | 探针重采样尺寸 | 探针对齐尺寸 | 探针一致 |",
+            "|---|---:|---:|---:|---|---|---|---|",
+        ]
+        for challenge, tally in payload["fixed_world_preconditions"]["per_challenge"].items():
+            probe = tally["probe"]
+            lines.append(
+                f"| {challenge} | {tally['cases_checked']} | {tally['missing_source_cases']} | {tally['size_mismatch_cases']} "
+                f"| {', '.join(f'{name}×{count}' for name, count in sorted(tally['declared_spacings'].items()))} "
+                f"| {'×'.join(str(value) for value in probe['resampled_size'])} "
+                f"| {'×'.join(str(value) for value in probe['aligned_size'])} "
+                f"| {'是' if probe['matched'] else '**否**'} |"
+            )
+        lines += [
+            "",
+            f"前提验证整体:**{'通过' if payload['fixed_world_preconditions']['matched'] else '**失败**'}**"
+            "(失败即退出码非零——修复后世界证书不骑在未验证的工件树上)。",
             "",
             "## 锚点对账(逐位证书)",
             "",
-            "### 作业 A(#206):comp median 复现",
+            "### 作业 A(#206):comp median + CI90 复现",
             "",
-            "| 量 | 挑战 | 记录 median | 本作业复现 | 一致 |",
-            "|---|---|---:|---:|---|",
+            "| 量 | 挑战 | 记录 median | 本作业复现 | 记录 CI90 一致 | 一致 |",
+            "|---|---|---:|---:|---|---|",
         ]
         for name in JobAAnchor.ANCHOR_QUANTITIES:
             for challenge, entry in payload["job_a_anchor"][name].items():
                 lines.append(
                     f"| {name} | {challenge} | {self._fmt(entry['recorded'])} | {self._fmt(entry['reproduced'])} "
-                    f"| {'是' if entry['matched'] else '**否**'} |"
+                    f"| {'是' if entry['ci90_matched'] else '**否**'} | {'是' if entry['matched'] else '**否**'} |"
                 )
         lines += [
             "",
             f"作业 A 锚点整体:**{'逐位复现' if payload['job_a_anchor']['matched'] else '**漂移**'}**;"
-            "种子 = 作业 A 注册槽位(zcrop_vol_comp=100 / zcrop_centroid_comp=101,逐臂逐槽复用)。",
+            "种子 = 作业 A 注册槽位(zcrop_vol_comp=100 / zcrop_centroid_comp=101,逐臂逐槽复用);"
+            "CI90 端点一并入证——median 与种子/bootstrap 无关,端点才是 bit-stream 的指纹。",
             "",
             "### 作业 B(#207):协议复用读数对账",
             "",
-            "| 挑战 | 记录 k/n | 复现 k/n | 记录 real_only | 复现 real_only | 记录空 pred | 复现空 pred | 一致 |",
-            "|---|---|---|---|---|---|---|---|",
+            "| 挑战 | 记录 k/n | 复现 k/n | 记录 real k/n | 复现 real k/n | 记录 real_only | 复现 real_only | 记录空 pred | 复现空 pred | 记录 unpaired | 复现 unpaired | 一致 |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|",
         ]
         for challenge, entry in payload["job_b_anchor"].items():
             if not isinstance(entry, dict) or "matched" not in entry:
@@ -699,12 +914,15 @@ class FixedWorldBaselineReport:
             recorded, reproduced = entry["recorded"], entry["reproduced"]
             if reproduced is None:  # a challenge the run did not cover
                 lines.append(
-                    f"| {challenge} | {recorded['gen_k']}/{recorded['gen_n']} | 缺 | {recorded['real_only']} | 缺 | {recorded['gen_empty_pred']} | 缺 | **否** |"
+                    f"| {challenge} | {recorded['gen_k']}/{recorded['gen_n']} | 缺 | {recorded['real_k']}/{recorded['real_n']} | 缺 "
+                    f"| {recorded['real_only']} | 缺 | {recorded['gen_empty_pred']} | 缺 | {recorded['unpaired']} | 缺 | **否** |"
                 )
                 continue
             lines.append(
                 f"| {challenge} | {recorded['gen_k']}/{recorded['gen_n']} | {reproduced['gen_k']}/{reproduced['gen_n']} "
+                f"| {recorded['real_k']}/{recorded['real_n']} | {reproduced['real_k']}/{reproduced['real_n']} "
                 f"| {recorded['real_only']} | {reproduced['real_only']} | {recorded['gen_empty_pred']} | {reproduced['gen_empty_pred']} "
+                f"| {recorded['unpaired']} | {reproduced['unpaired']} "
                 f"| {'是' if entry['matched'] else '**否**'} |"
             )
         lines += [
@@ -743,8 +961,8 @@ class FixedWorldBaselineReport:
             "",
             "## 视场缺口(声明域外 real WT 质量)",
             "",
-            "| 挑战 | z<9 ml(修复后窗下缘) | z≥174 ml(修复后声明域外,**预期归零**) | 声明域外例数(修复后) "
-            "| z≥128 ml(旧 1 mm 声明域外,复核 A 口径) | 旧口径例数 | 最重旧口径 case | gen z<9 ml |",
+            "| 挑战 | z<9 ml(修复后窗下缘,real 侧原生栅格) | z≥174 ml(修复后声明域外;声明域含 real 全域,解析为零,见前提验证) "
+            "| 声明域外例数(修复后) | z≥128 ml(旧 1 mm 声明域外,复核 A 口径) | 旧口径例数 | 最重旧口径 case | gen 配对窗外 ml(网格 [146,155)) |",
             "|---|---:|---:|---:|---:|---:|---|---:|",
         ]
         for challenge, tally in payload["field_of_view"].items():
@@ -754,7 +972,7 @@ class FixedWorldBaselineReport:
                 f"| {tally['real_over_declared_fixed_cases']} | {self._fmt(tally['real_above_declared_legacy_ml'])} "
                 f"| {tally['real_over_declared_legacy_cases']} "
                 f"| {worst['case'] if worst else '无'} ({self._fmt(worst['ml']) if worst else 'n/a'}) "
-                f"| {self._fmt(tally['gen_below_window_ml'])} |"
+                f"| {self._fmt(tally['gen_outside_compared_window_ml'])} |"
             )
         lines += [
             "",
@@ -788,6 +1006,12 @@ def main(argv=None):
     parser.add_argument("--measurements", required=True, help="the L2 run tree's per-observation measurement CSV (controlled storage)")
     parser.add_argument("--pred-root", required=True, help="the L2 run tree's predictions directory (<challenge>/<obs_id>.nii.gz)")
     parser.add_argument("--inputs-root", required=True, help="the L2 run tree's instrument inputs directory (<challenge>/<obs_id>_<suffix>.nii.gz)")
+    parser.add_argument(
+        "--gen-root",
+        required=True,
+        help="the holdout generated source tree (<gen-root>/<challenge>/<case>/<case>_<modality>_seed*.nii.gz) "
+        "-- the fixed-world precondition face (v1 DM voxel geometry + #249-declared resample probe)",
+    )
     parser.add_argument("--output-dir", required=True, help="sugon artifact area for the baseline report (never git)")
     parser.add_argument(
         "--challenges",
@@ -818,16 +1042,22 @@ def main(argv=None):
     job_a_anchor = JobAAnchor.verify(per_challenge)
     job_b_anchor = JobBAnchor.verify(et_readings)
     field_of_view = FixedWorldFieldScan(FIXED_WORLD_WINDOW).scan(rows, mask_repository)
+    preconditions = FixedWorldPreconditions(FIXED_WORLD_WINDOW).validate(rows, GenSourceRepository(args.gen_root))
 
-    report = FixedWorldBaselineReport(Path(args.measurements), Path(args.pred_root), Path(args.inputs_root), args.bootstrap_b, run_id=args.run_id)
-    json_path, md_path = report.write(readings, per_challenge, field_of_view, et_readings, job_a_anchor, job_b_anchor, Path(args.output_dir))
+    report = FixedWorldBaselineReport(
+        Path(args.measurements), Path(args.pred_root), Path(args.inputs_root), args.gen_root, args.bootstrap_b, run_id=args.run_id
+    )
+    json_path, md_path = report.write(
+        readings, per_challenge, field_of_view, et_readings, job_a_anchor, job_b_anchor, preconditions, Path(args.output_dir)
+    )
     skipped = sum(1 for reading in readings if reading["excluded"])
     brain_missing = sum(1 for reading in readings if reading["brain_missing"])
     print(f"[OK] {len(readings)} cases ({skipped} skipped, {brain_missing} without inputs, variant=diagnostic) -> {json_path}")
     print(f"[OK] markdown -> {md_path}")
+    print(f"[PRECOND] fixed-world source geometry: {'matched' if preconditions['matched'] else 'MISMATCH'}")
     print(f"[ANCHOR] job A: {'matched' if job_a_anchor['matched'] else 'DRIFT'}; job B: {'matched' if job_b_anchor['matched'] else 'DRIFT'}")
-    if not (job_a_anchor["matched"] and job_b_anchor["matched"]):
-        print("[ANCHOR-FAIL] 记录字面量对账漂移——窗口算术、工件或种子已变动,读数不可作为记录历史的对偶;报告已写出供取证")
+    if not (preconditions["matched"] and job_a_anchor["matched"] and job_b_anchor["matched"]):
+        print("[ANCHOR-FAIL] 修复后世界前提或记录字面量对账漂移——源工件几何、窗口算术或种子已变动,读数不可作为记录历史的对偶;报告已写出供取证")
         return 1
     return 0
 

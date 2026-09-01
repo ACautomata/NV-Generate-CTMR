@@ -16,9 +16,10 @@
 #   MEASUREMENTS_CSV  逐观测测量 CSV(受控存储;缺省在运行树下 find measurements*.csv)
 #   PREDICT_DIR       逐观测分割 mask 目录(缺省 find -type d -name predictions)
 #   INPUTS_DIR        仪器输入目录(wt_brain/et_wt 量族的脑union;缺省 find -type d -name inputs)
+#   GEN_ROOT          holdout 生成源工件树(修复后世界前提验证面;缺省 $L2_RUN_TREE/../holdout_generated/generated)
 #   OUTPUT_DIR        报告工件输出目录(默认 $L2_RUN_TREE/diagnostics/fixed_world_baseline;
 #                     sugon 工件区,不入 git)
-#   BOOTSTRAP_B       bootstrap 重采样数(默认 10000)
+#   BOOTSTRAP_B       bootstrap 重采样数(默认 10000;CI 锚点按 B=10000 记录格对账,改动即漂移)
 #
 # 前置条件:
 #   1. L2 终验运行树的逐观测工件仍在(测量 CSV + predictions/ + inputs/)
@@ -58,6 +59,10 @@ if [ -z "${INPUTS_DIR:-}" ]; then
 fi
 [ -d "$INPUTS_DIR" ] || { echo "[FATAL] 仪器输入目录不存在: $INPUTS_DIR" >&2; exit 1; }
 
+# ── 探测 holdout 生成源工件树(修复后世界前提验证面)──
+GEN_ROOT="${GEN_ROOT:-$L2_RUN_TREE/../holdout_generated/generated}"
+[ -d "$GEN_ROOT" ] || { echo "[FATAL] 生成源工件树不存在: $GEN_ROOT — 请以 GEN_ROOT=... 显式指定" >&2; exit 1; }
+
 # ── run id(从终验 json 的 binding 读取,读不到则以未绑定落盘,不阻塞)──
 RUN_ID_ARGS=()
 ACCEPTANCE_JSON="$L2_RUN_TREE/evaluate_v1/l2_final_acceptance_p1.json"
@@ -74,6 +79,7 @@ echo "运行树: $L2_RUN_TREE"
 echo "测量 CSV: $MEASUREMENTS_CSV"
 echo "预测目录: $PREDICT_DIR"
 echo "输入目录: $INPUTS_DIR"
+echo "生成源树: $GEN_ROOT"
 echo "报告输出: $OUTPUT_DIR"
 echo "variant=diagnostic — 零验收判定、零推理"
 echo "============================================"
@@ -83,6 +89,7 @@ python -m ctmr.application.acceptance.distribution.fixed_world_baseline \
     --measurements "$MEASUREMENTS_CSV" \
     --pred-root "$PREDICT_DIR" \
     --inputs-root "$INPUTS_DIR" \
+    --gen-root "$GEN_ROOT" \
     --output-dir "$OUTPUT_DIR" \
     --bootstrap-b "${BOOTSTRAP_B:-10000}" \
     ${RUN_ID_ARGS[@]+"${RUN_ID_ARGS[@]}"} "$@" || rc=$?

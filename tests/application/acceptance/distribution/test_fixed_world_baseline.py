@@ -42,6 +42,8 @@ from ctmr.application.acceptance.distribution.fixed_world_baseline import (
     FixedWorldBaselineReport,
     FixedWorldFieldScan,
     FixedWorldPairedReadings,
+    FixedWorldPreconditions,
+    GenSourceRepository,
     InstrumentInputsRepository,
     JobAAnchor,
     JobBAnchor,
@@ -350,16 +352,40 @@ def test_quantity_block_degenerate_ci_and_registered_seed_identity():
 
 
 def test_job_a_anchor_passes_on_the_recorded_medians_and_flags_drift():
-    def _per_challenge(offset):
+    def _per_challenge(offset, ci_offset=0.0):
         per_challenge = {}
         for name, by_challenge in JobAAnchor.RECORDED_COMP_MEDIANS.items():
             for challenge, recorded in by_challenge.items():
-                per_challenge.setdefault(challenge, {})[name] = {"comp": {"median": recorded + offset}}
+                ci = JobAAnchor.RECORDED_COMP_CI90[name][challenge]
+                per_challenge.setdefault(challenge, {})[name] = {
+                    "comp": {
+                        "median": recorded + offset,
+                        "ci90_low": ci[0] + ci_offset,
+                        "ci90_high": ci[1] + ci_offset,
+                    }
+                }
         return per_challenge
 
     assert JobAAnchor.verify(_per_challenge(0.0))["matched"] is True
     assert JobAAnchor.verify(_per_challenge(1e-3))["matched"] is False
     assert JobAAnchor.verify(_per_challenge(0.0))["centroid_wt_z"]["GLI"]["reproduced"] == pytest.approx(2.927747)
+
+
+def test_job_a_anchor_enforces_the_recorded_ci_endpoints():
+    """The medians are seed- and bootstrap-B-independent, so a seed-identity
+    certificate that compares only medians cannot fail on a broken bootstrap
+    bit-stream: the recorded compensated CI endpoints are part of the anchor
+    (Codex #300 P1)."""
+    per_challenge = {}
+    for name, by_challenge in JobAAnchor.RECORDED_COMP_MEDIANS.items():
+        for challenge, recorded in by_challenge.items():
+            ci = JobAAnchor.RECORDED_COMP_CI90[name][challenge]
+            per_challenge.setdefault(challenge, {})[name] = {
+                "comp": {"median": recorded, "ci90_low": ci[0] + 1.0, "ci90_high": ci[1] + 1.0}  # a different B's endpoints
+            }
+    block = JobAAnchor.verify(per_challenge)
+    assert block["matched"] is False  # the bug: a median-only certificate stays green here
+    assert block["centroid_wt_z"]["GLI"]["ci90_matched"] is False
 
 
 def test_job_a_recorded_literals_are_pinned_byte_exact():
@@ -369,32 +395,76 @@ def test_job_a_recorded_literals_are_pinned_byte_exact():
         "vol_wt_rel": {"GLI": 5.207930, "MEN": 0.513802, "METS": -0.992933, "PED": 16.009951, "SSA": 5.907041},
         "centroid_wt_z": {"GLI": 2.927747, "MEN": -9.854146, "METS": 7.199478, "PED": 22.425059, "SSA": -2.480662},
     }
+    assert JobAAnchor.RECORDED_COMP_CI90 == {
+        "vol_wt_rel": {
+            "GLI": (1.3619, 40.0635),
+            "MEN": (-0.9818, 161.3042),
+            "METS": (-1.0000, 8.4840),
+            "PED": (2.8068, 425.1368),
+            "SSA": (0.9136, 55.6630),
+        },
+        "centroid_wt_z": {
+            "GLI": (-29.3199, 32.1410),
+            "MEN": (-64.8605, 50.9058),
+            "METS": (-31.4032, 69.7327),
+            "PED": (-25.6315, 46.7763),
+            "SSA": (-24.4919, 36.1239),
+        },
+    }
     assert JobAAnchor.TOLERANCE == 5e-7
+    assert JobAAnchor.CI_TOLERANCE == 5e-5  # the 4-dp recorded CI grid
 
 
 def test_job_b_anchor_passes_on_the_recorded_tallies_and_flags_drift():
+    def _readings(real_n_offset=0, unpaired=0):
+        readings = []
+        for challenge, recorded in JobBAnchor.RECORDED.items():
+            readings.append(
+                {
+                    "challenge": challenge,
+                    "gen": {"k_detected": recorded["gen_k"], "n": recorded["gen_n"]},
+                    "real": {"k_detected": recorded["real_k"], "n": recorded["real_n"] + real_n_offset},
+                    "pairing": {"real_only": recorded["real_only"], "unpaired": unpaired},
+                    "empty_pred": {"gen": {"k": recorded["gen_empty_pred"]}},
+                    "excluded": {"input_fail": 0, "run_fail": 0},
+                }
+            )
+        return readings
+
+    assert JobBAnchor.verify(_readings())["matched"] is True
+    readings = _readings()
+    readings[2]["pairing"]["real_only"] = 9  # METS drifts
+    assert JobBAnchor.verify(readings)["matched"] is False
+
+
+def test_job_b_anchor_enforces_real_side_completeness():
+    """A real row lost or excluded leaves every gen-side tally unchanged: the
+    certificate must catch it through the recorded real cohort and pairing
+    completeness (Codex #300 P1: no exit-0 without the recorded 530 pairs)."""
     readings = []
     for challenge, recorded in JobBAnchor.RECORDED.items():
         readings.append(
             {
                 "challenge": challenge,
                 "gen": {"k_detected": recorded["gen_k"], "n": recorded["gen_n"]},
-                "pairing": {"real_only": recorded["real_only"]},
+                "real": {"k_detected": 0, "n": 0},  # the real cohort vanished
+                "pairing": {"real_only": 0, "unpaired": recorded["gen_n"]},  # and every pair went unpaired
                 "empty_pred": {"gen": {"k": recorded["gen_empty_pred"]}},
+                "excluded": {"input_fail": 0, "run_fail": 0},
             }
         )
-    assert JobBAnchor.verify(readings)["matched"] is True
-    readings[2]["pairing"]["real_only"] = 9  # METS drifts
-    assert JobBAnchor.verify(readings)["matched"] is False
+    block = JobBAnchor.verify(readings)
+    assert block["matched"] is False  # the bug: a gen-tally-only certificate stays green here
+    assert block["GLI"]["reproduced"]["real_n"] == 0
 
 
 def test_job_b_recorded_tallies_are_pinned_byte_exact():
     assert JobBAnchor.RECORDED == {
-        "GLI": {"gen_k": 250, "gen_n": 250, "real_only": 0, "gen_empty_pred": 0},
-        "MEN": {"gen_k": 200, "gen_n": 200, "real_only": 0, "gen_empty_pred": 0},
-        "METS": {"gen_k": 38, "gen_n": 48, "real_only": 10, "gen_empty_pred": 5},
-        "PED": {"gen_k": 20, "gen_n": 20, "real_only": 0, "gen_empty_pred": 0},
-        "SSA": {"gen_k": 12, "gen_n": 12, "real_only": 0, "gen_empty_pred": 0},
+        "GLI": {"gen_k": 250, "gen_n": 250, "real_only": 0, "gen_empty_pred": 0, "real_k": 247, "real_n": 250, "unpaired": 0},
+        "MEN": {"gen_k": 200, "gen_n": 200, "real_only": 0, "gen_empty_pred": 0, "real_k": 199, "real_n": 200, "unpaired": 0},
+        "METS": {"gen_k": 38, "gen_n": 48, "real_only": 10, "gen_empty_pred": 5, "real_k": 48, "real_n": 48, "unpaired": 0},
+        "PED": {"gen_k": 20, "gen_n": 20, "real_only": 0, "gen_empty_pred": 0, "real_k": 17, "real_n": 20, "unpaired": 0},
+        "SSA": {"gen_k": 12, "gen_n": 12, "real_only": 0, "gen_empty_pred": 0, "real_k": 12, "real_n": 12, "unpaired": 0},
     }
 
 
@@ -427,14 +497,30 @@ def test_field_scan_zeroes_the_fixed_declared_edge_and_keeps_the_legacy_tally():
 
 def test_field_scan_counts_window_floor_and_gen_hygiene():
     real = np.zeros(ARRAY_SHAPE, dtype=np.uint8)
-    real[5:7, 100:120, 100:120] = 1  # 2 layers below the fixed window floor z=9
-    gen = _slab([(53, 73)])  # content [53,73): nothing below the floor
-    gen[3, 100:120, 100:120] = 1  # a hygiene anomaly at z=3 < 9
+    real[5:7, 100:120, 100:120] = 1  # 2 layers below the fixed window floor z=9 (the real side is natively gridded)
+    gen = _slab([(53, 73)])  # content [53,73): in-window
+    gen[3:4, 100:120, 100:120] = 1  # gen grid [3,4) = physical [12,13): IN-window, not a hygiene hit
+    gen[150:151, 100:120, 100:120] = 1  # gen grid [150,151): the comparison-excluded tail
     rows = _rows("CASE-A")
     scan = FixedWorldFieldScan(FIXED_WORLD_WINDOW).scan(rows, InMemoryMaskRepository({"CASE-A__real": real, "CASE-A__gen": gen}))
     assert scan["GLI"]["real_below_window_ml"] == pytest.approx(0.8)
-    assert scan["GLI"]["gen_below_window_ml"] == pytest.approx(0.4)
-    assert scan["GLI"]["gen_below_window_cases"] == 1
+    assert scan["GLI"]["gen_outside_compared_window_ml"] == pytest.approx(0.4)  # the tail only, not the in-window slab
+    assert scan["GLI"]["gen_outside_compared_window_cases"] == 1
+
+
+def test_field_scan_counts_only_the_comparison_excluded_gen_tail():
+    """Crop-world hygiene: generated grid [0,9) is IN the compared window
+    (physical [9,18), paired against real [9,18)); the tail the fixed-world
+    overlap excludes from comparison is [146,155) (physical [155,164), no real
+    counterpart). The reused pad helper counted exactly the wrong half
+    (Codex #300 P2)."""
+    gen = _slab([(53, 73)])  # in-window content
+    gen[2:4, 100:120, 100:120] = 1  # grid [2,4): in-window, must NOT be counted
+    gen[150:152, 100:120, 100:120] = 1  # grid [150,152): the comparison-excluded tail
+    rows = _rows("CASE-A")
+    scan = FixedWorldFieldScan(FIXED_WORLD_WINDOW).scan(rows, InMemoryMaskRepository({"CASE-A__gen": gen}))
+    assert scan["GLI"]["gen_outside_compared_window_ml"] == pytest.approx(0.8)  # the tail only
+    assert scan["GLI"]["gen_outside_compared_window_cases"] == 1
 
 
 def test_field_scan_of_a_clean_pair_is_all_zero():
@@ -445,7 +531,53 @@ def test_field_scan_of_a_clean_pair_is_all_zero():
     assert scan["GLI"]["real_above_declared_fixed_ml"] == 0.0
     assert scan["GLI"]["real_over_declared_fixed_cases"] == 0
     assert scan["GLI"]["real_above_declared_legacy_ml"] == 0.0
-    assert scan["GLI"]["gen_below_window_ml"] == 0.0
+    assert scan["GLI"]["gen_outside_compared_window_ml"] == 0.0
+
+
+# ------------------------------------------------- fixed-world preconditions
+
+
+def _write_gen_source(gen_root, challenge, case, size=(256, 256, 128), spacing=(1.0, 1.0, 1.0)):
+    """One holdout generated source case: the four modality files with the
+    seed suffixes, the pre-fix unit-1mm declaration."""
+    import SimpleITK as sitk
+
+    case_dir = gen_root / challenge / case
+    case_dir.mkdir(parents=True, exist_ok=True)
+    volume = np.zeros(tuple(reversed(size)), dtype=np.float32)  # zyx
+    image = sitk.GetImageFromArray(volume)
+    image.SetSpacing(spacing)
+    for modality in ("t1n", "t1c", "t2w", "t2f"):
+        sitk.WriteImage(image, str(case_dir / f"{case}_{modality}_seed1.nii.gz"))
+
+
+def test_fixed_world_preconditions_accept_the_v1_dm_geometry_and_probe_the_crop(tmp_path):
+    """The non-vacuous binding of the fixed-world certificate (Codex #300 P1):
+    the generated sources must carry the v1 DM voxel geometry, and declaring
+    the #249 spacing on a real source volume must resample to 241x241x174 and
+    grid-align to the fixed world's window (crop start 9)."""
+    gen_root = tmp_path / "generated"
+    _write_gen_source(gen_root, "GLI", "CASE-A")
+    readings_rows = _rows("CASE-A")
+    block = FixedWorldPreconditions(probe_per_challenge=1).validate(readings_rows, GenSourceRepository(gen_root))
+    assert block["matched"] is True
+    gli = block["per_challenge"]["GLI"]
+    assert gli["cases_checked"] == 1
+    assert gli["size_mismatch_cases"] == 0
+    assert gli["declared_spacings"] == {"1 x 1 x 1": 1}  # the pre-fix history, recorded not assumed
+    assert gli["probe"]["resampled_size"] == [241, 241, 174]
+    assert gli["probe"]["aligned_size"] == [240, 240, 155]
+    assert gli["probe"]["crop_start"] == 9 == FIXED_WORLD_WINDOW.crop_start
+
+
+def test_fixed_world_preconditions_reject_a_wrong_source_geometry(tmp_path):
+    """A tree whose sources do not carry the v1 DM voxel size cannot back a
+    fixed-world baseline: the precondition fails and the certificate with it."""
+    gen_root = tmp_path / "generated"
+    _write_gen_source(gen_root, "GLI", "CASE-A", size=(256, 256, 96))  # a different generator's geometry
+    block = FixedWorldPreconditions(probe_per_challenge=1).validate(_rows("CASE-A"), GenSourceRepository(gen_root))
+    assert block["matched"] is False
+    assert block["per_challenge"]["GLI"]["size_mismatch_cases"] == 1
 
 
 # ---------------------------------------------------------------- report / CLI
@@ -461,6 +593,7 @@ def test_report_writes_json_and_markdown_with_the_fixed_world_blocks(tmp_path):
         measurements_path=Path("/controlled/measurements.csv"),
         pred_root=Path("/controlled/predictions"),
         inputs_root=Path("/controlled/inputs"),
+        gen_root=Path("/controlled/generated"),
         bootstrap_b=200,
     )
     readings = _readings_for_report()
@@ -468,7 +601,21 @@ def test_report_writes_json_and_markdown_with_the_fixed_world_blocks(tmp_path):
     et_readings = EtDiscrimination(bootstrap_b=200).discriminate(_identity_case_rows())
     job_a_anchor, job_b_anchor = JobAAnchor.verify(per_challenge), JobBAnchor.verify(et_readings)
     field_of_view = FixedWorldFieldScan(FIXED_WORLD_WINDOW).scan(_identity_case_rows(), InMemoryMaskRepository({}))
-    json_path, md_path = report.write(readings, per_challenge, field_of_view, et_readings, job_a_anchor, job_b_anchor, tmp_path)
+    preconditions = {
+        "per_challenge": {
+            "GLI": {
+                "cases_checked": 1,
+                "missing_source_cases": 0,
+                "size_mismatch_cases": 0,
+                "declared_spacings": {"1 x 1 x 1": 1},
+                "probe": {"resampled_size": [241, 241, 174], "aligned_size": [240, 240, 155], "matched": True},
+            }
+        },
+        "expected_source_size": [256, 256, 128],
+        "expected_resampled_size": [241, 241, 174],
+        "matched": True,
+    }
+    json_path, md_path = report.write(readings, per_challenge, field_of_view, et_readings, job_a_anchor, job_b_anchor, preconditions, tmp_path)
     payload = json.loads(json_path.read_text())
     assert payload["schema"] == "fixed-world-baseline-diagnostic/1"
     assert payload["issue"] == 252
@@ -479,13 +626,15 @@ def test_report_writes_json_and_markdown_with_the_fixed_world_blocks(tmp_path):
     assert payload["worlds"]["legacy_world"]["compensation_mm"] == -13.0
     assert payload["quantity_order"][0] == "vol_wt_rel" and payload["quantity_order"][-1] == "et_wt_rel"
     assert payload["per_challenge"]["GLI"]["centroid_wt_z"]["comp"]["median"] == pytest.approx(22.0)
+    assert payload["fixed_world_preconditions"]["matched"] is True
+    assert payload["fixed_world_preconditions"]["per_challenge"]["GLI"]["probe"]["resampled_size"] == [241, 241, 174]
     assert payload["job_a_anchor"]["matched"] is False  # the synthetic median is not job A's
     assert payload["job_b_anchor"]["matched"] is False  # the synthetic tallies are not job B's
     assert payload["field_of_view"]["GLI"]["real_over_declared_fixed_cases"] == 0
     assert payload["et_discrimination"]["GLI"]["challenge"] == "GLI"
     md = md_path.read_text()
     assert "# 序列②T5" in md and "父 #247" in md and "不产生任何验收判定" in md
-    assert "锚点对账" in md and "视场缺口" in md and "作业 B 协议复用" in md
+    assert "前提验证" in md and "锚点对账" in md and "视场缺口" in md and "作业 B 协议复用" in md
     assert "centroid_wt_z" in md and "**否**" in md  # the anchor drift is loud in markdown
 
 
@@ -495,8 +644,10 @@ def test_cli_end_to_end_writes_the_report_and_fails_loud_on_the_anchor(tmp_path)
     the same path must exit 0 (the certificates' production-facing face)."""
     pred_root = tmp_path / "predictions" / "GLI"
     input_root = tmp_path / "inputs" / "GLI"
+    gen_root = tmp_path / "generated"
     pred_root.mkdir(parents=True)
     input_root.mkdir(parents=True)
+    _write_gen_source(gen_root, "GLI", "CASE-A")  # the fixed-world precondition face
     brain = np.full(ARRAY_SHAPE, 1, dtype=np.uint8)
     brain[40:60, 100:120, 100:120] = 0  # the real union loses the tumour block
     full = np.full(ARRAY_SHAPE, 1, dtype=np.uint8)
@@ -521,6 +672,8 @@ def test_cli_end_to_end_writes_the_report_and_fails_loud_on_the_anchor(tmp_path)
             str(tmp_path / "predictions"),
             "--inputs-root",
             str(tmp_path / "inputs"),
+            "--gen-root",
+            str(gen_root),
             "--output-dir",
             str(tmp_path / "out"),
             "--bootstrap-b",
@@ -530,6 +683,7 @@ def test_cli_end_to_end_writes_the_report_and_fails_loud_on_the_anchor(tmp_path)
     assert exit_code == 1  # the anchor drift is loud on synthetic data
     payload = json.loads((tmp_path / "out" / "fixed_world_baseline_diagnostic.json").read_text())
     assert payload["job_a_anchor"]["centroid_wt_z"]["GLI"]["matched"] is False
+    assert payload["fixed_world_preconditions"]["matched"] is True  # the precondition face validated the fixture
     assert payload["per_challenge"]["GLI"]["centroid_wt_z"]["comp"]["median"] == pytest.approx(22.0)
     gen_ratio, real_ratio = 8.0 / 8409.6, 8.0 / 8401.6  # full vs carved window brain union
     assert payload["per_challenge"]["GLI"]["wt_brain_rel"]["comp"]["median"] == pytest.approx((gen_ratio - real_ratio) / real_ratio)
