@@ -33,6 +33,12 @@ draw of the WT addendum takes the monitoring job's own registered slot
 before its first draw, after T5's 400/500 bands landed); the ET axis keeps drawing job B's
 slot 200 through the unchanged ``EtDiscrimination``.
 
+Because the flag is the T8 go/no-go baseline anchor, it is evaluated only on a
+complete measurement: ``SamplePlanCompleteness`` holds every planned
+challenge's valid denominators to the sampling arm's pinned ``n_cases`` and
+fails loudly on any shortfall, so a partially-measured cohort can never read
+as a clean unflagged rate.
+
 Usage:
     python -m ctmr.application.acceptance.distribution.dev_monitor \
         --measurements <monitor work root>/measurements_dev.csv \
@@ -109,6 +115,52 @@ class WtMonitor:
         return stats
 
 
+class SamplePlanCompleteness:
+    """Gate: the observation line evaluates only a complete measurement.
+
+    The flag is the monitor's decision-facing output and the T8 go/no-go
+    baseline anchor, so its denominator must be the full planned sample, not a
+    survivor subset -- ``EtDiscrimination`` rightly drops input_fail/run_fail
+    rows from the detection denominator (an instrument that never ran is not a
+    "no ET" result), which means a cohort measured only in part can read as a
+    clean unflagged rate (1 detected of 1 valid, the other 23 excluded). This
+    gate compares every planned challenge's valid gen/real denominators against
+    the sampling arm's pinned ``n_cases`` and raises ``DiagnosticError`` on any
+    shortfall -- the same fail-loudly philosophy as ``ObservationLine`` (a
+    partial measurement is not evaluable, never an invented pass). With no
+    sample plan there is no planned denominator to hold the readings to, so the
+    gate is a no-op (the CLI's plan-less path keeps running).
+    """
+
+    def __init__(self, sample_plan_path):
+        self._sample_plan_path = Path(sample_plan_path) if sample_plan_path else None
+
+    def assert_complete(self, readings):
+        """Raises ``DiagnosticError`` when a planned challenge is under-measured."""
+        if self._sample_plan_path is None:
+            return
+        planned = json.loads(self._sample_plan_path.read_text()).get("challenges", {})
+        by_challenge = {reading["challenge"]: reading for reading in readings}
+        shortfalls = []
+        for challenge, info in sorted(planned.items()):
+            n_cases = info["n_cases"]
+            reading = by_challenge.get(challenge)
+            if reading is None:
+                shortfalls.append(f"{challenge}: planned {n_cases} cases, no measurement rows at all")
+                continue
+            gen_n, real_n = reading["gen"]["n"], reading["real"]["n"]
+            if gen_n != n_cases or real_n != n_cases:
+                shortfalls.append(
+                    f"{challenge}: valid denominators gen {gen_n}/real {real_n} short of the planned {n_cases} "
+                    "(input_fail/run_fail excluded rows are not measured cases)"
+                )
+        if shortfalls:
+            raise DiagnosticError(
+                "dev monitor measurement is incomplete; the observation line is a selection go/no-go "
+                "signal and refuses to evaluate a partial denominator (T8 compares against this baseline):\n  " + "\n  ".join(shortfalls)
+            )
+
+
 class DevMonitorReport:
     """Dev monitor json + markdown artifacts (sugon artifact area, never git).
 
@@ -143,6 +195,7 @@ class DevMonitorReport:
         if rows is None:
             rows = self.read_rows()
         readings = EtDiscrimination(bootstrap_b=self._bootstrap_b).discriminate(rows)
+        SamplePlanCompleteness(self._sample_plan_path).assert_complete(readings)
         flag = ObservationLine().evaluate(readings)
         wt_readings = {reading["challenge"]: reading for reading in WtMonitor(bootstrap_b=self._bootstrap_b).readings(rows)}
         for reading in readings:
