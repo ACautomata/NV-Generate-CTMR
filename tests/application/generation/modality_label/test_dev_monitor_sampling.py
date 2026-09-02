@@ -21,6 +21,7 @@ from ctmr.application.generation.modality_label.dev_monitor_sampling import (
     MONITOR_QUOTAS,
     DevMonitorCohort,
     DevMonitorPlanBuilder,
+    SamplingProvenance,
     main,
 )
 from ctmr.application.generation.modality_label.monitor import CandidateSampler
@@ -190,6 +191,42 @@ def test_plan_builder_fails_loudly_on_a_missing_real_modality(tmp_path):
 
 
 # ------------------------------------------------------------- seeds & CLI stage
+
+
+def _ckpt(path, content):
+    path.write_bytes(content)
+    return path
+
+
+def test_sampling_provenance_records_then_accepts_the_same_checkpoint(tmp_path):
+    samples = tmp_path / "samples"
+    samples.mkdir()
+    ckpt = _ckpt(tmp_path / "epoch_20.pt", b"candidate-A")
+    provenance = SamplingProvenance(samples)
+
+    provenance.verify_or_record(ckpt)  # the first sampling run records the fingerprint
+    provenance.verify_or_record(ckpt)  # re-entry under the same candidate is a no-op
+
+    manifest = json.loads((samples / SamplingProvenance.MANIFEST_NAME).read_text())
+    assert manifest["ckpt_sha256"] == hashlib.sha256(b"candidate-A").hexdigest()
+
+
+def test_sampling_provenance_rejects_a_different_checkpoint_into_the_same_dir(tmp_path):
+    """The T8 silent-reuse bug: the re-entrant skip keys on the sample filename
+    (case+modality+seed, no checkpoint), so swapping only CKPT/RUN_ID into an
+    existing samples dir would reuse the baseline's volumes under the new run_id.
+    The provenance manifest must instead fail loudly."""
+    samples = tmp_path / "samples"
+    samples.mkdir()
+    SamplingProvenance(samples).verify_or_record(_ckpt(tmp_path / "epoch_20.pt", b"candidate-A"))
+
+    with pytest.raises(DiagnosticError):
+        SamplingProvenance(samples).verify_or_record(_ckpt(tmp_path / "epoch_40.pt", b"candidate-B"))
+
+
+def test_sampling_provenance_fails_loudly_on_a_missing_checkpoint(tmp_path):
+    with pytest.raises(DiagnosticError):
+        SamplingProvenance(tmp_path / "samples").verify_or_record(tmp_path / "nope.pt")
 
 
 def test_pseudo_quad_seed_rule_gives_four_distinct_seeds_per_case():

@@ -112,7 +112,19 @@ train_one() {
     local fold_dir="$RESULTS_ROOT/Dataset$name/nnUNetTrainer_250epochs_bf16__nnUNetPlans_v2bs8__3d_fullres_bs8/fold_0"
     local audit="$AUDIT_ROOT/$name"
     if [ -f "$audit/completion.json" ]; then
-        echo "[skip] $name 已有 completion 审计"
+        # 存储丢失恢复语境:completion 审计幸存而 checkpoint 被删/截断/替换时不得
+        # 静默跳过——先对账审计里记录的 sha256,缺失或不符即终止,由人判读(同
+        # set -e 哲学),既不静默重训数百例,也不带病放行。
+        [ -f "$fold_dir/checkpoint_final.pth" ] || {
+            echo "[FATAL] $name 有 completion 审计但缺 checkpoint_final.pth(结果树不可用)" >&2; exit 1; }
+        local recorded_ckpt_sha actual_ckpt_sha
+        recorded_ckpt_sha=$(python3 -c "import json; print(json.load(open('$audit/completion.json')).get('checkpoint_final_sha256',''))")
+        actual_ckpt_sha=$(sha256sum "$fold_dir/checkpoint_final.pth" | cut -d' ' -f1)
+        if [ -n "$recorded_ckpt_sha" ] && [ "$actual_ckpt_sha" != "$recorded_ckpt_sha" ]; then
+            echo "[FATAL] $name checkpoint_final.sha256 与 completion 审计不符($actual_ckpt_sha != $recorded_ckpt_sha)" >&2
+            exit 1
+        fi
+        echo "[skip] $name 已有 completion 审计且 checkpoint_final 对账通过"
         return 0
     fi
     mkdir -p "$audit" "$LOG_DIR"
@@ -129,9 +141,13 @@ train_one() {
     fi
     # 完成核验:final checkpoint + 日志覆盖 Epoch 249 + hash 证据
     [ -f "$fold_dir/checkpoint_final.pth" ] || { echo "[FATAL] $name 无 checkpoint_final" >&2; exit 1; }
-    local log_rank0
-    log_rank0=$(ls "$fold_dir"/training_log_*.txt 2>/dev/null | head -1)
-    [ -n "$log_rank0" ] && grep -q "Epoch 249" "$log_rank0" || { echo "[FATAL] $name 日志未覆盖 Epoch 249" >&2; exit 1; }
+    # 续训(--c)会让 nnUNet 另建一个时间戳日志,且日志名月/日不补零
+    # (training_log_%d_%d_%d_...),字典序既非最旧也非最新——不能 ls|head -1。
+    # 跨全部 training_log 找覆盖 Epoch 249 者,取 mtime 最新一条作为 hash 证据。
+    local matching_logs log_rank0
+    matching_logs=$(grep -l "Epoch 249" "$fold_dir"/training_log_*.txt 2>/dev/null || true)
+    [ -n "$matching_logs" ] || { echo "[FATAL] $name 日志未覆盖 Epoch 249" >&2; exit 1; }
+    log_rank0=$(echo "$matching_logs" | xargs ls -t | head -1)
     {
         echo "{"
         echo "  \"dataset\": \"Dataset$name\","
