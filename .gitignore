@@ -9,3 +9,6 @@ __pycache__/
 .claude/settings.local.json
 .claude/worktrees/
 uv.lock
+
+# macOS 元数据
+.DS_Store
