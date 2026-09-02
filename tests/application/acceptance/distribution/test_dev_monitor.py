@@ -19,15 +19,15 @@ from ctmr.application.acceptance.distribution.diagnostic_support import Diagnost
 from ctmr.application.acceptance.distribution.measurement_table import MEASUREMENT_FIELDS, MeasurementTable
 
 
-def _row(challenge, case, side, vol_et, vol_wt="10.0", *, pred_empty=0):
+def _row(challenge, case, side, vol_et, vol_wt="10.0", *, pred_empty=0, run_fail=0, input_fail=0):
     return {
         "obs_id": f"{case}__{side}",
         "challenge": challenge,
         "case": case,
         "side": side,
         "anchor": "",
-        "input_fail": "0",
-        "run_fail": "0",
+        "input_fail": str(input_fail),
+        "run_fail": str(run_fail),
         "hier_viol": "0",
         "pred_empty": str(pred_empty),
         "vol_wt_ml": vol_wt,
@@ -147,3 +147,55 @@ def test_unusable_table_raises_a_diagnostic_error(tmp_path):
     path.write_text("challenge,case,side\nMETS,c,gen\n")
     with pytest.raises(DiagnosticError):
         main(["--measurements", str(path), "--output-dir", str(tmp_path / "out")])
+
+
+# ----------------------------------------------------- completeness gate (#253)
+
+
+def test_partial_measurement_denominator_is_refused_before_the_flag(tmp_path):
+    """The Codex P2 shape: 1 valid detected METS + 3 run_fail rows -> a 1-case
+    denominator reading rate 1.0 (unflagged) even though the pinned 24-case
+    observation line was not measured. The report must refuse to evaluate the
+    flag on a partial measurement -- no report, no invented clean bill."""
+    rows = [_row("METS", "m0", "gen", 1.0)]  # the single valid, detected case
+    rows += [_row("METS", f"m{index}", "gen", 1.0, run_fail=1) for index in (1, 2, 3)]
+    rows += [_row("METS", f"m{index}", "real", 3.0) for index in range(4)]
+    csv_path = _write_csv(rows, tmp_path / "m.csv")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(_sample_plan({"METS": 4})))
+    with pytest.raises(DiagnosticError):
+        _report(csv_path, plan_path).write(tmp_path / "report")
+    assert not (tmp_path / "report" / "dev_monitor_diagnostic.json").exists()
+
+
+def test_real_side_shortfall_is_also_refused(tmp_path):
+    """The gate holds both denominators to the plan: a real-side input_fail is
+    not a measured case either."""
+    rows = [_row("METS", f"m{index}", "gen", 1.0) for index in range(4)]
+    rows += [_row("METS", f"m{index}", "real", 3.0) for index in range(3)]
+    rows.append(_row("METS", "m3", "real", 3.0, input_fail=1))
+    csv_path = _write_csv(rows, tmp_path / "m.csv")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(_sample_plan({"METS": 4})))
+    with pytest.raises(DiagnosticError):
+        _report(csv_path, plan_path).write(tmp_path / "report")
+
+
+def test_planned_challenge_with_no_rows_is_refused(tmp_path):
+    rows = [_row("GLI", "g", "gen", 2.0), _row("GLI", "g", "real", 2.0)]
+    csv_path = _write_csv(rows, tmp_path / "m.csv")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(_sample_plan({"GLI": 1, "METS": 4})))
+    with pytest.raises(DiagnosticError):
+        _report(csv_path, plan_path).write(tmp_path / "report")
+
+
+def test_complete_measurement_against_the_plan_still_evaluates(tmp_path):
+    """The gate is not a regression on the healthy path: a full measurement
+    matching the pinned quotas evaluates the flag as before."""
+    csv_path = _write_csv(_monitor_rows(), tmp_path / "measurements_dev.csv")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(_sample_plan({"METS": 4, "GLI": 4})))
+    json_path, _md = _report(csv_path, plan_path).write(tmp_path / "report")
+    payload = json.loads(Path(json_path).read_text())
+    assert payload["observation_line"]["flag"] is True  # METS 2/4 < 0.9 still fires

@@ -245,19 +245,70 @@ class DevMonitorPlanBuilder:
         }
 
 
+class SamplingProvenance:
+    """The recorded identity of the candidate checkpoint behind a samples dir.
+
+    The re-entrant skip (``if out.is_file(): continue``) keys on the sample
+    filename, which carries case+modality+seed but NOT the checkpoint. A rerun
+    that swaps only ``--ckpt``/``--run-id`` into the same samples dir would
+    otherwise reuse the previous candidate's volumes while the plan and report
+    wear the new run_id -- silently invalidating the T8 before/after
+    comparison. This manifest makes the checkpoint identity explicit: the first
+    sampling run records the sha256, later runs into the same dir must match it
+    or fail loudly (point ``--samples-dir``/``MONITOR_ROOT`` at a fresh dir to
+    measure a new candidate).
+    """
+
+    MANIFEST_NAME = "sampling_provenance.json"
+
+    def __init__(self, samples_dir):
+        self._path = Path(samples_dir) / self.MANIFEST_NAME
+
+    def verify_or_record(self, checkpoint_path):
+        """Record the candidate fingerprint on first use; on re-entry require a match."""
+        current = self._fingerprint(checkpoint_path)
+        if not self._path.is_file():
+            self._path.write_text(json.dumps(current, indent=1) + "\n")
+            return
+        recorded = json.loads(self._path.read_text())
+        if recorded.get("ckpt_sha256") != current["ckpt_sha256"]:
+            raise DiagnosticError(
+                "samples dir was sampled under a different checkpoint "
+                f"(recorded {recorded.get('ckpt_path')} sha256:{recorded.get('ckpt_sha256')}; "
+                f"current {current['ckpt_path']} sha256:{current['ckpt_sha256']}) -- "
+                "point --samples-dir / MONITOR_ROOT at a fresh dir to measure a new candidate"
+            )
+
+    @staticmethod
+    def _fingerprint(checkpoint_path):
+        path = Path(checkpoint_path)
+        if not path.is_file():
+            raise DiagnosticError(f"candidate checkpoint not found: {path}")
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        return {"ckpt_path": str(path.resolve()), "ckpt_sha256": digest.hexdigest()}
+
+
 class DevMonitorSampler:
     """Generates the four-modal monitoring sample with the sidecar's sampler.
 
     Composition, not re-decision: the model loading, denoising loop, VAE
     decode and int16 x1000 convention all come from ``CandidateSampler``; this
     arm adds only the cohort loop and the monitor filename family. Existing
-    files are skipped, so the arm is re-entrant.
+    files are skipped, so the arm is re-entrant -- but only within one
+    candidate: ``SamplingProvenance`` pins the checkpoint identity of the dir
+    so a candidate swap cannot silently reuse the previous run's volumes.
     """
 
     def __init__(self, config, device, engine):
         self._sampler = CandidateSampler(config, device, None, engine)
 
     def sample_cohort(self, checkpoint_path, cohort, spacings, out_dir) -> int:
+        # Guard the re-entrant skip against cross-candidate reuse before any
+        # GPU work: the checkpoint must match what this dir was sampled under.
+        SamplingProvenance(out_dir).verify_or_record(checkpoint_path)
         model, recon = self._sampler.load_models(checkpoint_path)
         written = 0
         for item in cohort:

@@ -17,9 +17,12 @@ deploy/
 │   ├── run_token_dilution_d.sh          #   #209 诊断作业 D：同 seed 换 token 采样亮核甄别（GPU 采样 + CPU 统计，不入 git）
 │   ├── run_zcrop_geometry_audit_217.sh  #   #217 复核作业 A：工件 affine 几何基座复核（对照读数，只读、不入 git）
 │   ├── run_fixed_world_baseline_t5.sh   #   #252 序列②T5：修复后世界基线重跑（14 量族 + 作业 B 复用，只读、不入 git）
-│   └── run_dev_monitor_etwt.sh          #   #253 dev 监控作业：dev 选择点 ET/WT 观察线全链（分层采样→冻结仪器→观察线黄旗，选择面不入 git）
+│   ├── run_dev_monitor_etwt.sh          #   #253 dev 监控作业：dev 选择点 ET/WT 观察线全链（分层采样→冻结仪器→观察线黄旗，选择面不入 git）
+│   └── run_p1_retrain_t7.sh             #   #254 序列②T7：P1 整改重训单臂三改动（前置强校验 + 配方 diff 核对表 + 双进程拉起）
 ├── data/
-│   └── synapse_download_wizard.sh  # Synapse 数据集下载交互式向导（曙光 login 节点运行）
+│   ├── synapse_download_wizard.sh  # Synapse 数据集下载交互式向导（曙光 login 节点运行）
+│   ├── mrrate_replay_reacquire.py  # #254 T7 前置：MR-RATE replay raw 重获取（curl 直连 hf-mirror + 台账，幂等可重跑）
+│   └── rebuild_replay_sidecars.py  # #254 T7 前置：replay sidecar 从 raw header 重建（幂等；喂 T4 --sidecar-source）
 └── experiments/                    # 实验记录住址（书写约定见 experiments/README.md）
 ```
 
@@ -101,6 +104,7 @@ echo $! > /root/private_data/<run_dir>/predict.pid
 | `run_fixed_world_baseline_t5.sh` | #252 序列②T5（父 #247）：#249 写出协议修复落地后，同一 holdout 530 生成工件按修复后写出世界（声明域 [0,174) mm、crop 窗 [9,155) mm）重算 14 个注册 L2 量族 + 作业 B ET 甄别协议复用；作业 A/B 记录字面量锚点对账（comp_crop 质心 median 逐位复现、上缘声明域外质量归零），产出 #247 终验与旧 FAIL 读数之间的「修复后世界」基线（variant=diagnostic，零验收判定、零推理） | `bash deploy/jobs/run_fixed_world_baseline_t5.sh`（路径可用 `L2_RUN_TREE`/`MEASUREMENTS_CSV`/`PREDICT_DIR`/`INPUTS_DIR` 覆写） | 纯 CPU 零推理，无需 DCU 卡；锚点漂移以退出码 1 响亮失败（报告仍落运行树 `diagnostics/fixed_world_baseline/` 供取证，工件区不入 git），核心统计为带单测的纯函数 |
 | `run_dev_monitor_etwt.sh` | #253 dev 监控作业（序列②T6，父 #247）：dev list 分层样本（GLI 50/MEN 40/METS 24/PED 10/SSA 6，零 holdout 接触）以候选 checkpoint 采样伪四模态体→冻结仪器只读路径→作业 B 口径 ET 甄别 + WT 添注→观察线黄旗判定（METS ET 检出率 <0.9 或 vol_et_rel 中位 >2；选择面，非验收判定）；现候选基线即 T8 重训候选 go/no-go 的对照锚 | `EMB_ROOT=<...> bash deploy/jobs/run_dev_monitor_etwt.sh`（其余路径可用 `P1_ROOT`/`CKPT`/`DEV_LIST`/`RAW_ROOT`/`MONITOR_ROOT`/`RUN_ID` 覆写；T8 重训候选换 `CKPT`+`RUN_ID` 重跑） | 需一张 DCU 卡（130 例 × 4 模态 = 520 次采样 + 五挑战冻结仪器推理，可断点重入）；测量与报告步纯 CPU；报告与采样产物落 `$P1_ROOT/dev_monitor/`（工件区，不入 git），观察线评估为带单测的纯函数 |
 | `retrain_instrument_v2.sh` | L2 仪器 v2 重训（2026-09-01 决策，记录 `deploy/experiments/20260901-仪器主本丢失与重训决策.md`）：原冻结仪器主本随实例重置丢失，五挑战 fold_0 按新协议重训（统一 batch-only 派生 `nnUNetPlans_v2bs8`、4×DCU DDP、BF16 trainer 经 `nnUNet_extTrainer` 扩展点，nnunetv2 零改动）；数据/plans/fold 与 ADR-0003 §2 冻结批 hash 对账一致 | `bash deploy/jobs/retrain_instrument_v2.sh`（幂等：completion 审计门 + `--c` 断点续训；`WORK_ROOT`/`DATA_ROOT` 可覆写） | 需 4 张 DCU（5 × 62,500 步，数天级）；逐挑战 completion 审计落 `instruments/l2-instrument-v2/audit/`（工件区，不入 git）；完成后按决策记录 §5 走 spec 重钉→校准重跑→新 ADR |
+| `run_p1_retrain_t7.sh` | #254 序列②T7（父 #247）：P1 整改重训 run——以基底 p1-20260822T131947Z 同款配方单臂三改动（①编码 clip=True 消费 T4 重编码树、②token 34 冻结、③写出 affine），epoch/lr/1:1 replay/CFG=10/采样步数一概不动；前置强校验（底座 sha256、VAE md5、embedding 全量覆盖、config 钉值、network config 对基底 run.json 机读对账、P3 e39 观测）+ 配方 diff 核对表（协议改动恰 3、登记偏差恰 1 否则拒绝开训）+ 单训练进程拉起（dev 内嵌周期验证 grid=5，#278/#279 现役形态） | `bash deploy/jobs/run_p1_retrain_t7.sh [--dry-run]`（路径/卡数可用 `T7_ROOT`/`DEPLOY_ROOT`/`NUM_GPUS` 等覆写） | 需 4×DCU（world_size 4 为登记偏差 A，全卡训练无预留）+ 同仪器重提 reference bank（`reference_reinstr/`，见 T7 前置记录）；`--dry-run` 只校验不拉起；监控训练日志与 `ckpt/dev_eval/dev_trend.jsonl` |
 
 三个配方的仪器调用全部走 canonical 入口 `ctmr measure predict`（ADR-0009 收编，#140 迁至 `src/ctmr/infrastructure/nnunet_runner.py`），逐挑战 dataset/plans/config 由收编门禁测试钉死与 `INSTRUMENT_SPECS` 逐字一致——改 spec 请改 `src/ctmr/domain/instrument_spec.py`，勿手调配方参数。
 

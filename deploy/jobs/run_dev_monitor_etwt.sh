@@ -28,12 +28,16 @@
 #   RAW_ROOT      real BraTS 原生数据根(real 侧直通;默认 /root/private_data/ctmr/data/phase/raw)
 #   EMB_ROOT      embedding companion 根(<case>_t1n_emb.nii.gz.json 的 spacing;
 #                 必填——embedding 树位置是部署事实,不猜)
-#   NV_ENV/MODEL_JSON/NET_JSON  训练同源 configs 三件套(默认仓库 configs/ 下同名;
+#   ENV_JSON/MODEL_JSON/NET_JSON  训练同源 configs 三件套(默认仓库 configs/ 下同名;
 #                 env json 的 trained_autoencoder_path 须可从执行 cwd 解析,或以
 #                 VAE_DIR 提供其所在目录,配方据此落绝对路径覆写件)
 #   VAE_DIR       VAE 幸存副本目录(默认 /root/private_data/ctmr/instruments/v1_models)
 #   NNUNET_RAW/PREPROCESSED/RESULTS  冻结仪器三变量(默认 20260830 聚合布局)
-#   MONITOR_ROOT  监控工作根(默认 $P1_ROOT/dev_monitor;工件区不入 git)
+#   MONITOR_ROOT  监控工作根(默认 $P1_ROOT/dev_monitor;工件区不入 git)。
+#                 采样臂以 sampling_provenance.json 钉住目录的候选 checkpoint
+#                 指纹——换新候选(CKPT/RUN_ID)必须改用全新 MONITOR_ROOT
+#                 (如 $P1_ROOT/dev_monitor/$RUN_ID),否则指纹不符即响亮失败,
+#                 不会静默复用旧候选的采样体去贴新 run_id
 #   BOOTSTRAP_B   bootstrap 重采样数(默认 10000)
 #   HIP_VISIBLE_DEVICES  选卡(可选)
 #
