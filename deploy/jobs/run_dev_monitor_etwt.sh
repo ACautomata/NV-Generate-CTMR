@@ -4,13 +4,23 @@
 # 用途:候选选择点去盲监控(收编裁决 #5 采纳项)。对 dev list(1060 例的分层样本,
 #   GLI 50/MEN 40/METS 24/PED 10/SSA 6 = 130 例 × 4 模态;**绝不可碰 holdout 530**
 #   ——选择泄漏即 L2 终验作废)以候选 checkpoint 采样伪四模态体 → 冻结仪器只读路径
-#   (final_acceptance predict / measurement_run,plan schema 与终验同构,执行侧零改动)
+#   (final_acceptance predict / measurement_run,plan schema 与终验同构;推理脚本内
+#   -c/-p/-tr 按 nnUNet_results 树实况覆写,其余冻结执行口径——TTA on、fold 0——零改动)
 #   → 作业 B 口径 ET 甄别 + WT 添注读数 → 观察线黄旗判定(METS ET 检出率 <0.9 或
 #   任一挑战 vol_et_rel 中位 >2)。选择面、非验收判定;冻结仪器/包络/判定线零改动。
 #
-# 全链五步(幂等处可断点重入):
+# 仪器版本注记(2026-09-03):l2 仪器主本随 2026-08-30 聚合重置丢失,已按 v2 协议
+#   全量重训并换树(nnunet_results -> l2-instrument-v2/results;标准 plans 派生
+#   nnUNetPlans_v2bs8、4×DCU DDP、BF16,见 deploy/experiments/20260901-仪器主本丢失
+#   与重训决策.md)。本链路读数须标注**仪器 v2**,与 T5 历史读数不可直接比仪器版本;
+#   仓库 INSTRUMENT_SPECS 冻结锚与新 ADR 同批重钉,不被本配方触碰(实况覆写只改
+#   生成物脚本,零包内改动)。
+#
+# 全链五步 + 一步覆写(幂等处可断点重入):
 #   1. 采样 + 装配 plan(GPU;文件存在即跳过;--plan-only 可只重建 plan)
 #   2. 冻结仪器推理脚本写出(predict_all.sh)
+#   2b. 仪器 spec 实况覆写(按 nnUNet_results 树的 <trainer>__<plans>__<config>
+#       目录名改写 predict_*.sh 的 -c/-p/-tr;与实况一致则零改动)
 #   3. 仪器输入组装(gen 侧重采样 + RAS→LPS 翻转;real 侧原生直通)
 #   4. 冻结仪器逐挑战推理(五挑战;nnUNet 环境变量内置)
 #   5. 测量 CSV + 观察线报告(CPU;dev_monitor_diagnostic.{json,md})
@@ -33,6 +43,9 @@
 #                 VAE_DIR 提供其所在目录,配方据此落绝对路径覆写件)
 #   VAE_DIR       VAE 幸存副本目录(默认 /root/private_data/ctmr/instruments/v1_models)
 #   NNUNET_RAW/PREPROCESSED/RESULTS  冻结仪器三变量(默认 20260830 聚合布局)
+#   NNUNET_EXT_TRAINER  包外 trainer 目录(nnUNet_extTrainer;v2 仪器的 BF16
+#                 子类 nnUNetTrainer_250epochs_bf16 在此,包内查无——推理与
+#                 训练同源消费;默认 l2-instrument-v2/trainer)
 #   MONITOR_ROOT  监控工作根(默认 $P1_ROOT/dev_monitor;工件区不入 git)。
 #                 采样臂以 sampling_provenance.json 钉住目录的候选 checkpoint
 #                 指纹——换新候选(CKPT/RUN_ID)必须改用全新 MONITOR_ROOT
@@ -68,6 +81,7 @@ NET_JSON="${NET_JSON:-$PROJECT_ROOT/configs/config_network_rflow.json}"
 NNUNET_RAW="${NNUNET_RAW:-/root/private_data/ctmr/data/nnunet_raw}"
 NNUNET_PREPROCESSED="${NNUNET_PREPROCESSED:-/root/private_data/ctmr/data/nnunet_preprocessed}"
 NNUNET_RESULTS="${NNUNET_RESULTS:-/root/private_data/ctmr/instruments/nnunet_results}"
+NNUNET_EXT_TRAINER="${NNUNET_EXT_TRAINER:-/root/private_data/ctmr/instruments/l2-instrument-v2/trainer}"
 MONITOR_ROOT="${MONITOR_ROOT:-$P1_ROOT/dev_monitor}"
 SAMPLES_DIR="$MONITOR_ROOT/samples"
 
@@ -128,13 +142,55 @@ python -m ctmr.application.acceptance.distribution.final_acceptance predict \
     --plan "$MONITOR_ROOT/plan.json" \
     --output-dir "$MONITOR_ROOT"
 
+# ── 第二步b:仪器 spec 实况覆写(零包内改动)──
+# PredictScriptWriter 按仓库 INSTRUMENT_SPECS 冻结锚写脚本;仪器 v2 换树后该锚
+# 待与校准重跑+新 ADR 同批重钉,而监控是 variant=diagnostic 选择面,须消费现役
+# results 树——此处按树实况(<trainer>__<plans>__<config> 恰一个目录,不猜)
+# 改写生成物脚本的 -c/-p/-tr,并打印前后对照。与实况一致则零改动(幂等)。
+python - "$NNUNET_RESULTS" "$MONITOR_ROOT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+results_root = Path(sys.argv[1])
+monitor_root = Path(sys.argv[2])
+for script in sorted(monitor_root.glob("predict_*.sh")):
+    if script.name == "predict_all.sh":
+        continue
+    text = script.read_text()
+    challenge = script.stem.removeprefix("predict_")
+    dataset_id = re.search(r"-d (\S+)", text)
+    spec_old = re.search(r"-c (\S+) -p (\S+) -tr (\S+)", text)
+    if dataset_id is None or spec_old is None:
+        raise SystemExit(f"[FATAL] {challenge}: predict 脚本无 -d/-c/-p/-tr spec 段——生成器格式已变,拒绝盲改")
+    ds_dir = results_root / dataset_id.group(1)
+    if not ds_dir.is_dir():
+        raise SystemExit(f"[FATAL] 仪器结果树缺 {ds_dir}——换树/重训未完成,拒绝盲跑")
+    trainer_dirs = sorted(p.name for p in ds_dir.iterdir() if p.is_dir())
+    if len(trainer_dirs) != 1:
+        raise SystemExit(f"[FATAL] {ds_dir} 下应恰一个 trainer 目录,实得 {trainer_dirs}——不猜")
+    parts = trainer_dirs[0].split("__")
+    if len(parts) != 3:
+        raise SystemExit(f"[FATAL] {trainer_dirs[0]!r} 不是 <trainer>__<plans>__<config> 三段式——不猜")
+    trainer, plans, config = parts
+    replacement = f"-c {config} -p {plans} -tr {trainer}"
+    if spec_old.group(0) == replacement:
+        print(f"[instrument-spec] {challenge}: 脚本 spec 已与 results 树一致({trainer_dirs[0]}),零改动")
+        continue
+    script.write_text(text.replace(spec_old.group(0), replacement))
+    print(f"[instrument-spec] {challenge}: {spec_old.group(3)}__{spec_old.group(2)}__{spec_old.group(1)} -> {trainer_dirs[0]}")
+PY
+
 # ── 第三步:仪器输入组装(gen 重采样 + RAS→LPS 翻转;real 原生直通)──
 python -m ctmr.application.acceptance.distribution.measurement_run assemble-execute \
     --plan "$MONITOR_ROOT/plan.json" \
     --output-root "$MONITOR_ROOT"
 
 # ── 第四步:冻结仪器逐挑战推理(五挑战;冻结配置,TTA 按冻结口径开启)──
-export nnUNet_raw="$NNUNET_RAW" nnUNet_preprocessed="$NNUNET_PREPROCESSED" nnUNet_results="$NNUNET_RESULTS" nnUNet_compile=f
+# nnUNet_extTrainer:实况 trainer(v2 BF16 子类)是包外类,训练侧经同变量
+# 接入(20260901-仪器主本丢失与重训决策.md §4);推理侧缺它即
+# "Could not find requested nnunet trainer" 响亮死。
+export nnUNet_raw="$NNUNET_RAW" nnUNet_preprocessed="$NNUNET_PREPROCESSED" nnUNet_results="$NNUNET_RESULTS" nnUNet_compile=f nnUNet_extTrainer="$NNUNET_EXT_TRAINER"
 (cd "$MONITOR_ROOT" && bash predict_all.sh)
 
 # ── 第五步:测量 CSV + 观察线报告(纯 CPU)──

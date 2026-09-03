@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from ctmr.application.acceptance.distribution.dev_monitor import DevMonitorReport, main
+from ctmr.application.acceptance.distribution.dev_monitor import DevMonitorReport, WtMonitor, main
 from ctmr.application.acceptance.distribution.diagnostic_support import DiagnosticError
 from ctmr.application.acceptance.distribution.measurement_table import MEASUREMENT_FIELDS, MeasurementTable
 
@@ -124,6 +124,38 @@ def test_report_declares_no_verdict_anywhere(tmp_path):
     payload = json.loads(Path(json_path).read_text())
     assert "verdict" not in json.dumps(payload)
     assert payload["observation_line"]["flag"] is True  # the flag is the only judgement-shaped output
+
+
+def test_nonpositive_real_wt_excludes_the_pair_and_counts_it():
+    """RelativeDifference.of is None for a non-positive real denominator (the
+    callers own what undefined means) -- the WT addendum must keep such pairs
+    out of the rel statistics and count them visibly, not crash sorting Nones
+    (the 2026-09-03 baseline run's live TypeError on real dev volumes)."""
+    rows = []
+    for index in range(4):
+        rows.append(_row("GLI", f"g{index}", "gen", 2.0, vol_wt="20.0"))
+        rows.append(_row("GLI", f"g{index}", "real", 2.0, vol_wt="0.0" if index == 0 else "10.0"))
+    reading = {item["challenge"]: item for item in WtMonitor(bootstrap_b=100).readings(rows)}["GLI"]
+    wt_rel = reading["rel_diff"]
+    assert wt_rel["n_cases"] == 3  # the (20-10)/10 pairs only
+    assert wt_rel["n_undefined"] == 1  # the zero-WT real denominator, visible not silent
+    assert wt_rel["median"] == pytest.approx(1.0)
+
+
+def test_missing_wt_value_on_either_side_counts_the_pair_undefined():
+    """A measured row whose vol_wt_ml is absent leaves the pair without a
+    difference -- counted in n_undefined, never dropped silently (the
+    plan-less CLI path has no completeness gate behind it)."""
+    rows = []
+    for index in range(4):
+        # g0: real value missing; g1: gen value missing; g2/g3: defined pairs
+        rows.append(_row("GLI", f"g{index}", "gen", 2.0, vol_wt="" if index == 1 else "20.0"))
+        rows.append(_row("GLI", f"g{index}", "real", 2.0, vol_wt="" if index == 0 else "10.0"))
+    reading = {item["challenge"]: item for item in WtMonitor(bootstrap_b=100).readings(rows)}["GLI"]
+    wt_rel = reading["rel_diff"]
+    assert wt_rel["n_cases"] == 2
+    assert wt_rel["n_undefined"] == 2
+    assert wt_rel["median"] == pytest.approx(1.0)
 
 
 def test_cli_end_to_end(tmp_path):
