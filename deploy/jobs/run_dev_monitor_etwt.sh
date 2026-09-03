@@ -43,6 +43,9 @@
 #                 VAE_DIR 提供其所在目录,配方据此落绝对路径覆写件)
 #   VAE_DIR       VAE 幸存副本目录(默认 /root/private_data/ctmr/instruments/v1_models)
 #   NNUNET_RAW/PREPROCESSED/RESULTS  冻结仪器三变量(默认 20260830 聚合布局)
+#   NNUNET_EXT_TRAINER  包外 trainer 目录(nnUNet_extTrainer;v2 仪器的 BF16
+#                 子类 nnUNetTrainer_250epochs_bf16 在此,包内查无——推理与
+#                 训练同源消费;默认 l2-instrument-v2/trainer)
 #   MONITOR_ROOT  监控工作根(默认 $P1_ROOT/dev_monitor;工件区不入 git)。
 #                 采样臂以 sampling_provenance.json 钉住目录的候选 checkpoint
 #                 指纹——换新候选(CKPT/RUN_ID)必须改用全新 MONITOR_ROOT
@@ -78,6 +81,7 @@ NET_JSON="${NET_JSON:-$PROJECT_ROOT/configs/config_network_rflow.json}"
 NNUNET_RAW="${NNUNET_RAW:-/root/private_data/ctmr/data/nnunet_raw}"
 NNUNET_PREPROCESSED="${NNUNET_PREPROCESSED:-/root/private_data/ctmr/data/nnunet_preprocessed}"
 NNUNET_RESULTS="${NNUNET_RESULTS:-/root/private_data/ctmr/instruments/nnunet_results}"
+NNUNET_EXT_TRAINER="${NNUNET_EXT_TRAINER:-/root/private_data/ctmr/instruments/l2-instrument-v2/trainer}"
 MONITOR_ROOT="${MONITOR_ROOT:-$P1_ROOT/dev_monitor}"
 SAMPLES_DIR="$MONITOR_ROOT/samples"
 
@@ -181,7 +185,10 @@ python -m ctmr.application.acceptance.distribution.measurement_run assemble-exec
     --output-root "$MONITOR_ROOT"
 
 # ── 第四步:冻结仪器逐挑战推理(五挑战;冻结配置,TTA 按冻结口径开启)──
-export nnUNet_raw="$NNUNET_RAW" nnUNet_preprocessed="$NNUNET_PREPROCESSED" nnUNet_results="$NNUNET_RESULTS" nnUNet_compile=f
+# nnUNet_extTrainer:实况 trainer(v2 BF16 子类)是包外类,训练侧经同变量
+# 接入(20260901-仪器主本丢失与重训决策.md §4);推理侧缺它即
+# "Could not find requested nnunet trainer" 响亮死。
+export nnUNet_raw="$NNUNET_RAW" nnUNet_preprocessed="$NNUNET_PREPROCESSED" nnUNet_results="$NNUNET_RESULTS" nnUNet_compile=f nnUNet_extTrainer="$NNUNET_EXT_TRAINER"
 (cd "$MONITOR_ROOT" && bash predict_all.sh)
 
 # ── 第五步:测量 CSV + 观察线报告(纯 CPU)──
