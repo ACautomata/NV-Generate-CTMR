@@ -90,11 +90,7 @@ class WtMonitor:
                 continue
             measured[row["side"]][row["case"]] = MeasurementTable.number(row, "vol_wt_ml")
         valid = {side: {case: volume for case, volume in cells.items() if volume is not None} for side, cells in measured.items()}
-        differences = [
-            RelativeDifference.of(valid["gen"][case], valid["real"][case])
-            for case in valid["gen"]
-            if case in valid["real"]
-        ]
+        differences = [RelativeDifference.of(valid["gen"][case], valid["real"][case]) for case in valid["gen"] if case in valid["real"]]
         rel_values = [value for value in differences if value is not None]
         # undefined pairs, both causes counted: a non-positive real denominator
         # (RelativeDifference None) and a one-sided missing WT value -- visible,
