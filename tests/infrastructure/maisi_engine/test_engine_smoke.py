@@ -32,6 +32,7 @@ import ctmr.infrastructure.maisi_engine  # noqa: F401  (import = new-home resolu
 from ctmr.infrastructure.maisi_engine import diff_model_infer as engine_infer
 from ctmr.infrastructure.maisi_engine import diff_model_setting as engine_setting
 from ctmr.infrastructure.maisi_engine.create_training_data import create_transforms as engine_create_transforms
+from ctmr.infrastructure.maisi_engine.create_training_data import new_dim_from_ras_shape as engine_new_dim_from_ras_shape
 from ctmr.infrastructure.maisi_engine.create_training_data import round_number as engine_round_number
 from ctmr.infrastructure.maisi_engine.inference_primitives import check_input_ct, check_input_mr, dynamic_infer
 from ctmr.infrastructure.maisi_engine.instance_definition import define_instance
@@ -150,6 +151,82 @@ def test_create_transforms_pipelines_by_modality_and_dim():
     unknown_no_dim = engine_create_transforms(None, "unknown")
     # no intensity transform for an unsupported modality, no resize without a dim
     assert [type(t).__name__ for t in unknown_no_dim.transforms] == ["LoadImaged", "EnsureChannelFirstd", "Orientationd"]
+
+
+# ------------------------------------------------- resize-target dim decision (#312)
+
+
+def _write_asym_volume(path, affine):
+    """A (240, 240, 155) asymmetric volume (BraTS-magnitude dims, rounding-distinct axes)."""
+    volume = np.zeros((240, 240, 155), dtype=np.float32)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    nib.save(nib.Nifti1Image(volume, affine), str(path))
+
+
+def _plain_pipe():
+    return engine_create_transforms(None, "mri")
+
+
+def test_new_dim_from_ras_shape_reads_reoriented_axes(tmp_path):
+    """The #312 root cause pin: the resize target must come from the RAS-reoriented
+    spatial shape, not the NIfTI header's storage-axis dim. Stored under a SLA
+    affine (storage axis k -> L), the (240, 240, 155) volume reorients to
+    (155, 240, 240); the pre-T2 header-dim path rounds the storage order to
+    (256, 256, 128), scrambling the encode axes for any axis-permuting direction
+    (the replay/MR-RATE ~65% corrupted-shape share)."""
+    sla_affine = np.array(
+        [
+            [0.0, 0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    path = tmp_path / "asym_sla.nii.gz"
+    _write_asym_volume(path, sla_affine)
+
+    image = _plain_pipe()({"image": str(path)})["image"]
+
+    assert tuple(int(v) for v in image.meta["dim"][1:4]) == (240, 240, 155)  # the buggy source: storage order
+    assert tuple(int(v) for v in image.shape[1:4]) == (155, 240, 240)  # RAS-reoriented shape
+    assert engine_new_dim_from_ras_shape(image) == (128, 256, 256)  # reoriented, rounded to the 128 base
+    assert (256, 256, 128) != engine_new_dim_from_ras_shape(image)  # ≠ what the header-dim path would produce
+
+
+def test_new_dim_from_ras_shape_agrees_with_header_order_for_flip_only_directions(tmp_path):
+    """BraTS-arm history, recorded: LPS/RAS volumes never permute axes under the
+    RAS reorientation, so the T2 decision is identical to the pre-T2 header-dim
+    path there -- the direction audit's free pass that left the BraTS arm
+    unscathed while the replay arm scrambled."""
+    path = tmp_path / "asym_lps.nii.gz"
+    _write_asym_volume(path, np.diag([-1.0, -1.0, 1.0, 1.0]))
+
+    image = _plain_pipe()({"image": str(path)})["image"]
+
+    assert tuple(int(v) for v in image.shape[1:4]) == (240, 240, 155)  # flip-only: storage order survives
+    assert engine_new_dim_from_ras_shape(image) == (256, 256, 128)
+
+
+def test_ras_shape_derivation_matches_monai_orientation(tmp_path):
+    """The shape guard (reencode_ras) derives expected shapes lazily via nibabel's
+    as_closest_canonical, while the encode chain reorients through MONAI's
+    Orientationd; the two must agree on the reoriented shape or the guard and
+    the chain would drift apart (dual-source pin)."""
+    sla_affine = np.array(
+        [
+            [0.0, 0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    path = tmp_path / "asym_sla.nii.gz"
+    _write_asym_volume(path, sla_affine)
+
+    monai_shape = tuple(int(v) for v in _plain_pipe()({"image": str(path)})["image"].shape[1:4])
+    nib_shape = tuple(int(v) for v in nib.as_closest_canonical(nib.load(str(path))).shape)
+
+    assert nib_shape == monai_shape == (155, 240, 240)
 
 
 # -------------------------------------------------------------- input guards
