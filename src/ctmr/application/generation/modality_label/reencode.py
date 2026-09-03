@@ -126,20 +126,29 @@ class EmbeddingManifest:
     def __init__(self, emb_root):
         self._emb_root = Path(emb_root)
 
-    def walk(self):
+    def walk(self, threads: int = 1):
+        """Walk the tree into manifest rows, path-sorted (byte-stable). ``threads``
+        parallelizes the per-file reads (md5 + header) across a thread pool --
+        pure IO, order untouched; the default 1 keeps the T4 serial walk."""
+        paths = sorted(self._emb_root.rglob("*_emb.nii.gz"))
+        if threads > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                return list(executor.map(self._row_of, paths))
+        return [self._row_of(path) for path in paths]
+
+    def _row_of(self, path):
         import nibabel as nib
         from nibabel.filebasedimages import ImageFileError
 
-        rows = []
-        for path in sorted(self._emb_root.rglob("*_emb.nii.gz")):
-            row = {"path": path.relative_to(self._emb_root).as_posix(), "bytes": path.stat().st_size, "shape": None}
-            row["md5"] = self._md5_of(path)
-            try:
-                row["shape"] = [int(s) for s in nib.load(str(path)).shape]
-            except (OSError, ValueError, ImageFileError):
-                pass
-            rows.append(row)
-        return rows
+        row = {"path": path.relative_to(self._emb_root).as_posix(), "bytes": path.stat().st_size, "shape": None}
+        row["md5"] = self._md5_of(path)
+        try:
+            row["shape"] = [int(s) for s in nib.load(str(path)).shape]
+        except (OSError, ValueError, ImageFileError):
+            pass
+        return row
 
     def write(self, rows):
         """Register the walked rows beside the embeddings; returns the manifest path."""

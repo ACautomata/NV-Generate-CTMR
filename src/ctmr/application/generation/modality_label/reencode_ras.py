@@ -131,32 +131,41 @@ class EmbeddingShapeGuard:
             shape.pop()
         return tuple(self.round_to_encode_grid(size) // LATENT_DOWNSAMPLE for size in shape) + (LATENT_CHANNELS,)
 
-    def check(self, pairs, shapes_by_path) -> list:
+    def check(self, pairs, shapes_by_path, threads: int = 1) -> list:
         """The violations among ``[(emb_rel, raw_path)]`` given the manifest's
         per-path shapes: a shape that disagrees with the derived expectation
         (or an unreadable artifact -- manifest shape null, or a raw volume the
         expectation cannot even be derived from) is a violation; absence is
-        NOT -- the missing reconciliation owns that verdict."""
-        rows = []
-        for emb_rel, raw_path in pairs:
+        NOT -- the missing reconciliation owns that verdict. ``threads``
+        parallelizes the raw-header reads (pure IO) over a thread pool; the
+        violation rows keep the pairs' order either way."""
+
+        def one(pair):
+            emb_rel, raw_path = pair
             if emb_rel not in shapes_by_path:
-                continue
+                return None
             actual = shapes_by_path[emb_rel]
             try:
                 expected = list(self.derive_expected_latent_shape(raw_path))
             except (OSError, ValueError):
-                rows.append({"path": emb_rel, "expected": None, "actual": actual, "reason": "unreadable_raw"})
-                continue
+                return {"path": emb_rel, "expected": None, "actual": actual, "reason": "unreadable_raw"}
             if actual != expected:
-                rows.append(
-                    {
-                        "path": emb_rel,
-                        "expected": expected,
-                        "actual": actual,
-                        "reason": "unreadable_shape" if actual is None else "shape_mismatch",
-                    }
-                )
-        return rows
+                return {
+                    "path": emb_rel,
+                    "expected": expected,
+                    "actual": actual,
+                    "reason": "unreadable_shape" if actual is None else "shape_mismatch",
+                }
+            return None
+
+        if threads > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                rows = list(executor.map(one, pairs))
+        else:
+            rows = [one(pair) for pair in pairs]
+        return [row for row in rows if row is not None]
 
 
 class EmbCohortList:
@@ -209,14 +218,16 @@ class SidecarMultiSource:
         self._emb_root = Path(emb_root)
         self._source_roots = [Path(root) for root in source_roots]
 
-    def ensure(self, emb_rels) -> dict:
-        statuses = {}
-        for emb_rel in emb_rels:
+    def ensure(self, emb_rels, threads: int = 1) -> dict:
+        """Fetch/validate one sidecar per entry; ``threads`` parallelizes the
+        per-entry stats and copies (pure IO) over a thread pool -- on a
+        network filesystem the per-file latency, not the bytes, dominates."""
+
+        def one(emb_rel):
             name = emb_rel + ".json"
             dst = self._emb_root / name
             if dst.is_file():
-                statuses[emb_rel] = "present" if EmbeddingManifest.valid_sidecar(dst) else "invalid"
-                continue
+                return emb_rel, ("present" if EmbeddingManifest.valid_sidecar(dst) else "invalid")
             copied = False
             saw_file = False
             for root in self._source_roots:
@@ -229,8 +240,14 @@ class SidecarMultiSource:
                 if EmbeddingManifest.valid_sidecar(dst):
                     copied = True
                     break
-            statuses[emb_rel] = "copied" if copied else ("invalid" if saw_file else "absent")
-        return statuses
+            return emb_rel, ("copied" if copied else ("invalid" if saw_file else "absent"))
+
+        if threads > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                return dict(executor.map(one, emb_rels))
+        return dict(one(emb_rel) for emb_rel in emb_rels)
 
 
 class ReencodeRasReport:
@@ -390,6 +407,13 @@ def main(
         "when given, an entry without a usable sidecar reconciles missing",
     )
     parser.add_argument("--self-check-limit", type=int, default=200, help="uniform-stride spot-check subsample (0 switches it off)")
+    parser.add_argument(
+        "--io-threads",
+        type=int,
+        default=16,
+        help="thread pool for the finishing pass's IO-bound per-file reads (sidecar checks, the "
+        "md5 walk, the guard's raw-header reads; a network filesystem is latency-bound at one file in flight)",
+    )
     parser.add_argument("--bootstrap-b", type=int, default=10000, help="bootstrap resamples for the spot-check CI90")
     parser.add_argument("--output-dir", required=True, help="sugon artifact area for the report (never git)")
     parser.add_argument("--run-id", default=None, help="the retrain binding's run id, recorded into the report")
@@ -469,14 +493,16 @@ def main(
     manifest = EmbeddingManifest(embedding_root)
     sidecar_statuses = None
     if args.sidecar_source:
-        sidecar_statuses = SidecarMultiSource(embedding_root, args.sidecar_source).ensure([emb_rel for emb_rel, _ in all_pairs])
-    manifest_rows = manifest.walk()
+        sidecar_statuses = SidecarMultiSource(embedding_root, args.sidecar_source).ensure(
+            [emb_rel for emb_rel, _ in all_pairs], threads=args.io_threads
+        )
+    manifest_rows = manifest.walk(threads=args.io_threads)
     manifest_path = manifest.write(manifest_rows)
     shapes_by_path = {row["path"]: row["shape"] for row in manifest_rows}
     missing = [emb_rel for emb_rel, _ in all_pairs if emb_rel not in shapes_by_path]
     if sidecar_statuses is not None:
         missing += [rel for rel, status in sidecar_statuses.items() if status in ("absent", "invalid") and rel not in missing]
-    violations = EmbeddingShapeGuard().check(all_pairs, shapes_by_path)
+    violations = EmbeddingShapeGuard().check(all_pairs, shapes_by_path, threads=args.io_threads)
 
     # Step 3: the in-domain spot-check, two pools. The BraTS t1c pool rides
     # T4's convention (job C's anchors are t1c-only readings); the replay pool
