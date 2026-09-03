@@ -69,6 +69,7 @@ import os
 from pathlib import Path
 
 import monai
+import nibabel as nib
 import torch
 import torch.distributed as dist
 from monai.data import DataLoader, partition_dataset
@@ -79,6 +80,7 @@ from ctmr.application.shell import PhaseHarness, TrainContext, TrainProvenanceWr
 from ctmr.application.train_cli import TrainCli
 from ctmr.domain.checkpoints import CheckpointRepository
 from ctmr.domain.engine import GenerationEngine
+from ctmr.domain.generation.embedding_shape import EmbeddingShapeContract
 from ctmr.domain.generation.model import DiffusionModel
 from ctmr.domain.generation.objective import ModalityLabelPerturber
 from ctmr.domain.recipe import P1RecipeSpec
@@ -88,11 +90,21 @@ SCALE_FACTOR_RELATIVE_TOLERANCE = 0.5  # issue #10 §7: sanity assert, not a re-
 
 
 class DataCatalog:
-    """The 1:1 BraTS + MR-RATE replay training list (spec #51 decision 6)."""
+    """The 1:1 BraTS + MR-RATE replay training list (spec #51 decision 6).
+
+    ``file_records`` doubles as the startup gate (issue #313, series-③ T3):
+    every training embedding must satisfy the encode chain's shape contract
+    before the loader ever touches it -- a skipped transpose, a non-4D file,
+    a grid no round_number pass produced -- fails the run here with a
+    diagnostic, never silently inside a training batch. Axis-order scrambles
+    that masquerade as legal shapes are the T2 re-encode's job to rebuild;
+    this gate stops the structural stragglers.
+    """
 
     def __init__(self, args, logger):
         self._args = args
         self._logger = logger
+        self._shape_contract = EmbeddingShapeContract()
 
     def load_entries(self):
         entries = []
@@ -120,6 +132,7 @@ class DataCatalog:
                     "git history in #143 pending the `ctmr data` family, ADR-0015)"
                 )
             info = emb + ".json"
+            self._shape_contract.check(nib.load(emb).shape, path=emb, entry=entry)
             records.append({"image": emb, "spacing": info, "modality": info})
         return records
 
@@ -185,6 +198,11 @@ class TrainKernel:
             [
                 monai.transforms.LoadImaged(keys=["image"]),
                 monai.transforms.EnsureChannelFirstd(keys=["image"]),
+                # Orientation RAS (issue #313, series-③ T3): the loading-floor
+                # backstop -- any artifact that bypassed the encode chain's
+                # re-orientation is forced into the RAS world here (same slot
+                # as the encode chain's own Orientationd).
+                monai.transforms.Orientationd(keys=["image"], axcodes="RAS"),
                 monai.transforms.Lambdad(keys="spacing", func=lambda x: self._load_json_field(x, "spacing")),
                 monai.transforms.Lambdad(keys="spacing", func=lambda x: x * 1e2),
                 monai.transforms.Lambdad(keys="modality", func=lambda x: self._token_of(x)),
