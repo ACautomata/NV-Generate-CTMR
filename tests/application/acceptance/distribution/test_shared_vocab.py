@@ -135,7 +135,9 @@ def test_shared_registry_pins_the_frozen_values():
     assert challenge_registry.GLOBAL_SEED == 20260821
     assert challenge_registry.CHALLENGE_SEED_OFFSET == {"GLI": 1, "SSA": 2, "MEN": 3, "METS": 4, "PED": 5}
     # the diagnostic seed namespace (ADR-0017 decision 5, #232): base, band
-    # width and the job A/B slot table, byte-exact against the pre-#232 modules
+    # width and the job A/B slot table, byte-exact against the pre-#232 modules;
+    # the dev monitor (#253) joins at the next free block 600 (re-registered
+    # from a 400 filing before its first draw, after T5's 400/500 bands landed)
     assert challenge_registry.DIAGNOSTIC_SEED_BASE == 900_000_000
     assert challenge_registry.DIAGNOSTIC_SEED_BAND == 1000
     assert challenge_registry.DIAGNOSTIC_SEED_SLOTS == {
@@ -168,6 +170,7 @@ def test_shared_registry_pins_the_frozen_values():
         "t5_uncomp_centroid_et_z": 511,
         "t5_uncomp_wt_brain_rel": 512,
         "t5_uncomp_et_wt_rel": 513,
+        "dev_monitor_wt_rel_diff": 600,
     }
     # the ADR-0002 published 4-dp literals, verbatim (spot anchors; the full
     # table is pinned by the judge's own envelope tests)

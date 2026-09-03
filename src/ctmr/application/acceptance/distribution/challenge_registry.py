@@ -63,6 +63,10 @@ CHALLENGE_SEED_OFFSET = {"GLI": 1, "SSA": 2, "MEN": 3, "METS": 4, "PED": 5}
 # comp-arm slots 400+index, uncomp-arm slots 500+index, with the two job A
 # anchor quantities (vol_wt_rel index 0, centroid_wt_z index 3) exempt: their
 # arms re-draw job A's registered bit-streams exactly (0/100 and 1/101).
+# The dev monitor (#253) takes the next free block 600 -- originally filed as
+# 400 before T5's bands landed; re-registered before its first draw (the WT
+# CI90 seed is consumed at measurement time), so no bit-stream ever shipped
+# under the 400 filing.
 DIAGNOSTIC_SEED_BASE = 900_000_000
 DIAGNOSTIC_SEED_BAND = 1000
 DIAGNOSTIC_SEED_SLOTS = {
@@ -97,6 +101,7 @@ DIAGNOSTIC_SEED_SLOTS = {
     "t5_uncomp_centroid_et_z": 511,
     "t5_uncomp_wt_brain_rel": 512,
     "t5_uncomp_et_wt_rel": 513,
+    "dev_monitor_wt_rel_diff": 600,  # dev monitor (#253): WT relative-difference CI90
 }
 
 # ADR-0002 frozen envelopes (published 4-dp literals; the authoritative source

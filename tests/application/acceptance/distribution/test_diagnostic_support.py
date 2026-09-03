@@ -15,8 +15,10 @@ import json
 
 import pytest
 
+import ctmr.application.acceptance.distribution.dev_monitor as dev_monitor
 import ctmr.application.acceptance.distribution.et_discrimination as et_discrimination
 import ctmr.application.acceptance.distribution.intensity_domain as intensity_domain
+import ctmr.application.acceptance.distribution.observation_line as observation_line
 import ctmr.application.acceptance.distribution.token_dilution as token_dilution
 import ctmr.application.acceptance.distribution.zcrop_compensation as zcrop_compensation
 import ctmr.application.acceptance.distribution.zcrop_geometry_audit as zcrop_geometry_audit
@@ -50,7 +52,9 @@ def test_diagnostic_seed_slot_table_is_pinned_byte_exact():
     100/101 of each challenge band; job B (#207) takes slot 200; the T5
     fixed-world baseline (#252) takes the next free blocks -- comp arm
     400 + judge quantity index, uncomp arm 500 + index, with the two job A
-    anchor quantities (indices 0/3) exempt as gaps."""
+    anchor quantities (indices 0/3) exempt as gaps; the dev monitor (#253)
+    takes the next free block 600 (re-registered from a 400 filing before its
+    first draw)."""
     assert DIAGNOSTIC_SEED_SLOTS == {
         "zcrop_vol_uncomp": 0,
         "zcrop_centroid_uncomp": 1,
@@ -81,6 +85,7 @@ def test_diagnostic_seed_slot_table_is_pinned_byte_exact():
         "t5_uncomp_centroid_et_z": 511,
         "t5_uncomp_wt_brain_rel": 512,
         "t5_uncomp_et_wt_rel": 513,
+        "dev_monitor_wt_rel_diff": 600,
     }
 
 
@@ -147,7 +152,14 @@ def test_no_diagnostic_seed_collides_with_any_derived_judge_seed():
 
 
 def test_diagnostic_error_has_a_single_definition_across_the_fleet():
-    for module in (zcrop_compensation, et_discrimination, intensity_domain, token_dilution):
+    for module in (
+        zcrop_compensation,
+        et_discrimination,
+        intensity_domain,
+        token_dilution,
+        observation_line,
+        dev_monitor,
+    ):
         assert module.DiagnosticError is DiagnosticError, module.__name__
     assert issubclass(zcrop_geometry_audit.GeometryAuditError, DiagnosticError)
 

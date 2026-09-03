@@ -254,14 +254,14 @@ class EtDiscriminationReport:
                 "per_challenge": {
                     reading["challenge"]: {key: value for key, value in reading.items() if key != "per_case_rows"} for reading in readings
                 },
-                "cross_challenge": self._cross_challenge(readings),
-                "per_case": self._per_case(readings),
+                "cross_challenge": self.cross_challenge(readings),
+                "per_case": self.per_case(readings),
             }
         )
         return self._writer.write(payload, self._markdown(payload), output_dir)
 
     @staticmethod
-    def _cross_challenge(readings):
+    def cross_challenge(readings):
         """Tally across challenges: total ET-missing and empty-pred counts over valid gen rows."""
         real_only = empty = n = 0
         for reading in readings:
@@ -271,7 +271,7 @@ class EtDiscriminationReport:
         return {"real_only": {"k": real_only, "n": n}, "gen_empty_pred": {"k": empty, "n": n}}
 
     @staticmethod
-    def _per_case(readings):
+    def per_case(readings):
         return [row for reading in readings for row in reading["per_case_rows"]]
 
     @staticmethod
