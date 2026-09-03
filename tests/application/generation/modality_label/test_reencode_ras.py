@@ -46,7 +46,10 @@ ASYM_BUGGY_LATENT = (32, 32, 64, LATENT_CHANNELS)
 
 def _write_raw(path, shape=ASYM_SHAPE, affine=None):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    nib.save(nib.Nifti1Image(np.zeros(shape, dtype=np.float32), affine if affine is not None else SLA_AFFINE), str(path))
+    # non-flat content: the spot-check's percentile normalization rejects
+    # degenerate (all-equal) volumes as unusable
+    volume = np.random.default_rng(5).uniform(0.0, 100.0, size=shape).astype(np.float32)
+    nib.save(nib.Nifti1Image(volume, affine if affine is not None else SLA_AFFINE), str(path))
 
 
 # ----------------------------------------------------------------- shape guard
@@ -190,7 +193,7 @@ def _setup_job(tmp_path, encode_shapes="expected", n_cohorts=("replay", "dev")):
     or the pre-T2 scrambled shape ("buggy")."""
     data_root = tmp_path / "raw_relinked"
     entries = []
-    for rel in ["case_a-t1n.nii.gz", "case_b-t2w.nii.gz"]:
+    for rel in ["case_a-t1c.nii.gz", "case_b-t2w.nii.gz"]:
         _write_raw(data_root / rel)
         entries.append({"image": rel, "modality": "mri"})
     train_list = tmp_path / "p1_image_only.json"
@@ -198,14 +201,16 @@ def _setup_job(tmp_path, encode_shapes="expected", n_cohorts=("replay", "dev")):
 
     extra_lists = []
     for cohort in n_cohorts:
-        rel = f"{cohort}_x-flair.nii.gz"
+        # the replay cohort rides the MR-RATE path prefix (the spot-check pool
+        # key); the dev cohort mirrors the real dev list's flat naming
+        rel = f"MR-RATE/r_{cohort}-flair.nii.gz" if cohort == "replay" else "dev_x-t1n.nii.gz"
         _write_raw(data_root / rel)
         extra = tmp_path / f"{cohort}.json"
         extra.write_text(json.dumps({"training": [{"image": rel, "modality": "mri"}]}))
         extra_lists.append(str(extra))
 
     emb_names = [e["image"].replace(".nii.gz", "_emb.nii.gz") for e in entries]
-    emb_names += [f"{c}_x-flair_emb.nii.gz" for c in n_cohorts]
+    emb_names += [f"MR-RATE/r_{c}-flair_emb.nii.gz" if c == "replay" else "dev_x-t1n_emb.nii.gz" for c in n_cohorts]
     p2 = tmp_path / "p2_mask_cond.json"
     p2.write_text(json.dumps({"training": [{"image": f"embeddings/{name}"} for name in emb_names[:2]]}))
     p3 = tmp_path / "p3_pairs.json"
@@ -220,8 +225,8 @@ def _setup_job(tmp_path, encode_shapes="expected", n_cohorts=("replay", "dev")):
             sidecar.write_text(json.dumps({"spacing": [1.0, 1.0, 1.2], "modality": "t1n"}))
         old_roots.append(old_root)
     # the dev cohort's sidecar exists only in the second old root
-    for cohort in n_cohorts:
-        (old_roots[0] / f"{cohort}_x-flair_emb.nii.gz.json").unlink()
+    for name in emb_names[2:]:
+        (old_roots[0] / f"{name}.json").unlink()
 
     emb_root = tmp_path / "embeddings_ras"
     env = {
@@ -351,7 +356,7 @@ def test_main_records_missing_entries(tmp_path):
         main(_argv(job, tmp_path), encode_runner=runner_missing_one, decode=lambda z: z[:, :, :, 0])
 
     report = json.loads((tmp_path / "report" / "embedding_reencode_ras_report.json").read_text())
-    assert report["reencode"]["missing"] == ["case_a-t1n_emb.nii.gz"]
+    assert report["reencode"]["missing"] == ["case_a-t1c_emb.nii.gz"]
 
 
 def test_main_encode_only_stops_after_the_encode_chain(tmp_path):
@@ -404,6 +409,46 @@ def test_main_rejects_both_pass_flags(tmp_path):
             encode_runner=job["encode_runner"],
             decode=lambda z: z[:, :, :, 0],
         )
+
+
+def test_main_spot_check_has_brats_and_replay_pools(tmp_path):
+    """The spot-check runs TWO pools: the BraTS t1c pool (job C's anchor
+    convention) and the replay pool -- the corrupted-arm majority gets a
+    content-level control the shape guard cannot provide."""
+    job = _setup_job(tmp_path)
+
+    main(
+        _argv(job, tmp_path, sidecars=False, extra=["--self-check-limit", "99", "--bootstrap-b", "100"]),
+        encode_runner=job["encode_runner"],
+        # the recon grid derives from the fresh latent (64,32,32,4) -> (256,128,128)
+        decode=lambda z: np.full((256, 128, 128), 0.3, dtype=np.float32),
+    )
+
+    report = json.loads((tmp_path / "report" / "embedding_reencode_ras_report.json").read_text())
+    check = report["self_check"]
+    assert check["brats_t1c"]["n_cases"] == 1  # case_a-t1c
+    assert check["replay"]["n_cases"] == 1  # MR-RATE/r_replay-flair
+    for pool in (check["brats_t1c"], check["replay"]):
+        assert pool["aggregate"]["clip_within"]["n_cases"] == 1
+        assert pool["aggregate"]["direct_clip_within"]["n_cases"] == 0  # no encode arm injected
+    # the flat stand-in reconstruction reads a real (finite) MAE
+    assert check["brats_t1c"]["aggregate"]["clip_within"]["median"] is not None
+
+
+def test_main_spot_check_replay_pool_absent_without_mrrate_entries(tmp_path):
+    """Extras without MR-RATE paths leave the replay pool None -- recorded,
+    not fabricated; the BraTS pool still reads."""
+    job = _setup_job(tmp_path, n_cohorts=())
+
+    main(
+        _argv(job, tmp_path, sidecars=False, extra=["--self-check-limit", "99"]),
+        encode_runner=job["encode_runner"],
+        decode=lambda z: np.full((256, 128, 128), 0.3, dtype=np.float32),
+    )
+
+    report = json.loads((tmp_path / "report" / "embedding_reencode_ras_report.json").read_text())
+    assert report["self_check"]["brats_t1c"]["n_cases"] == 1
+    assert report["self_check"]["replay"] is None
 
 
 def test_main_without_sidecar_source_skips_sidecar_reconciliation(tmp_path):

@@ -41,9 +41,12 @@ three steps:
    report lands): a shape the training loader must reject must never exit
    green here. Missing entries (encode failures, unusable sidecars) reconcile
    nonzero exactly like T4.
-3. Spot-check: the primary list's t1c subset, decoded from the fresh
-   embeddings, read as the conditioned MAE in job C's clip=True convention
-   plus the direct-chain control arm (T4's environment check, reused as-is).
+3. Spot-check, two pools: the primary list's t1c subset (job C's clip=True
+   convention, T4's environment check reused as-is) AND the replay subset --
+   the corrupted-arm majority gets a content-level control the shape guard
+   cannot provide: a scrambled encode whose shape is coincidentally legal
+   reads a far worse artifact MAE than its direct-chain arm, same pool, same
+   chain.
 
 Encoding scope: the raw-cohort lists (``--train-list`` + ``--extra-list``, P1
 primary 7404 + MR-RATE replay 7404 + the dev cohort 1060 the P2/P3 arms
@@ -73,7 +76,13 @@ from typing import TYPE_CHECKING
 
 from ctmr.application.acceptance.distribution.diagnostic_support import DiagnosticError, DiagnosticReportWriter
 from ctmr.application.acceptance.distribution.intensity_domain import VaeReconstructor
-from ctmr.application.generation.modality_label.reencode import EmbeddingManifest, ReencodeSelfCheck
+from ctmr.application.generation.modality_label.reencode import (
+    ARTIFACT_METRICS,
+    DIRECT_METRICS,
+    JOB_C_REFERENCE,
+    EmbeddingManifest,
+    ReencodeSelfCheck,
+)
 
 if TYPE_CHECKING:
     from ctmr.domain.engine import GenerationEngine
@@ -206,7 +215,7 @@ class SidecarMultiSource:
             name = emb_rel + ".json"
             dst = self._emb_root / name
             if dst.is_file():
-                statuses[emb_rel] = "present" if EmbeddingManifest._valid_sidecar(dst) else "invalid"
+                statuses[emb_rel] = "present" if EmbeddingManifest.valid_sidecar(dst) else "invalid"
                 continue
             copied = False
             saw_file = False
@@ -217,7 +226,7 @@ class SidecarMultiSource:
                 saw_file = True
                 dst.parent.mkdir(parents=True, exist_ok=True)  # the encode chain only creates dirs it wrote embeddings under
                 shutil.copyfile(src, dst)
-                if EmbeddingManifest._valid_sidecar(dst):
+                if EmbeddingManifest.valid_sidecar(dst):
                     copied = True
                     break
             statuses[emb_rel] = "copied" if copied else ("invalid" if saw_file else "absent")
@@ -304,25 +313,38 @@ class ReencodeRasReport:
         if check is None:
             lines.append("本次未运行(--self-check-limit 0)。")
             return "\n".join(lines)
-        lines += [
-            f"n_cases={check['n_cases']}(排除 {check['n_excluded']})。",
-            "",
-            "| 读数 | n_cases | median (q05, q95) | 分布包络 CI90 [low, high] | mean |",
-            "|---|---:|---|---|---:|",
-        ]
-        from ctmr.application.generation.modality_label.reencode import ARTIFACT_METRICS, DIRECT_METRICS, JOB_C_REFERENCE
-
-        for metric in (*ARTIFACT_METRICS, *DIRECT_METRICS):
-            block = check["aggregate"][metric]
-            ci = "n/a" if block["median"] is None else f"{block['median']:.4f} ({block['q05']:.4f}, {block['q95']:.4f})"
-            envelope = "n/a" if block.get("ci90_low") is None else f"[{block['ci90_low']:.4f}, {block['ci90_high']:.4f}]"
-            mean = "n/a" if block["mean"] is None else f"{block['mean']:.4f}"
-            lines.append(f"| {self.METRIC_LABELS[metric]} | {block['n_cases']} | {ci} | {envelope} | {mean} |")
+        for pool_key, pool_label in (
+            ("brats_t1c", "BraTS 主 list t1c 池(作业 C 锚同池口径)"),
+            ("replay", "replay(MR-RATE)池(本票新增:错乱主力臂的内容级对照)"),
+        ):
+            pool = check[pool_key]
+            lines += [
+                f"### {pool_label}",
+                "",
+            ]
+            if pool is None:
+                lines.append("该池无样本(0 例或全部排除)。")
+                lines.append("")
+                continue
+            lines += [
+                f"n_cases={pool['n_cases']}(排除 {pool['n_excluded']})。",
+                "",
+                "| 读数 | n_cases | median (q05, q95) | 分布包络 CI90 [low, high] | mean |",
+                "|---|---:|---|---|---:|",
+            ]
+            for metric in (*ARTIFACT_METRICS, *DIRECT_METRICS):
+                block = pool["aggregate"][metric]
+                ci = "n/a" if block["median"] is None else f"{block['median']:.4f} ({block['q05']:.4f}, {block['q95']:.4f})"
+                envelope = "n/a" if block.get("ci90_low") is None else f"[{block['ci90_low']:.4f}, {block['ci90_high']:.4f}]"
+                mean = "n/a" if block["mean"] is None else f"{block['mean']:.4f}"
+                lines.append(f"| {self.METRIC_LABELS[metric]} | {block['n_cases']} | {ci} | {envelope} | {mean} |")
         lines += [
             "",
             f"作业 C 双链锚(参照值非判定线):直通臂域内 median {JOB_C_REFERENCE['direct_clip_within_median']}、"
             f"外推层 {JOB_C_REFERENCE['direct_clip_over_median']};工件臂自评 {JOB_C_REFERENCE['artifact_within_median']}、"
-            f"外推层 {JOB_C_REFERENCE['artifact_over_median']}。",
+            f"外推层 {JOB_C_REFERENCE['artifact_over_median']}(t1c 口径,braTS 池对锚)。",
+            "replay 池无作业 C 锚:判读 = 工件臂(落盘工件 decode)与直通臂(现场 encode)的差——两臂同链同池,"
+            "轴序错乱工件的内容级 MAE 会显著高于直通臂;同档即内容级自洽(形状守卫之外的独立防线)。",
         ]
         return "\n".join(lines)
 
@@ -456,9 +478,12 @@ def main(
         missing += [rel for rel, status in sidecar_statuses.items() if status in ("absent", "invalid") and rel not in missing]
     violations = EmbeddingShapeGuard().check(all_pairs, shapes_by_path)
 
-    # Step 3: the in-domain spot-check (T4's pool convention: the PRIMARY
-    # list's t1c subset, decoded from the fresh artifacts, plus the
-    # direct-chain control arm for the environment-consistency check).
+    # Step 3: the in-domain spot-check, two pools. The BraTS t1c pool rides
+    # T4's convention (job C's anchors are t1c-only readings); the replay pool
+    # is this job's addition -- the corrupted-arm majority gets a CONTENT-level
+    # control the shape guard cannot provide: a scrambled encode with a
+    # coincidentally legal shape reads a far worse artifact MAE than its
+    # direct-chain arm, same pool, same chain.
     check_body = None
     if args.self_check_limit != 0:
         if decode is None:
@@ -472,8 +497,15 @@ def main(
             encode = None
         pool = ReencodeSelfCheck(env["data_base_dir"], embedding_root, decode, encode=encode)
         t1c_entries = [entry for entry in primary if entry["image"].endswith("-t1c.nii.gz")]
-        rows = pool.read_cases(pool.stride(t1c_entries, args.self_check_limit))
-        check_body = pool.summarize(rows, bootstrap_b=args.bootstrap_b)
+        replay_entries = [entry for entry in extras if entry["image"].startswith("MR-RATE/")]
+        check_body = {
+            "brats_t1c": pool.summarize(pool.read_cases(pool.stride(t1c_entries, args.self_check_limit)), bootstrap_b=args.bootstrap_b)
+            if t1c_entries
+            else None,
+            "replay": pool.summarize(pool.read_cases(pool.stride(replay_entries, args.self_check_limit)), bootstrap_b=args.bootstrap_b)
+            if replay_entries
+            else None,
+        }
 
     report = ReencodeRasReport(
         inputs={

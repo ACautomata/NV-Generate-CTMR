@@ -164,9 +164,10 @@ class EmbeddingManifest:
         return image.replace(".nii.gz", "_emb.nii.gz") + ".json"
 
     @staticmethod
-    def _valid_sidecar(path):
+    def valid_sidecar(path):
         """The T7 loader reads spacing/modality out of the sidecar unconditionally;
-        a sidecar that does not parse with both keys is loader-unusable."""
+        a sidecar that does not parse with both keys is loader-unusable. Public:
+        the series-③ T2 job's multi-source copier (reencode_ras) reuses it."""
         try:
             payload = json.loads(Path(path).read_text())
         except (OSError, ValueError):
@@ -184,14 +185,14 @@ class EmbeddingManifest:
             name = self._sidecar_name(entry["image"])
             dst = self._emb_root / name
             if dst.is_file():
-                statuses[entry["image"]] = "present" if self._valid_sidecar(dst) else "invalid"
+                statuses[entry["image"]] = "present" if self.valid_sidecar(dst) else "invalid"
                 continue
             src = Path(source_root) / name
             if not src.is_file():
                 statuses[entry["image"]] = "absent"
                 continue
             shutil.copyfile(src, dst)
-            statuses[entry["image"]] = "copied" if self._valid_sidecar(dst) else "invalid"
+            statuses[entry["image"]] = "copied" if self.valid_sidecar(dst) else "invalid"
         return statuses
 
     @staticmethod
