@@ -84,35 +84,40 @@ class WtMonitor:
         return [self._challenge_reading(challenge, by_challenge[challenge]) for challenge in sorted(by_challenge)]
 
     def _challenge_reading(self, challenge, rows):
-        valid = {"gen": {}, "real": {}}
+        measured = {"gen": {}, "real": {}}
         for row in rows:
             if MeasurementTable.flag(row, "input_fail") or MeasurementTable.flag(row, "run_fail"):
                 continue
-            volume = MeasurementTable.number(row, "vol_wt_ml")
-            if volume is not None:
-                valid[row["side"]][row["case"]] = volume
+            measured[row["side"]][row["case"]] = MeasurementTable.number(row, "vol_wt_ml")
+        valid = {side: {case: volume for case, volume in cells.items() if volume is not None} for side, cells in measured.items()}
         differences = [
-            RelativeDifference.of(gen_volume, valid["real"][case])
-            for case, gen_volume in valid["gen"].items()
+            RelativeDifference.of(valid["gen"][case], valid["real"][case])
+            for case in valid["gen"]
             if case in valid["real"]
         ]
         rel_values = [value for value in differences if value is not None]
+        # undefined pairs, both causes counted: a non-positive real denominator
+        # (RelativeDifference None) and a one-sided missing WT value -- visible,
+        # never silently dropped from the pairing.
+        missing = sum(1 for case in valid["gen"] if case in measured["real"] and case not in valid["real"])
+        missing += sum(1 for case in valid["real"] if case in measured["gen"] and case not in valid["gen"])
         reading = {
             "challenge": challenge,
             "gen": {"n": len(valid["gen"]), "vol_ml": DistributionReadout.of(list(valid["gen"].values()))},
             "real": {"n": len(valid["real"]), "vol_ml": DistributionReadout.of(list(valid["real"].values()))},
-            "rel_diff": self._rel_diff_stats(rel_values, len(differences) - len(rel_values), challenge),
+            "rel_diff": self._rel_diff_stats(rel_values, len(differences) - len(rel_values) + missing, challenge),
         }
         return reading
 
-    def _rel_diff_stats(self, rel_values, undefined, challenge):
+    def _rel_diff_stats(self, rel_values, n_undefined, challenge):
         """Distribution read-out of the per-case relative differences, monitoring-slot CI90.
 
         ``n_undefined`` keeps the excluded pairs visible: a non-positive real
         WT denominator leaves the difference undefined (``RelativeDifference``
-        contract) -- counted, never silently dropped from the pairing."""
+        contract), as does a one-sided missing WT value -- counted, never
+        silently dropped from the pairing."""
         stats = DistributionReadout.of(rel_values)
-        stats.update({"ci90_low": None, "ci90_high": None, "n_cases": len(rel_values), "n_undefined": undefined})
+        stats.update({"ci90_low": None, "ci90_high": None, "n_cases": len(rel_values), "n_undefined": n_undefined})
         if rel_values:
             seed = DiagnosticSeedAllocator.seed(challenge, DIAGNOSTIC_SEED_SLOTS["dev_monitor_wt_rel_diff"])
             ci = ClusterBootstrap(self._bootstrap_b).ci90([[value] for value in rel_values], seed)

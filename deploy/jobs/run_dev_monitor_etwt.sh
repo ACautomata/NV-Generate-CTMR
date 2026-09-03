@@ -159,8 +159,11 @@ for script in sorted(monitor_root.glob("predict_*.sh")):
         continue
     text = script.read_text()
     challenge = script.stem.removeprefix("predict_")
-    dataset_id = re.search(r"-d (\S+)", text).group(1)
-    ds_dir = results_root / dataset_id
+    dataset_id = re.search(r"-d (\S+)", text)
+    spec_old = re.search(r"-c (\S+) -p (\S+) -tr (\S+)", text)
+    if dataset_id is None or spec_old is None:
+        raise SystemExit(f"[FATAL] {challenge}: predict 脚本无 -d/-c/-p/-tr spec 段——生成器格式已变,拒绝盲改")
+    ds_dir = results_root / dataset_id.group(1)
     if not ds_dir.is_dir():
         raise SystemExit(f"[FATAL] 仪器结果树缺 {ds_dir}——换树/重训未完成,拒绝盲跑")
     trainer_dirs = sorted(p.name for p in ds_dir.iterdir() if p.is_dir())
@@ -170,7 +173,6 @@ for script in sorted(monitor_root.glob("predict_*.sh")):
     if len(parts) != 3:
         raise SystemExit(f"[FATAL] {trainer_dirs[0]!r} 不是 <trainer>__<plans>__<config> 三段式——不猜")
     trainer, plans, config = parts
-    spec_old = re.search(r"-c (\S+) -p (\S+) -tr (\S+)", text)
     replacement = f"-c {config} -p {plans} -tr {trainer}"
     if spec_old.group(0) == replacement:
         print(f"[instrument-spec] {challenge}: 脚本 spec 已与 results 树一致({trainer_dirs[0]}),零改动")

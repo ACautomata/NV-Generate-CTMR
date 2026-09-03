@@ -142,6 +142,22 @@ def test_nonpositive_real_wt_excludes_the_pair_and_counts_it():
     assert wt_rel["median"] == pytest.approx(1.0)
 
 
+def test_missing_wt_value_on_either_side_counts_the_pair_undefined():
+    """A measured row whose vol_wt_ml is absent leaves the pair without a
+    difference -- counted in n_undefined, never dropped silently (the
+    plan-less CLI path has no completeness gate behind it)."""
+    rows = []
+    for index in range(4):
+        # g0: real value missing; g1: gen value missing; g2/g3: defined pairs
+        rows.append(_row("GLI", f"g{index}", "gen", 2.0, vol_wt="" if index == 1 else "20.0"))
+        rows.append(_row("GLI", f"g{index}", "real", 2.0, vol_wt="" if index == 0 else "10.0"))
+    reading = {item["challenge"]: item for item in WtMonitor(bootstrap_b=100).readings(rows)}["GLI"]
+    wt_rel = reading["rel_diff"]
+    assert wt_rel["n_cases"] == 2
+    assert wt_rel["n_undefined"] == 2
+    assert wt_rel["median"] == pytest.approx(1.0)
+
+
 def test_cli_end_to_end(tmp_path):
     csv_path = _write_csv(_monitor_rows(), tmp_path / "m.csv")
     rc = main(["--measurements", str(csv_path), "--output-dir", str(tmp_path / "out"), "--bootstrap-b", "100"])
