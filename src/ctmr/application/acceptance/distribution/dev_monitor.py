@@ -91,23 +91,28 @@ class WtMonitor:
             volume = MeasurementTable.number(row, "vol_wt_ml")
             if volume is not None:
                 valid[row["side"]][row["case"]] = volume
-        rel_values = [
+        differences = [
             RelativeDifference.of(gen_volume, valid["real"][case])
             for case, gen_volume in valid["gen"].items()
-            if case in valid["real"] and valid["real"][case] is not None
+            if case in valid["real"]
         ]
+        rel_values = [value for value in differences if value is not None]
         reading = {
             "challenge": challenge,
             "gen": {"n": len(valid["gen"]), "vol_ml": DistributionReadout.of(list(valid["gen"].values()))},
             "real": {"n": len(valid["real"]), "vol_ml": DistributionReadout.of(list(valid["real"].values()))},
-            "rel_diff": self._rel_diff_stats(rel_values, challenge),
+            "rel_diff": self._rel_diff_stats(rel_values, len(differences) - len(rel_values), challenge),
         }
         return reading
 
-    def _rel_diff_stats(self, rel_values, challenge):
-        """Distribution read-out of the per-case relative differences, monitoring-slot CI90."""
+    def _rel_diff_stats(self, rel_values, undefined, challenge):
+        """Distribution read-out of the per-case relative differences, monitoring-slot CI90.
+
+        ``n_undefined`` keeps the excluded pairs visible: a non-positive real
+        WT denominator leaves the difference undefined (``RelativeDifference``
+        contract) -- counted, never silently dropped from the pairing."""
         stats = DistributionReadout.of(rel_values)
-        stats.update({"ci90_low": None, "ci90_high": None, "n_cases": len(rel_values)})
+        stats.update({"ci90_low": None, "ci90_high": None, "n_cases": len(rel_values), "n_undefined": undefined})
         if rel_values:
             seed = DiagnosticSeedAllocator.seed(challenge, DIAGNOSTIC_SEED_SLOTS["dev_monitor_wt_rel_diff"])
             ci = ClusterBootstrap(self._bootstrap_b).ci90([[value] for value in rel_values], seed)
