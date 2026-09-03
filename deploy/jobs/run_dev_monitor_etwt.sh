@@ -4,13 +4,23 @@
 # 用途:候选选择点去盲监控(收编裁决 #5 采纳项)。对 dev list(1060 例的分层样本,
 #   GLI 50/MEN 40/METS 24/PED 10/SSA 6 = 130 例 × 4 模态;**绝不可碰 holdout 530**
 #   ——选择泄漏即 L2 终验作废)以候选 checkpoint 采样伪四模态体 → 冻结仪器只读路径
-#   (final_acceptance predict / measurement_run,plan schema 与终验同构,执行侧零改动)
+#   (final_acceptance predict / measurement_run,plan schema 与终验同构;推理脚本内
+#   -c/-p/-tr 按 nnUNet_results 树实况覆写,其余冻结执行口径——TTA on、fold 0——零改动)
 #   → 作业 B 口径 ET 甄别 + WT 添注读数 → 观察线黄旗判定(METS ET 检出率 <0.9 或
 #   任一挑战 vol_et_rel 中位 >2)。选择面、非验收判定;冻结仪器/包络/判定线零改动。
 #
-# 全链五步(幂等处可断点重入):
+# 仪器版本注记(2026-09-03):l2 仪器主本随 2026-08-30 聚合重置丢失,已按 v2 协议
+#   全量重训并换树(nnunet_results -> l2-instrument-v2/results;标准 plans 派生
+#   nnUNetPlans_v2bs8、4×DCU DDP、BF16,见 deploy/experiments/20260901-仪器主本丢失
+#   与重训决策.md)。本链路读数须标注**仪器 v2**,与 T5 历史读数不可直接比仪器版本;
+#   仓库 INSTRUMENT_SPECS 冻结锚与新 ADR 同批重钉,不被本配方触碰(实况覆写只改
+#   生成物脚本,零包内改动)。
+#
+# 全链五步 + 一步覆写(幂等处可断点重入):
 #   1. 采样 + 装配 plan(GPU;文件存在即跳过;--plan-only 可只重建 plan)
 #   2. 冻结仪器推理脚本写出(predict_all.sh)
+#   2b. 仪器 spec 实况覆写(按 nnUNet_results 树的 <trainer>__<plans>__<config>
+#       目录名改写 predict_*.sh 的 -c/-p/-tr;与实况一致则零改动)
 #   3. 仪器输入组装(gen 侧重采样 + RAS→LPS 翻转;real 侧原生直通)
 #   4. 冻结仪器逐挑战推理(五挑战;nnUNet 环境变量内置)
 #   5. 测量 CSV + 观察线报告(CPU;dev_monitor_diagnostic.{json,md})
@@ -127,6 +137,43 @@ python -m ctmr.application.generation.modality_label.dev_monitor_sampling \
 python -m ctmr.application.acceptance.distribution.final_acceptance predict \
     --plan "$MONITOR_ROOT/plan.json" \
     --output-dir "$MONITOR_ROOT"
+
+# ── 第二步b:仪器 spec 实况覆写(零包内改动)──
+# PredictScriptWriter 按仓库 INSTRUMENT_SPECS 冻结锚写脚本;仪器 v2 换树后该锚
+# 待与校准重跑+新 ADR 同批重钉,而监控是 variant=diagnostic 选择面,须消费现役
+# results 树——此处按树实况(<trainer>__<plans>__<config> 恰一个目录,不猜)
+# 改写生成物脚本的 -c/-p/-tr,并打印前后对照。与实况一致则零改动(幂等)。
+python - "$NNUNET_RESULTS" "$MONITOR_ROOT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+results_root = Path(sys.argv[1])
+monitor_root = Path(sys.argv[2])
+for script in sorted(monitor_root.glob("predict_*.sh")):
+    if script.name == "predict_all.sh":
+        continue
+    text = script.read_text()
+    challenge = script.stem.removeprefix("predict_")
+    dataset_id = re.search(r"-d (\S+)", text).group(1)
+    ds_dir = results_root / dataset_id
+    if not ds_dir.is_dir():
+        raise SystemExit(f"[FATAL] 仪器结果树缺 {ds_dir}——换树/重训未完成,拒绝盲跑")
+    trainer_dirs = sorted(p.name for p in ds_dir.iterdir() if p.is_dir())
+    if len(trainer_dirs) != 1:
+        raise SystemExit(f"[FATAL] {ds_dir} 下应恰一个 trainer 目录,实得 {trainer_dirs}——不猜")
+    parts = trainer_dirs[0].split("__")
+    if len(parts) != 3:
+        raise SystemExit(f"[FATAL] {trainer_dirs[0]!r} 不是 <trainer>__<plans>__<config> 三段式——不猜")
+    trainer, plans, config = parts
+    spec_old = re.search(r"-c (\S+) -p (\S+) -tr (\S+)", text)
+    replacement = f"-c {config} -p {plans} -tr {trainer}"
+    if spec_old.group(0) == replacement:
+        print(f"[instrument-spec] {challenge}: 脚本 spec 已与 results 树一致({trainer_dirs[0]}),零改动")
+        continue
+    script.write_text(text.replace(spec_old.group(0), replacement))
+    print(f"[instrument-spec] {challenge}: {spec_old.group(3)}__{spec_old.group(2)}__{spec_old.group(1)} -> {trainer_dirs[0]}")
+PY
 
 # ── 第三步:仪器输入组装(gen 重采样 + RAS→LPS 翻转;real 原生直通)──
 python -m ctmr.application.acceptance.distribution.measurement_run assemble-execute \
