@@ -81,8 +81,13 @@ def _toy_unet_def():
 
 
 def _write_embedding(path, spacing=(1.0, 1.2, 0.8), modality="mri_t1_skull_stripped"):
-    """One synthetic training latent plus its companion json (the phase encode layout)."""
-    latent = np.random.randn(4, 8, 8, 4).astype(np.float32)  # std ~ 1 -> recomputed 1/std(z) lands near the ckpt value
+    """One synthetic training latent plus its companion json (the phase encode layout).
+
+    The on-disk shape rides the encode chain's channel-last contract
+    ``(X, Y, Z, 4)`` (issue #313): the smallest legal spatial axis is 32 --
+    std ~ 1 keeps the recomputed 1/std(z) near the ckpt value.
+    """
+    latent = np.random.randn(32, 32, 32, 4).astype(np.float32)
     nib.save(nib.Nifti1Image(latent, np.diag([1.0, 1.0, 1.0, 1.0])), str(path))
     info = str(path) + ".json"
     Path(info).write_text(json.dumps({"spacing": list(spacing), "modality": modality}))
@@ -159,6 +164,66 @@ def test_build_loader_mixes_the_brats_and_replay_lists(tmp_path):
     kernel = _kernel(_fixture(tmp_path, brats_entries=2, replay_entries=2))
     loader = kernel.build_loader()
     assert len(loader.dataset) == 4  # 2 brats + 2 replay (the 1:1 mix)
+
+
+def test_build_loader_orients_an_lps_artifact_to_ras(tmp_path):
+    """The loader's Orientation RAS re-orients an LPS-stored embedding artifact
+    (issue #313, series-③ T3): the same world content stored under an LPS
+    affine (x and y flipped) loads as its RAS rendering -- pure defense against
+    artifacts that bypassed the encode chain's re-orientation (the T1 review
+    measured the labels tree already-RAS, the guard stays as the loading-floor
+    backstop)."""
+    args = _fixture(tmp_path, brats_entries=1, replay_entries=1)
+    emb = Path(args.embedding_base_dir) / "caseA_emb.nii.gz"
+    # x/y-asymmetric content: an x+y-gradient marker so both flips are observable
+    content = np.zeros((32, 32, 32, 4), dtype=np.float32)
+    content[..., 0] = np.arange(32, dtype=np.float32).reshape(32, 1, 1) + np.arange(32, dtype=np.float32).reshape(1, 32, 1)
+    # the same world content stored LPS: the data array rides x- and y-flipped
+    nib.save(nib.Nifti1Image(content[::-1, ::-1].copy(), np.diag([-1.0, -1.0, 1.0, 1.0])), str(emb))
+
+    kernel = _kernel(args)
+    loaded = kernel.build_loader().dataset[0]["image"]  # ensure_channel_first: (C,X,Y,Z)
+
+    expected = torch.from_numpy(content.transpose(3, 0, 1, 2))
+    assert torch.allclose(loaded, expected)
+
+
+def test_file_records_rejects_an_off_contract_embedding_shape(tmp_path):
+    """An embedding outside the encode chain's shape contract is rejected at
+    data-catalog time -- before training starts -- with a diagnostic naming
+    the entry (issue #313, series-③ T3)."""
+    args = _fixture(tmp_path)
+    emb = Path(args.embedding_base_dir) / "caseA_emb.nii.gz"
+    bad = np.zeros((4, 32, 32, 16), dtype=np.float32)  # channel-first storage: the encode chain's transpose skipped
+    nib.save(nib.Nifti1Image(bad, np.diag([1.0, 1.0, 1.0, 1.0])), str(emb))
+
+    with pytest.raises(ValueError, match=r"shape contract.*SYNTH-0000"):
+        DataCatalog(args, logging.getLogger("test-kernel")).file_records()
+
+
+def test_file_records_rejects_a_spatial_axis_off_the_round_number_grid(tmp_path):
+    """A spatial axis that is not a multiple of 32 (the round_number base 128
+    / the VAE's 4x compression) is off contract too: geometry the encode
+    chain can never produce must not enter training silently."""
+    args = _fixture(tmp_path)
+    emb = Path(args.embedding_base_dir) / "caseA_emb.nii.gz"
+    bad = np.zeros((40, 32, 32, 4), dtype=np.float32)  # axis 0 = 40: not a multiple of 32
+    nib.save(nib.Nifti1Image(bad, np.diag([1.0, 1.0, 1.0, 1.0])), str(emb))
+
+    with pytest.raises(ValueError, match=r"shape contract"):
+        DataCatalog(args, logging.getLogger("test-kernel")).file_records()
+
+
+def test_file_records_rejects_a_non_four_dimensional_embedding(tmp_path):
+    """A 3D artifact is not an encode-chain latent at all (the channel axis
+    is missing): rejected at the same startup gate."""
+    args = _fixture(tmp_path)
+    emb = Path(args.embedding_base_dir) / "caseA_emb.nii.gz"
+    bad = np.zeros((32, 32, 32), dtype=np.float32)  # an image, not an (X, Y, Z, 4) latent
+    nib.save(nib.Nifti1Image(bad, np.diag([1.0, 1.0, 1.0, 1.0])), str(emb))
+
+    with pytest.raises(ValueError, match=r"shape contract.*ndim 3"):
+        DataCatalog(args, logging.getLogger("test-kernel")).file_records()
 
 
 def test_build_loader_guards_the_1_to_1_replay_mix(tmp_path):

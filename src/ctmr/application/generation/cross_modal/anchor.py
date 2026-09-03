@@ -48,7 +48,12 @@ class AnchorLatentEncoder:
                 monai_t.EnsureChannelFirst(),
                 monai_t.Orientation(axcodes="RAS"),
                 monai_t.EnsureType(dtype=torch.float32),
-                monai_t.ScaleIntensityRangePercentiles(lower=0.0, upper=99.5, b_min=0.0, b_max=1.0, clip=False),
+                # clip=True (issue #313, series-③ T3): the T4 factory moved the
+                # training encoding arm to clip=True (job C's measured verdict --
+                # extrapolated >1.0 inputs leave the frozen VAE's reconstruction
+                # domain); the inference anchor must encode into the same bounded
+                # domain or its condition falls outside the training distribution.
+                monai_t.ScaleIntensityRangePercentiles(lower=0.0, upper=99.5, b_min=0.0, b_max=1.0, clip=True),
                 monai_t.Resize(spatial_size=self._output_size, mode="trilinear"),
             ]
         )

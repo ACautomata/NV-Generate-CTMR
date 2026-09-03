@@ -34,7 +34,9 @@
 # tests/infrastructure/maisi_engine/test_intensity_transform_factory.py; the
 # pre-T4 behavior lives in git history (re-encode all training embeddings
 # after this flag: clip=False-encoded embeddings are not reusable in the
-# clip=True world).
+# clip=True world). The P3 inference anchor rides the same verdict --
+# AnchorLatentEncoder's preprocessing matched to clip=True in series-③ T3
+# (issue #313, tests/application/generation/cross_modal/test_anchor_clip.py).
 # ---------------------------------------------------------------------------
 
 import warnings
