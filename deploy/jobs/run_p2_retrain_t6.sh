@@ -104,6 +104,9 @@ EMB_MANIFEST_ROWS_PIN=15868                         # T2 退出条件的 manifes
 NNUNET_RESULTS="${NNUNET_RESULTS:-/root/private_data/ctmr/instruments/nnunet_results}"
 NNUNET_RAW="${NNUNET_RAW:-/root/private_data/ctmr/data/nnunet_raw}"
 NNUNET_PREPROCESSED="${NNUNET_PREPROCESSED:-/root/private_data/ctmr/data/nnunet_preprocessed}"
+# 包外 v2 trainer(仪器 BF16 子类)目录:nnUNet_extTrainer 变量,推理侧缺它即
+# "Could not find requested nnunet trainer" 响亮死(etwt 同款;20260901 记录 §4)
+NNUNET_EXT_TRAINER="${NNUNET_EXT_TRAINER:-/root/private_data/ctmr/instruments/l2-instrument-v2/trainer}"
 P3_E39_CKPT="${P3_E39_CKPT:-/root/private_data/ctmr/runs/p3/ckpt/epoch_39.pt}"
 T6_CKPT_DIR="$T6_ROOT/ckpt"
 T6_LOGS="$T6_ROOT/logs"
@@ -478,6 +481,8 @@ SELECT_LOG="$T6_LOGS/select_\$TS.log"
 echo "[watch-loop] 等 epoch_5.pt(首个 eval 点)…"
 until [ -f "\$CK/epoch_5.pt" ]; do sleep 60; done
 echo "[watch-loop] epoch_5 就绪,开始 watch 循环(间隔 20 min;幂等,ledger 已有点跳过)"
+# 包外 v2 trainer 经 nnUNet_extTrainer 接入(L2TrendRunner 子进程透传 os.environ)
+export nnUNet_extTrainer="$NNUNET_EXT_TRAINER"
 # watch argv 单点定义:循环遍与收尾扫描共用同一套参数(改 patience/eval-every 只动这里)
 WATCH_ARGS=(python3 -m ctmr generate mask dev-eval watch
     --ckpt-dir "\$CK" --eval-root "\$EVAL_ROOT"
