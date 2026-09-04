@@ -14,6 +14,18 @@
 # copy of ``diff_model_create_training_data.py`` (retired scripts layer, git history) with import lines rewritten to this package home.
 # Behavior must stay stable — machine-guarded by
 # tests/infrastructure/maisi_engine/test_engine_smoke.py (execution smoke).
+#
+# One recorded deviation from the byte-for-byte rule (issue #312, series-③ T2;
+# the data-corruption root fix the re-encode ticket pins): the resize target
+# (``new_dim``) is read from the RAS-reoriented spatial shape
+# (``new_dim_from_ras_shape``) instead of the NIfTI header's storage-axis
+# ``dim``. ``Orientationd(axcodes="RAS")`` may permute axes, so rounding the
+# header order mis-sized AND axis-scrambled the encode for any
+# axis-permuting volume direction — the replay/MR-RATE ~65% corrupted
+# embedding-shape share (2026-09-03 direction audit, #310). The BraTS arm was
+# unscathed only because its directions are flip-only (no axis permutation);
+# the pre-T2 behavior lives in git history (re-encode all training embeddings
+# after this fix: mis-sized embeddings are not reusable).
 # ---------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -98,6 +110,25 @@ def round_number(number: int, base_number: int = 128) -> int:
     # Convert to float, divide by base, round to nearest integer, clamp to >= 1*base, and multiply back.
     new_number = max(round(float(number) / float(base_number)), 1.0) * float(base_number)
     return int(new_number)
+
+
+def new_dim_from_ras_shape(image) -> tuple:
+    """
+    Compute the resize target from an already-reoriented image (issue #312).
+
+    The input must come out of the plain pipeline (LoadImaged + EnsureChannelFirstd
+    + Orientationd axcodes="RAS"): ``shape[1:4]`` is then the RAS-reoriented
+    spatial shape, which the Orientation step may have permuted relative to the
+    NIfTI header's storage-axis ``dim`` — rounding the header order instead
+    mis-sized and axis-scrambled the encode (the pre-T2 bug).
+
+    Args:
+        image (MetaTensor): The RAS-oriented image (channel-first).
+
+    Returns:
+        tuple: Rounded (multiples of 128, minimum one base) target dims.
+    """
+    return tuple(round_number(int(image.shape[_i])) for _i in range(1, 4))
 
 
 # def load_filenames(data_list_path: str) -> list:
@@ -256,11 +287,10 @@ def diff_model_create_training_data(env_config_path: str, model_config_path: str
         # One bad volume (truncated gzip, unreadable header) must not kill the
         # whole shard: log and continue; the caller reconciles failures after.
         try:
-            # Compute rounded target dims (multiples of 128) from the original image metadata.
-            new_dim = tuple(
-                round_number(int(plain_transforms({"image": os.path.join(args.data_base_dir, filepath)})["image"].meta["dim"][_i]))
-                for _i in range(1, 4)
-            )
+            # Rounded target dims (multiples of 128) read off the RAS-reoriented
+            # spatial shape (issue #312) — NOT the header's storage-axis dim,
+            # which the RAS reorientation may have permuted.
+            new_dim = new_dim_from_ras_shape(plain_transforms({"image": os.path.join(args.data_base_dir, filepath)})["image"])
 
             # Build the transform pipeline that includes resizing to new_dim.
             # NOTE: 'modality' is referenced here but not defined in this scope; caller must ensure it's available

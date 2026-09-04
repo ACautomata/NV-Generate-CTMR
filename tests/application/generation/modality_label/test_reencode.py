@@ -48,6 +48,22 @@ def test_embedding_manifest_walks_tree_with_md5_and_shape(tmp_path):
     assert by_path["sub/case_a-t1c_emb.nii.gz"]["bytes"] == real.stat().st_size
 
 
+def test_embedding_manifest_parallel_walk_matches_serial(tmp_path):
+    """The thread-pooled walk must be row-identical to the serial one (same
+    path-sorted order, same md5/bytes/shape) -- the pool parallelizes the
+    reads, never the ordering (issue #312's finishing pass runs it pooled)."""
+    manifest = EmbeddingManifest(tmp_path / "embeddings")
+    for name in ("a", "b", "c"):
+        _write_fake_nifti(tmp_path / "embeddings" / f"{name}-t1c_emb.nii.gz")
+    (tmp_path / "embeddings" / "broken-t1c_emb.nii.gz").write_bytes(b"not a nifti")
+
+    serial = manifest.walk()
+    pooled = manifest.walk(threads=4)
+
+    assert pooled == serial
+    assert len(pooled) == 4
+
+
 # --------------------------------------------------------------- self-check
 
 

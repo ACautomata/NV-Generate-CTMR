@@ -126,20 +126,29 @@ class EmbeddingManifest:
     def __init__(self, emb_root):
         self._emb_root = Path(emb_root)
 
-    def walk(self):
+    def walk(self, threads: int = 1):
+        """Walk the tree into manifest rows, path-sorted (byte-stable). ``threads``
+        parallelizes the per-file reads (md5 + header) across a thread pool --
+        pure IO, order untouched; the default 1 keeps the T4 serial walk."""
+        paths = sorted(self._emb_root.rglob("*_emb.nii.gz"))
+        if threads > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                return list(executor.map(self._row_of, paths))
+        return [self._row_of(path) for path in paths]
+
+    def _row_of(self, path):
         import nibabel as nib
         from nibabel.filebasedimages import ImageFileError
 
-        rows = []
-        for path in sorted(self._emb_root.rglob("*_emb.nii.gz")):
-            row = {"path": path.relative_to(self._emb_root).as_posix(), "bytes": path.stat().st_size, "shape": None}
-            row["md5"] = self._md5_of(path)
-            try:
-                row["shape"] = [int(s) for s in nib.load(str(path)).shape]
-            except (OSError, ValueError, ImageFileError):
-                pass
-            rows.append(row)
-        return rows
+        row = {"path": path.relative_to(self._emb_root).as_posix(), "bytes": path.stat().st_size, "shape": None}
+        row["md5"] = self._md5_of(path)
+        try:
+            row["shape"] = [int(s) for s in nib.load(str(path)).shape]
+        except (OSError, ValueError, ImageFileError):
+            pass
+        return row
 
     def write(self, rows):
         """Register the walked rows beside the embeddings; returns the manifest path."""
@@ -164,9 +173,10 @@ class EmbeddingManifest:
         return image.replace(".nii.gz", "_emb.nii.gz") + ".json"
 
     @staticmethod
-    def _valid_sidecar(path):
+    def valid_sidecar(path):
         """The T7 loader reads spacing/modality out of the sidecar unconditionally;
-        a sidecar that does not parse with both keys is loader-unusable."""
+        a sidecar that does not parse with both keys is loader-unusable. Public:
+        the series-③ T2 job's multi-source copier (reencode_ras) reuses it."""
         try:
             payload = json.loads(Path(path).read_text())
         except (OSError, ValueError):
@@ -184,14 +194,14 @@ class EmbeddingManifest:
             name = self._sidecar_name(entry["image"])
             dst = self._emb_root / name
             if dst.is_file():
-                statuses[entry["image"]] = "present" if self._valid_sidecar(dst) else "invalid"
+                statuses[entry["image"]] = "present" if self.valid_sidecar(dst) else "invalid"
                 continue
             src = Path(source_root) / name
             if not src.is_file():
                 statuses[entry["image"]] = "absent"
                 continue
             shutil.copyfile(src, dst)
-            statuses[entry["image"]] = "copied" if self._valid_sidecar(dst) else "invalid"
+            statuses[entry["image"]] = "copied" if self.valid_sidecar(dst) else "invalid"
         return statuses
 
     @staticmethod
