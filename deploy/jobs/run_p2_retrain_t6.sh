@@ -129,14 +129,15 @@ done
 
 python3 - "$DM_SRC_CKPT" "$DM_MD5_PIN" "$T5_SELECTION" "$BASE_CKPT" "$VAE_PATH" "$VAE_MD5_PIN" \
     "$HIST_RUN_JSON" "$HIST_DM_SOURCE" "$HIST_P1_DM_SHA" "$MODEL_JSON" "$NET_JSON" "$TRAIN_LIST" \
-    "$EMB_RAS" "$RAW_ROOT" "$EMB_MANIFEST_ROWS_PIN" "$P3_E39_CKPT" "$T6_ROOT" "$PHASE_ROOT" <<'PY'
+    "$EMB_RAS" "$RAW_ROOT" "$EMB_MANIFEST_ROWS_PIN" "$P3_E39_CKPT" "$T6_ROOT" "$PHASE_ROOT" \
+    "$P1_BASE_ROOT/ckpt/epoch_20.pt" <<'PY'
 import hashlib, json, sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 (dm_ckpt, dm_md5_pin, t5_selection, base_ckpt, vae, vae_md5_pin, hist_run_json, hist_dm_source,
  hist_p1_dm_sha, model_json, net_json, train_list, emb_ras, raw_root, manifest_rows_pin,
- p3_e39, t6_root, phase_root) = sys.argv[1:19]
+ p3_e39, t6_root, phase_root, hist_p1_ckpt) = sys.argv[1:20]
 manifest_rows_pin = int(manifest_rows_pin)
 
 def sha256_of(path):
@@ -171,6 +172,15 @@ actual = sha256_of(base_ckpt)
 if actual != base_pin:
     raise SystemExit(f"[FATAL] 底座 sha256 不匹配: 实算 {actual} vs 历史 dm_source 钉值 {base_pin}")
 print(f"[preflight] 底座 sha256 对账一致: {actual[:12]}…")
+# 被替换 DM 源的三方对账(协议改动①的参照锚):账本字段 == 常量钉值 == 历史 P1 checkpoint 实算
+if hist_dm.get("checkpoint", {}).get("sha256") != hist_p1_dm_sha:
+    raise SystemExit(f"[FATAL] 历史 dm_source checkpoint sha256 与被替换源钉值不符: {hist_dm.get('checkpoint', {}).get('sha256')}")
+if not Path(hist_p1_ckpt).is_file():
+    raise SystemExit(f"[FATAL] 被替换 DM 源文件不存在: {hist_p1_ckpt}(superseded 锚须实算对账)")
+hist_p1_actual = sha256_of(hist_p1_ckpt)
+if hist_p1_actual != hist_p1_dm_sha:
+    raise SystemExit(f"[FATAL] 被替换 DM 源实算不符: {hist_p1_actual} vs {hist_p1_dm_sha}")
+print(f"[preflight] 被替换 DM 源(历史 P1 e20)三方对账一致: {hist_p1_actual[:12]}…(账本字段=钉值=文件实算)")
 vae_md5 = md5_of(vae)
 if vae_md5 != vae_md5_pin:
     raise SystemExit(f"[FATAL] VAE md5 不匹配: {vae_md5} vs {vae_md5_pin}")
@@ -368,7 +378,7 @@ row("ControlNet 初始化", "冻结 DM encoder/mid copy_model_state", "同左(�
 row("DM/VAE 冻结", "全冻(ControlNet-only)", "全冻", "unchanged", "VAE md5 钉值 preflight 对账;训练对象仅 ControlNet")
 row("amp", "bf16", "bf16", "unchanged", "DCU 默认")
 row("modality_mapping", "mri_t1_skull_stripped=29 等", "同一文件(configs/modality_mapping.json)", "unchanged", "")
-row("world_size(拓扑)", "7(历史 P2 实测)", int(num_gpus), "unchanged", "T7 偏差 A 口径沿袭(#310 Implementation Decisions「world_size=4 沿 T7 偏差 A 登记口径」);对历史 P2(7)的偏差同口径登记,无新登记偏差")
+row("world_size(拓扑)", "4(T7 偏差 A 口径沿袭;历史 P2 run 实测 7)", int(num_gpus), "unchanged", "本序列已登记拓扑口径(#310 Implementation Decisions「world_size=4 沿 T7 偏差 A 登记口径」);对历史 P2(7)的偏差即该已登记口径本身,非新登记偏差")
 row("labels 树", "labels/(RAS 实证树)", "不变(逐位同)", "unchanged", "T1(#311)撤销:三臂复核实证旧树已 RAS、P2 训练世界对位 as-is 最高;票面「T1 干净 labels 树」前提被 #311 改写,本 run labels 输入与历史 P2 逐位同,如实声明")
 row("dev FID 仪器", "2.5D RadImageNet(ras 1mm 预处理)", "同仪器(#314 未动 FID 面)", "unchanged", "T6 trend 与历史 P2 trend 同仪器同预处理可比(bank 按 run 树新建,同 dev list 同预处理确定性等价)")
 row("种子纪律", "dev 采样 per-(case,modality) 合同种子", "同左", "unchanged", "零 GLOBAL_SEED 判定链接触;零 challenge_registry 诊断槽位消费;holdout 530 零接触")
@@ -468,17 +478,18 @@ SELECT_LOG="$T6_LOGS/select_\$TS.log"
 echo "[watch-loop] 等 epoch_5.pt(首个 eval 点)…"
 until [ -f "\$CK/epoch_5.pt" ]; do sleep 60; done
 echo "[watch-loop] epoch_5 就绪,开始 watch 循环(间隔 20 min;幂等,ledger 已有点跳过)"
+# watch argv 单点定义:循环遍与收尾扫描共用同一套参数(改 patience/eval-every 只动这里)
+WATCH_ARGS=(python3 -m ctmr generate mask dev-eval watch
+    --ckpt-dir "\$CK" --eval-root "\$EVAL_ROOT"
+    --dev-list "$TRAIN_LIST" --raw-root "$RAW_ROOT" --label-root "$VIEW_ROOT"
+    -e "$ENV_JSON" -c "$MODEL_JSON" -t "$NET_JSON"
+    --eval-every 5 --patience 3 --min-epoch 30 --max-epoch 100
+    --instrument-results "GLI=$NNUNET_RESULTS" --instrument-results "MEN=$NNUNET_RESULTS"
+    --instrument-results "METS=$NNUNET_RESULTS" --instrument-results "PED=$NNUNET_RESULTS"
+    --instrument-results "SSA=$NNUNET_RESULTS"
+    --nnunet-raw "$NNUNET_RAW" --nnunet-preprocessed "$NNUNET_PREPROCESSED")
 while true; do
-    python3 -m ctmr generate mask dev-eval watch \\
-        --ckpt-dir "\$CK" --eval-root "\$EVAL_ROOT" \\
-        --dev-list "$TRAIN_LIST" --raw-root "$RAW_ROOT" --label-root "$VIEW_ROOT" \\
-        -e "$ENV_JSON" -c "$MODEL_JSON" -t "$NET_JSON" \\
-        --eval-every 5 --patience 3 --min-epoch 30 --max-epoch 100 \\
-        --instrument-results "GLI=$NNUNET_RESULTS" --instrument-results "MEN=$NNUNET_RESULTS" \\
-        --instrument-results "METS=$NNUNET_RESULTS" --instrument-results "PED=$NNUNET_RESULTS" \\
-        --instrument-results "SSA=$NNUNET_RESULTS" \\
-        --nnunet-raw "$NNUNET_RAW" --nnunet-preprocessed "$NNUNET_PREPROCESSED" \\
-        >> "\$WATCH_LOG" 2>&1
+    "\${WATCH_ARGS[@]}" >> "\$WATCH_LOG" 2>&1
     if [ -f "\$CK/.early_stop" ]; then
         echo "[watch-loop] 早停落盘: \$(tr '\n' ' ' < "\$CK/.early_stop")"
         break
@@ -489,16 +500,7 @@ while true; do
     if ! pgrep -f "generate mas[k] train" > /dev/null && ! pgrep -f "generation\.mas[k]\.train" > /dev/null; then
         # 训练进程已退(早停文件缺 = 崩溃面或 100 上限跑满):再跑一遍收尾 pending 后停
         echo "[watch-loop] 训练进程已退出,收尾一遍 watch"
-        python3 -m ctmr generate mask dev-eval watch \\
-            --ckpt-dir "\$CK" --eval-root "\$EVAL_ROOT" \\
-            --dev-list "$TRAIN_LIST" --raw-root "$RAW_ROOT" --label-root "$VIEW_ROOT" \\
-            -e "$ENV_JSON" -c "$MODEL_JSON" -t "$NET_JSON" \\
-            --eval-every 5 --patience 3 --min-epoch 30 --max-epoch 100 \\
-            --instrument-results "GLI=$NNUNET_RESULTS" --instrument-results "MEN=$NNUNET_RESULTS" \\
-            --instrument-results "METS=$NNUNET_RESULTS" --instrument-results "PED=$NNUNET_RESULTS" \\
-            --instrument-results "SSA=$NNUNET_RESULTS" \\
-            --nnunet-raw "$NNUNET_RAW" --nnunet-preprocessed "$NNUNET_PREPROCESSED" \\
-            >> "\$WATCH_LOG" 2>&1
+        "\${WATCH_ARGS[@]}" >> "\$WATCH_LOG" 2>&1
         break
     fi
     sleep 1200

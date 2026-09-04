@@ -61,7 +61,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -373,7 +372,12 @@ def main(argv=None):
         eval_every=args.eval_every,
         max_epoch=args.max_epoch,
         rule=rule,
-        sampler_factory=partial(sampler.generate_cohort, cohort=cohort, spacings=spacings, masks=masks),
+        # The engine's factory contract is the positional (checkpoint_path,
+        # out_dir) call; generate_cohort's own parameter order interposes
+        # cohort/spacings/masks, so a keyword partial lets the engine's second
+        # positional argument land on ``cohort`` (multiple-values TypeError on
+        # every eval point -- #316). The lambda keeps each argument on its name.
+        sampler_factory=lambda checkpoint_path, out_dir: sampler.generate_cohort(checkpoint_path, cohort, spacings, masks, out_dir),
         scorer=FidTrendScorer(features, TrendFid(bank)),
         post_score=L2PostScore(l2, RoundTripDice(masks), cohort, args.skip_l2),
     ).run(cohort_file=str(cohort_path))
