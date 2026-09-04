@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import nibabel as nib
@@ -220,11 +221,39 @@ class L2TrendRunner:
 
     NN_CHANNELS = {"t1n": "0000", "t1c": "0001", "t2w": "0002", "t2f": "0003"}
 
-    def __init__(self, instrument_results, nnunet_raw, nnunet_preprocessed):
+    def __init__(self, instrument_results, nnunet_raw, nnunet_preprocessed, autodiscover_specs=False):
         self._results = instrument_results
         self._nnunet_raw = nnunet_raw
         self._nnunet_preprocessed = nnunet_preprocessed
         self._orientation = RasOrientation()
+        # The frozen INSTRUMENT_SPECS anchor awaits re-pinning alongside the v2
+        # calibration rerun (#310, ADR-0002) and is never mutated here; a
+        # diagnostic watch consuming the live v2-layout results tree opts in to
+        # resolving each challenge's spec from the tree itself (the etwt
+        # precedent: exactly one <trainer>__<plans>__<config> dir, no guesses).
+        self._spec_overrides = self._discover_spec_overrides() if autodiscover_specs else {}
+
+    def _discover_spec_overrides(self):
+        """Per-challenge live-tree spec overrides; the frozen anchor stays put."""
+        overrides = {}
+        for challenge, spec in INSTRUMENT_SPECS.items():
+            ds_dir = Path(self._results[challenge]) / spec.dataset_id
+            if not ds_dir.is_dir():
+                raise FileNotFoundError(f"instrument results tree missing {ds_dir} -- refuse to run against a half-migrated tree")
+            trainer_dirs = sorted(p.name for p in ds_dir.iterdir() if p.is_dir())
+            if len(trainer_dirs) != 1:
+                raise RuntimeError(f"{ds_dir} must hold exactly one trainer dir, got {trainer_dirs} -- refuse to guess")
+            parts = trainer_dirs[0].split("__")
+            if len(parts) != 3:
+                raise RuntimeError(f"{trainer_dirs[0]!r} is not <trainer>__<plans>__<config> -- refuse to guess")
+            trainer, plans, config = parts
+            if (trainer, plans, config) != (spec.trainer, spec.plans, spec.config):
+                overrides[challenge] = replace(spec, trainer=trainer, plans=plans, config=config)
+        return overrides
+
+    def spec_of(self, challenge):
+        """The spec this runner builds argv from: the live-tree override when discovered, else the frozen anchor."""
+        return self._spec_overrides.get(challenge, INSTRUMENT_SPECS[challenge])
 
     def prep_inputs(self, samples, out_dir):
         import SimpleITK as sitk  # deferred: execution-side only (sugon system env)
@@ -246,7 +275,7 @@ class L2TrendRunner:
         return out
 
     def predict(self, challenge, input_dir, output_dir, log_path):
-        command = FrozenInstrumentCommand(INSTRUMENT_SPECS[challenge]).build(input_dir, output_dir)
+        command = FrozenInstrumentCommand(self.spec_of(challenge)).build(input_dir, output_dir)
         env = {
             **os.environ,
             # the canonical entry runs in a fresh child process: the installed

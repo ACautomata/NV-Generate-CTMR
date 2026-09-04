@@ -487,7 +487,10 @@ WATCH_ARGS=(python3 -m ctmr generate mask dev-eval watch
     --instrument-results "GLI=$NNUNET_RESULTS" --instrument-results "MEN=$NNUNET_RESULTS"
     --instrument-results "METS=$NNUNET_RESULTS" --instrument-results "PED=$NNUNET_RESULTS"
     --instrument-results "SSA=$NNUNET_RESULTS"
-    --nnunet-raw "$NNUNET_RAW" --nnunet-preprocessed "$NNUNET_PREPROCESSED")
+    --nnunet-raw "$NNUNET_RAW" --nnunet-preprocessed "$NNUNET_PREPROCESSED"
+    # 仪器 v2 换树后冻结 spec 锚待校准重跑同批重钉(#310)——监控面按树实况覆写
+    # -tr/-p/-c(etwt 同族机制;恰一 trainer 目录三段式,不猜;冻结锚零改动)
+    --instrument-specs-autodiscover)
 while true; do
     "\${WATCH_ARGS[@]}" >> "\$WATCH_LOG" 2>&1
     if [ -f "\$CK/.early_stop" ]; then

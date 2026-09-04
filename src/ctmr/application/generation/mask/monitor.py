@@ -319,6 +319,12 @@ def parse_args(argv=None):
     p.add_argument("--max-epoch", type=int, default=100)
     p.add_argument("--skip-l2", action="store_true", help="FID-only trend (instruments unavailable)")
     p.add_argument("--instrument-results", action="append", default=[], help="CHALLENGE=nnUNet_results path")
+    p.add_argument(
+        "--instrument-specs-autodiscover",
+        action="store_true",
+        help="resolve each challenge's -tr/-p/-c from the results tree's live <trainer>__<plans>__<config> dir "
+        "(the v2-tree adaptation; the frozen INSTRUMENT_SPECS anchor is never mutated)",
+    )
     p.add_argument("--nnunet-raw", default="/root/private_data/ctmr/data/nnunet_raw")
     p.add_argument("--nnunet-preprocessed", default="/root/private_data/ctmr/data/nnunet_preprocessed")
     add_device_flag(p)
@@ -365,7 +371,7 @@ def main(argv=None):
     bank = RealReferenceBank(dev_list, args.raw_root, features, eval_root / "reference").build()
     sampler = CandidateSampler(merged, device, None, engine)
     instrument_results = dict(item.split("=", 1) for item in args.instrument_results)
-    l2 = L2TrendRunner(instrument_results, args.nnunet_raw, args.nnunet_preprocessed)
+    l2 = L2TrendRunner(instrument_results, args.nnunet_raw, args.nnunet_preprocessed, autodiscover_specs=args.instrument_specs_autodiscover)
     return WatchEngine(
         ckpt_dir=args.ckpt_dir,
         eval_root=eval_root,

@@ -144,11 +144,12 @@ def _reference_finetune_parser():
 def _reference_dev_eval_parser():
     """The retired dev-eval entry's argparse surface, verbatim (selftest retired with the entry).
 
-    Two declared evolutions since the migration, not drift: the unified
+    Three declared evolutions since the migration, not drift: the unified
     ``--device`` injection flag on the device-consuming verbs (issue #280,
-    ADR-0019 §8), and the watch verb's offline rework -- ``--poll-seconds``/
+    ADR-0019 §8), the watch verb's offline rework -- ``--poll-seconds``/
     ``--idle-exit-seconds`` retired with the polling loop (issue #279,
-    ADR-0019 §5)."""
+    ADR-0019 §5) -- and the watch verb's instrument-spec live-tree
+    autodiscovery for the v2 results layout (issue #316)."""
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -173,6 +174,10 @@ def _reference_dev_eval_parser():
     p.add_argument("--max-epoch", type=int, default=100)
     p.add_argument("--skip-l2", action="store_true", help="FID-only trend (instruments unavailable)")
     p.add_argument("--instrument-results", action="append", default=[], help="CHALLENGE=nnUNet_results path")
+    p.add_argument(
+        "--instrument-specs-autodiscover",
+        action="store_true",
+    )  # declared evolution: issue #316 (v2-tree spec autodiscovery)
     p.add_argument("--nnunet-raw", default="/root/private_data/ctmr/data/nnunet_raw")
     p.add_argument("--nnunet-preprocessed", default="/root/private_data/ctmr/data/nnunet_preprocessed")
     p.add_argument("--device", default=None)  # declared evolution: issue #280 (device injection, ADR-0019 §8)
