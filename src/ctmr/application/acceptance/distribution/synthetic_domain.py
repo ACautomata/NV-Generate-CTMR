@@ -66,6 +66,7 @@ from ctmr.domain.dm_output_grid import V1_DM_OUTPUT_GRID
 from ctmr.domain.grid import InstrumentGridAdapter
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
 from ctmr.domain.measurement import REGIONS, DiceScore, HierarchyChecker, RegionMasks, WilsonUpper
+from ctmr.domain.orientation import RasOrientation
 
 # ── 常量 ──────────────────────────────────────────────────────────────────
 
@@ -375,11 +376,14 @@ class InputPreparator:
     nnU-Net 期望：BraTS 原生 240×240×155 @ 1mm isotropic
 
     处理流程：
-    1. 读取 DM 输出 NIfTI
+    1. 读取 DM 输出 NIfTI(RAS 方向世界断言,ADR-0020)
     2. 重采样到 1mm isotropic
     3. 裁剪/填充到 240×240×155
     4. 保存为 nnU-Net 输入格式：<case>_0000.nii.gz .. <case>_0003.nii.gz
     """
+
+    def __init__(self) -> None:
+        self._orientation = RasOrientation()
 
     def prepare_case(
         self,
@@ -392,8 +396,10 @@ class InputPreparator:
 
         ADR-0008 收编：几何（B-spline 重采样到 1mm + 居中 crop/pad 到 240×240×155）
         由 ctmr.domain.grid 的 continuum 适配器执行（修复了原 ``_crop_or_pad`` 把 xyz target
-        直接作用于 zyx 数组的轴序 bug）。
+        直接作用于 zyx 数组的轴序 bug）。ADR-0020：组装前断言 RAS 方向世界(生成侧写出
+        协议世界),与其余仪器输入组装点同法。
         """
+
         case_input_dir = output_dir / challenge
         case_input_dir.mkdir(parents=True, exist_ok=True)
 
@@ -404,7 +410,7 @@ class InputPreparator:
                 continue
 
             img = sitk.ReadImage(str(src_path))
-            aligned = InstrumentGridAdapter.continuum().align(img)
+            aligned = InstrumentGridAdapter.continuum().align(self._orientation.require_ras(img))
             sitk.WriteImage(aligned, str(dst_path))
 
         return case_input_dir

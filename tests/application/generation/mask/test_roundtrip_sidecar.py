@@ -18,8 +18,9 @@ declarative pytest functions against the new home
 (``ctmr.application.generation.trends``) and the shared dev-eval engine in
 ``ctmr.application.shell`` (``CheckpointWatcher`` / ``EarlyStopRule`` /
 ``TrendLedger``). The alignment-parity gate pins the round-trip Dice condition
-path onto the terminal-acceptance resampler (the DM RAS->LPS flip lives with
-the callers by ADR-0008, so the two callers must track each other). The
+path onto the terminal-acceptance resampler: both callers enter the same RAS
+direction world (ADR-0020 -- the pre-#314 x/y flip is retired on both sides),
+so the two paths must stay bit-identical. The
 watch-idempotence and select-idempotence gates below are the sidecar-restart
 contract: a restart must not re-evaluate already-scored epochs (re-appended
 trend points would corrupt the early-stop patience count), and the final
@@ -143,13 +144,12 @@ def test_round_trip_dice_perfect_match_is_one_and_both_empty_is_none():
 
 
 def test_round_trip_condition_alignment_matches_the_terminal_acceptance_resampler(tmp_path):
-    """The monitor's condition alignment must track the L2 final-acceptance path
-    (nearest-neighbour label align + the terminal-acceptance-only DM RAS->LPS
-    x/y flip): both callers own their copy by ADR-0008, so this gate pins them
-    together."""
+    """The monitor's condition alignment must track the L2 final-acceptance path:
+    both callers unify onto the RAS direction world (ADR-0020) and align with
+    the nearest-neighbour label adapter -- one array world, bit-identical paths."""
     import nibabel as nib
 
-    from ctmr.application.acceptance.distribution.measurement_run import GeneratedVolumeResampler
+    from ctmr.application.acceptance.distribution.measurement_run import InstrumentInputAssembler
 
     # a small labelled volume, written on the DM-side RAS-ish grid then upsampled by
     # nibabel to a realistic resolution so the instrument-grid resample has work to do
@@ -161,7 +161,7 @@ def test_round_trip_condition_alignment_matches_the_terminal_acceptance_resample
 
     from ctmr.application.generation.mask.monitor import PREDICTION_SHAPE
 
-    reference = GeneratedVolumeResampler().label_to_grid(str(path))
+    reference = InstrumentInputAssembler().label_to_grid(str(path))
     produced = RoundTripDice(None).align_condition(path)  # the monitor applies its remap on top
     assert reference is not None and produced is not None
     assert produced.shape == PREDICTION_SHAPE == reference.shape

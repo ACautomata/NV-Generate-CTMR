@@ -84,14 +84,11 @@ from ctmr.application.shell import (
 )
 from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter
 from ctmr.domain.measurement import REGIONS, DiceScore, RegionMasks
+from ctmr.domain.orientation import RasOrientation
 from ctmr.wiring.generate import mask_engine
 
 # Mask condition combined mask -> instrument label space (REGION_LABELS = {1,2,3}).
 COMBINED_TO_INSTRUMENT = {22: 0, 129: 1, 130: 2, 131: 3}
-# The terminal-acceptance-only DM RAS->LPS axis flip (zyx array axes y=1, x=2);
-# the round-trip condition alignment must track the final-acceptance resampler
-# path -- the parity is machine-guarded in tests/application/generation/mask.
-DM_GRID_TO_LPS_AXIS_FLIP = (1, 2)
 PREDICTION_SHAPE = tuple(reversed(INSTRUMENT_GRID.size))  # array layout is zyx
 
 
@@ -164,14 +161,17 @@ class RoundTripDice:
 
     The combined condition (22/129/130/131) is remapped to the instrument label
     space (0/1/2/3) and aligned to the instrument grid with the same
-    nearest-neighbour resampler + terminal-acceptance DM RAS->LPS flip as the
-    L2 final-acceptance path. Dice is undefined (None) when both the condition
-    and prediction regions are empty -- recorded as such, never a silent 0
-    (spec #51 decision 11).
+    nearest-neighbour resampler + RAS direction world as the L2 final-acceptance
+    path (ADR-0020: both sides enter RAS -- the pre-#314 x/y flip here mirrored
+    the condition onto a different world from the L2TrendRunner's un-flipped
+    predictions, misaligning this trend by construction). Dice is undefined
+    (None) when both the condition and prediction regions are empty -- recorded
+    as such, never a silent 0 (spec #51 decision 11).
     """
 
     def __init__(self, mask_source):
         self._mask_source = mask_source
+        self._orientation = RasOrientation()
 
     @classmethod
     def remap_combined_to_instrument(cls, arr):
@@ -187,13 +187,19 @@ class RoundTripDice:
         return DiceScore.of(RegionMasks(condition).of(region), RegionMasks(pred).of(region))
 
     def align_condition(self, condition_path):
-        """Aligns the combined mask onto the instrument grid (the L2 final-acceptance resampler path)."""
+        """Aligns the combined mask onto the instrument grid (the L2 final-acceptance resampler path, RAS world).
+
+        Failure classes match the terminal-acceptance assembler: unreadable
+        files degrade to None (the cond_fail row), while a direction-world
+        violation (``NotRasWorldError``) fails loudly -- an upstream protocol
+        break, not a per-case input failure (ADR-0020).
+        """
         import SimpleITK as sitk  # deferred: execution-side only (sugon system env)
 
         try:
             image = sitk.ReadImage(str(condition_path))
-            aligned = InstrumentGridAdapter.label().align(image)
-            array = np.flip(sitk.GetArrayFromImage(aligned).astype(np.uint8, copy=False), axis=DM_GRID_TO_LPS_AXIS_FLIP)
+            aligned = InstrumentGridAdapter.label().align(self._orientation.to_ras(image))
+            array = sitk.GetArrayFromImage(aligned).astype(np.uint8, copy=False)
         except (RuntimeError, OSError):
             return None
         if array.shape != PREDICTION_SHAPE:

@@ -19,11 +19,12 @@ callers). Pinned onto it is the instrument-grid special case: the
 frozen by the two named factories -- continuum volumes go B-spline with the
 ``SetDefaultPixelValue(GetPixelIDValue())`` background, label volumes go
 nearest neighbour so no label values are invented; both centred crop/pad onto
-``INSTRUMENT_GRID``. Terminal-acceptance-only concerns (the DM RAS->LPS axis
-flip, file IO) stay with that caller, not here. The frozen terminal-acceptance
-geometry (the ``GeneratedVolumeResampler`` private methods of
-the terminal-acceptance shell (``measurement_run``), pre-#105) is the convergence
-standard this engine was extracted from, verbatim.
+``INSTRUMENT_GRID``. Direction-world concerns live with the input assembly
+callers too (the ``InstrumentInputAssembler`` of the terminal-acceptance shell
+``measurement_run``): since ADR-0020 both sides enter the RAS world before this
+geometry runs, and the DM RAS->LPS axis flip that pre-#314 callers applied on
+top is retired. The frozen terminal-acceptance geometry (minus that retired
+flip) is the convergence standard this engine was extracted from, verbatim.
 """
 
 from dataclasses import dataclass
