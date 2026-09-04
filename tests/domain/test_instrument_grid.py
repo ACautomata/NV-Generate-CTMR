@@ -1,9 +1,12 @@
 """Convergence-gate tests for the instrument-grid special case (ADR-0008, #105).
 
 Pins ``INSTRUMENT_GRID`` and the continuum/label adapter factories, and proves
-the frozen terminal-acceptance geometry -- now routed through ``ctmr.domain.grid`` --
-is bit-identical to the pre-#105 implementation on synthetic inputs. That is
-the ADR-0008 convergence gate: SimpleITK unit level, any machine, no cluster,
+the frozen terminal-acceptance geometry -- now routed through ``ctmr.domain.grid``
+and assembled by the ``InstrumentInputAssembler`` (ADR-0020: the RAS direction
+world asserted on the generated side, unified on the real side; the pre-#314
+DM RAS->LPS flip retired) -- is bit-identical to the pre-#105 implementation
+minus that retired flip on synthetic inputs. That is the ADR-0008 convergence
+gate as amended by ADR-0020: SimpleITK unit level, any machine, no cluster,
 no external data (ADR-0013); the sugon byte-identical rerun stays with the
 frozen gate (issue #T12).
 """
@@ -12,17 +15,22 @@ import numpy as np
 import pytest
 import SimpleITK as sitk
 
-from ctmr.application.acceptance.distribution.measurement_run import GeneratedVolumeResampler
+from ctmr.application.acceptance.distribution.measurement_run import InstrumentInputAssembler
 from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter
+from ctmr.domain.orientation import RasOrientation
+
+RAS_DIRECTION = RasOrientation.RAS_DIRECTION
 
 
 class FinalAcceptanceReferenceGeometry:
-    """Byte-for-byte snapshot of the pre-#105 terminal-acceptance geometry.
+    """Byte-for-byte snapshot of the pre-#105 terminal-acceptance geometry,
+    minus the RAS->LPS axis flip retired by ADR-0020 (#314).
 
-    The frozen convergence standard of ADR-0008: the private methods of
-    ``GeneratedVolumeResampler`` in the distribution ``measurement_run``
-    before the ``ctmr.domain.grid`` extraction. Do not edit -- drift here is exactly
-    what this gate exists to catch.
+    The frozen convergence standard of ADR-0008 as amended by ADR-0020 on
+    2026-09-04 (the flip removal is the amendment's entire content; the
+    resample/crop-pad bodies below are still the untouched pre-#105 text). The
+    direction-world steps now live in ``ctmr.domain.orientation`` instead. Do
+    not edit further -- drift here is exactly what this gate exists to catch.
     """
 
     @staticmethod
@@ -57,8 +65,6 @@ class FinalAcceptanceReferenceGeometry:
                 src_slices.append(slice(0, s))
                 dst_slices.append(slice(start, start + s))
         cropped[tuple(reversed(dst_slices))] = array[tuple(reversed(src_slices))]
-        for axis in (1, 2):  # RAS(DM grid) -> LPS(instrument grid); zyx array axes (y=1, x=2)
-            cropped = np.flip(cropped, axis=axis)
         result = sitk.GetImageFromArray(cropped)
         result.SetSpacing((1.0, 1.0, 1.0))
         result.SetOrigin(image.GetOrigin())
@@ -105,11 +111,12 @@ def test_terminal_acceptance_continuum_geometry_matches_the_frozen_reference(tmp
     image = sitk.GetImageFromArray((800.0 * np.exp(-(((zz - 40.0) ** 2 + (yy - 65.0) ** 2 + (xx - 150.0) ** 2) / 2.0e4))).astype(np.float32))
     image.SetSpacing((1.0, 2.0, 1.5))  # xyz mm -> resampled to (300, 260, 120)
     image.SetOrigin((12.0, -7.0, 3.0))  # non-trivial origin exercises metadata carry-over
+    image.SetDirection(RAS_DIRECTION)  # the generated side enters in the RAS write-protocol world
     source = tmp_path / "continuum.nii.gz"
     sitk.WriteImage(image, str(source))
 
     destination = tmp_path / "aligned.nii.gz"
-    GeneratedVolumeResampler().write(source, destination)
+    InstrumentInputAssembler().write(source, destination)
 
     reference = FinalAcceptanceReferenceGeometry.crop_or_pad(
         FinalAcceptanceReferenceGeometry.resample_to_1mm(sitk.ReadImage(str(source)), sitk.sitkBSpline),
@@ -132,10 +139,11 @@ def test_terminal_acceptance_label_geometry_matches_the_frozen_reference(tmp_pat
     image = sitk.GetImageFromArray(array)
     image.SetSpacing((0.5, 1.0, 1.0))  # xyz mm -> resampled to (60, 100, 200): pad x/y, crop z
     image.SetOrigin((-4.0, 6.0, 9.0))
+    image.SetDirection(RAS_DIRECTION)  # condition labels enter in the RAS world (idempotent to_ras)
     source = tmp_path / "label.nii.gz"
     sitk.WriteImage(image, str(source))
 
-    aligned = GeneratedVolumeResampler().label_to_grid(source)
+    aligned = InstrumentInputAssembler().label_to_grid(source)
 
     reference = FinalAcceptanceReferenceGeometry.crop_or_pad(
         FinalAcceptanceReferenceGeometry.resample_to_1mm(sitk.ReadImage(str(source)), sitk.sitkNearestNeighbor),

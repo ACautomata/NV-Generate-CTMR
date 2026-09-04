@@ -42,7 +42,7 @@ from ctmr.application.acceptance.distribution.calibration_metrics import main as
 from ctmr.application.acceptance.distribution.calibration_metrics import measure_case
 from ctmr.application.acceptance.distribution.measurement_run import (
     COMBINED_TO_INSTRUMENT,
-    GeneratedVolumeResampler,
+    InstrumentInputAssembler,
     MeasurementRunner,
 )
 from ctmr.application.acceptance.distribution.measurement_table import MEASUREMENT_FIELDS
@@ -172,10 +172,10 @@ def test_terminal_runner_p2_condition_row_is_the_canonical_wide_row(tmp_path):
 
     row = MeasurementRunner({"observations": [observation]}, input_root, pred_root).measure_observation(observation)
 
-    # the alignment/flip and the combined->instrument remap are caller-owned
+    # the RAS-world alignment and the combined->instrument remap are caller-owned
     # input adaptation: the test drives the same collaborators, then checks the
     # measured row against the canonical serialization of the aligned condition
-    aligned = GeneratedVolumeResampler().label_to_grid(condition_path)
+    aligned = InstrumentInputAssembler().label_to_grid(condition_path)
     condition = MeasurementRunner.remap_condition(aligned)
     expected = (
         InstrumentMeasurer()

@@ -15,7 +15,8 @@
 composes the measurement collaborators (``RegionMasks`` / ``HierarchyChecker``
 / ``CalibrationCaseUsability`` / ``DiceScore``) into one ``CaseMeasurement``:
 a pure transform, numpy in / value object out, no file IO, no cluster or path
-coupling (READERS stay with the callers -- alignment, the DM-RAS->LPS flip and
+coupling (READERS stay with the callers -- alignment, the direction-world
+unification (ADR-0020; the pre-#314 DM-RAS->LPS flip is retired) and
 the P2 combined-mask remap are input-adaptation concerns, not measurement).
 
 Column families are gated on the optional references (ADR-0010 decision 2):

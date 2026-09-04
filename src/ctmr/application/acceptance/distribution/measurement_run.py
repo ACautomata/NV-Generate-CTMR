@@ -6,19 +6,21 @@ Every judgement rule lives in ``final_acceptance`` (stdlib-only). Two commands:
   assemble-execute   plan -> instrument inputs at ``<output-root>/inputs/<CH>/``
                      (generated side: the issue #38 ``InputPreparator``
                      geometry verbatim -- resample to 1mm B-spline, centre
-                     crop/pad to 240x240x155; real side: byte-identical
-                     pass-through, the native BraTS volumes already meet the
-                     instrument contract). One file per observation and channel:
-                     ``{obs_id}_{suffix}.nii.gz``.
+                     crop/pad to 240x240x155, RAS world asserted; real side:
+                     the same geometry after the affine-driven RAS
+                     unification of the native BraTS volumes -- ADR-0020
+                     retires the byte-identical pass-through and with it the
+                     two-world misalignment on RAS-coded cases). One file per
+                     observation and channel: ``{obs_id}_{suffix}.nii.gz``.
   measure            plan + predictions -> measurement CSV (schema shared with
                      the judge). Measurement logic is the canonical
                      ``InstrumentMeasurer`` (ADR-0010, #224); this shell keeps
                      the caller-owned execution concerns -- input_fail/run_fail
                      policies, failure placeholder rows and their sentinels,
-                     the P2 combined-mask remap, the DM-RAS->LPS flip and all
-                     file IO. Failure flags (input_fail / run_fail / hier_viol)
-                     are checked on BOTH sides; empty predictions are
-                     measurement results, not failures.
+                     the P2 combined-mask remap and all file IO. Failure flags
+                     (input_fail / run_fail / hier_viol) are checked on BOTH
+                     sides; empty predictions are measurement results, not
+                     failures.
 
 The z-axis geometry fact (resampled 241x241x174 centred-cropped to 155 slices,
 ~19 slices dropped on the generated side only) is registered in the protocol
@@ -27,7 +29,6 @@ and carried into the report appendix -- not compensated here.
 
 import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -37,6 +38,7 @@ import SimpleITK as sitk
 from ctmr.application.acceptance.distribution.measurement_table import CHANNEL_SUFFIXES, MeasurementTable
 from ctmr.domain.grid import INSTRUMENT_GRID, InstrumentGridAdapter  # noqa: E402
 from ctmr.domain.measurement import InstrumentMeasurer
+from ctmr.domain.orientation import RasOrientation
 
 NNUNET_TARGET_SIZE = INSTRUMENT_GRID.size
 PREDICTION_SHAPE = tuple(reversed(NNUNET_TARGET_SIZE))  # array layout is zyx
@@ -49,39 +51,50 @@ PREDICTION_SHAPE = tuple(reversed(NNUNET_TARGET_SIZE))  # array layout is zyx
 # spurious exact 0.
 COMBINED_TO_INSTRUMENT = {22: 0, 129: 1, 130: 2, 131: 3}
 
-# The DM emits generated volumes (and the #52 condition masks) on the RAS grid,
-# while the real BraTS side is passed through in its native LPS orientation.
-# RAS<->LPS flips the x and y axes and preserves z, so the generated volume and
-# the condition mask are x/y-flipped onto the instrument grid to align with the
-# real reference (array layout is zyx: flip the last two axes). Without this the
-# gen/real pair lands ~240mm apart and the TOST centroid test fails spuriously.
-DM_GRID_TO_LPS_AXIS_FLIP = (1, 2)  # zyx array axes to reverse (y=1, x=2)
 
+class InstrumentInputAssembler:
+    """Assembles instrument inputs onto the frozen grid -- in one direction world.
 
-class GeneratedVolumeResampler:
-    """Issue #38 InputPreparator geometry (protocol §2), with the axis handling
-    corrected for the zyx array layout (#38 applied xyz slices to a zyx array).
-
-    Since #105 (ADR-0008) the geometry itself lives in ctmr.domain.grid
-    (InstrumentGridAdapter: B-spline continuum / nearest-neighbour label,
-    centred crop/pad onto the instrument grid); this shell keeps only the
-    terminal-acceptance-only DM-RAS -> LPS flip and the file IO.
+    The ADR-0008 geometry (InstrumentGridAdapter: B-spline continuum /
+    nearest-neighbour label, centred crop/pad onto the instrument grid) composed
+    with the ADR-0020 direction world (RasOrientation). Both sides enter RAS:
+    the generated side asserts the DM write protocol's world (``require_ras`` --
+    a non-RAS generated volume is an upstream protocol break), the real side is
+    affine-driven unified out of its native orientation mixture (``to_ras``),
+    and condition labels are unified defensively. The DM RAS->LPS axis flip this
+    class carried before #314 is retired: with both sides constructed in RAS the
+    misalignment class it compensated for cannot arise.
     """
 
     def __init__(self):
         self._continuum = InstrumentGridAdapter.continuum()
         self._label = InstrumentGridAdapter.label()
+        self._orientation = RasOrientation()
 
     def write(self, source, destination):
+        """Generated side: RAS world asserted, then the frozen geometry, then file IO."""
         image = sitk.ReadImage(str(source))
-        aligned = self._flip_dm_grid_to_lps(self._continuum.align(image))
+        aligned = self._continuum.align(self._orientation.require_ras(image))
+        sitk.WriteImage(aligned, str(destination))
+
+    def write_real(self, source, destination):
+        """Real side: affine-driven RAS unification of the native coding, then the frozen geometry."""
+        image = sitk.ReadImage(str(source))
+        aligned = self._continuum.align(self._orientation.to_ras(image))
         sitk.WriteImage(aligned, str(destination))
 
     def label_to_grid(self, source):
-        """Aligns a label volume onto the instrument grid; None when unreadable."""
+        """Aligns a label volume onto the instrument grid; None when unreadable.
+
+        Failure classes are distinct and deliberately so: an unreadable file or
+        an off-grid shape degrades to None (the caller's input_fail path), but a
+        direction-world violation (``NotRasWorldError``) is NOT caught here -- a
+        non-RAS world is an upstream protocol break (ADR-0020) and fails loudly
+        instead of dissolving into a placeholder measurement row.
+        """
         try:
             image = sitk.ReadImage(str(source))
-            aligned = self._flip_dm_grid_to_lps(self._label.align(image))
+            aligned = self._label.align(self._orientation.to_ras(image))
             array = sitk.GetArrayFromImage(aligned).astype(np.uint8, copy=False)
         except (RuntimeError, OSError):
             return None
@@ -89,25 +102,13 @@ class GeneratedVolumeResampler:
             return None
         return array
 
-    @staticmethod
-    def _flip_dm_grid_to_lps(image):
-        """RAS(DM grid) -> LPS(instrument grid); see DM_GRID_TO_LPS_AXIS_FLIP."""
-        array = sitk.GetArrayFromImage(image)
-        for axis in DM_GRID_TO_LPS_AXIS_FLIP:  # zyx array axes to reverse (y=1, x=2)
-            array = np.flip(array, axis=axis)
-        result = sitk.GetImageFromArray(array)
-        result.SetSpacing(image.GetSpacing())
-        result.SetOrigin(image.GetOrigin())
-        result.SetDirection(image.GetDirection())
-        return result
-
 
 class ObservationInputWriter:
     """Writes every plan observation into the instrument input tree."""
 
     def __init__(self, output_root):
         self._output_root = Path(output_root)
-        self._resampler = GeneratedVolumeResampler()
+        self._assembler = InstrumentInputAssembler()
 
     def write_all(self, plan):
         for observation in plan["observations"]:
@@ -118,9 +119,9 @@ class ObservationInputWriter:
                 if destination.exists():
                     continue
                 if observation["side"] == "gen":
-                    self._resampler.write(source, destination)
-                else:  # real side meets the contract natively: pass through
-                    shutil.copyfile(source, destination)
+                    self._assembler.write(source, destination)
+                else:  # real side: native BraTS volumes unified onto the RAS world first
+                    self._assembler.write_real(source, destination)
         return self._output_root / "inputs"
 
 
@@ -178,7 +179,7 @@ class MeasurementRunner:
         self._pred_root = Path(pred_root)
         self._checker = InstrumentFailureChecker()
         self._measurer = InstrumentMeasurer()
-        self._resampler = GeneratedVolumeResampler()
+        self._assembler = InstrumentInputAssembler()
 
     @staticmethod
     def remap_condition(combined):
@@ -199,9 +200,11 @@ class MeasurementRunner:
         input_fail = self._checker.input_fail(observation, challenge_dir)
         condition = None
         if observation.get("condition_mask"):
-            # The P2 condition mask is part of the input contract: align it onto
-            # the instrument grid (nearest neighbour); unalignable -> input_fail.
-            condition = self._resampler.label_to_grid(observation["condition_mask"])
+            # The P2 condition mask is part of the input contract: unify it onto
+            # the instrument grid (nearest neighbour, RAS world). Unreadable/
+            # unalignable -> input_fail; a direction-world violation fails loudly
+            # instead (upstream protocol break, ADR-0020 -- see label_to_grid).
+            condition = self._assembler.label_to_grid(observation["condition_mask"])
             if condition is None:
                 input_fail = True
             else:
@@ -241,7 +244,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("assemble-execute", help="plan -> instrument inputs (resample generated, pass real through)")
+    p = sub.add_parser("assemble-execute", help="plan -> instrument inputs (both sides unified onto the RAS world + instrument grid)")
     p.add_argument("--plan", required=True)
     p.add_argument("--output-root", required=True)
     p.set_defaults(handler="assemble-execute")

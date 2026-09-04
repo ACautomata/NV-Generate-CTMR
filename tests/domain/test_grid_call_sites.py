@@ -17,6 +17,9 @@ import pytest
 import SimpleITK as sitk
 
 from ctmr.domain.grid import CenterCropOrPad, GridResampler, InstrumentGridAdapter, TargetGrid
+from ctmr.domain.orientation import RasOrientation
+
+RAS_DIRECTION = RasOrientation.RAS_DIRECTION
 
 
 def _smooth_volume(shape_zyx, spacing_xyz):
@@ -27,6 +30,7 @@ def _smooth_volume(shape_zyx, spacing_xyz):
     image = sitk.GetImageFromArray(array.astype(np.float32))
     image.SetSpacing(spacing_xyz)
     image.SetOrigin((11.0, -5.0, 3.0))  # non-trivial origin exercises metadata carry-over
+    image.SetDirection(RAS_DIRECTION)  # the DM write protocol's world (ADR-0020)
     return image
 
 

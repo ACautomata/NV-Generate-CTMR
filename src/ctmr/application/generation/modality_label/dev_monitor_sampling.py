@@ -28,8 +28,8 @@ Produces ONLY the sampling products of the dev ET/WT monitor:
    (``final_acceptance predict`` / ``measurement_run assemble-execute`` /
    ``measure``) runs verbatim, read-only. The generated side carries the
    written sample volumes; the real side resolves each case's four modalities
-   from the dev list against the raw root (native BraTS pass-through, the
-   same treatment the terminal acceptance gives its real side).
+   from the dev list against the raw root (native BraTS volumes, unified onto
+   the RAS direction world by the terminal acceptance's assembler -- ADR-0020).
 
 Zero holdout contact: the dev list is the only population input, the plan
 records ``population: "dev"``, and a cohort shortfall fails loudly (a silent
@@ -168,7 +168,7 @@ class DevMonitorPlanBuilder:
     def real_channels(self, challenge, case):
         """The four native real paths of one dev case, keyed by instrument channel.
 
-        Every path must exist: the real side is a pass-through copy in
+        Every path must exist: the real side is read and unified in
         assemble-execute, so a missing file is a loud preflight failure, not a
         mid-chain crash.
         """
@@ -332,7 +332,7 @@ class DevMonitorSampler:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dev-list", required=True, help="the P1 dev list json (the ONLY population input -- never the holdout)")
-    parser.add_argument("--raw-root", default=None, help="raw BraTS root for the real-side pass-through paths (dev-list relative; plan build only)")
+    parser.add_argument("--raw-root", default=None, help="raw BraTS root for the real-side paths (dev-list relative; plan build only)")
     parser.add_argument("--emb-root", default=None, help="embedding companion root for per-case spacings (t1n entry; sampling only)")
     parser.add_argument("--ckpt", default=None, help="the frozen candidate checkpoint, loaded read-only")
     parser.add_argument("-e", "--env_config_path", default=None)

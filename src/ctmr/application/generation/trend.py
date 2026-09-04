@@ -40,6 +40,7 @@ from ctmr.application.shell import COHORT_QUOTAS, TARGET_MODALITIES
 from ctmr.domain.grid import TREND_FEATURE_GRID, CenterCropOrPad, GridResampler, InstrumentGridAdapter
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
 from ctmr.domain.measurement import REGIONS, HierarchyChecker
+from ctmr.domain.orientation import RasOrientation
 
 PLANES = ("xy", "yz", "zx")
 TREND_PREPROCESSING = "percentile_0_99.5_to_0_1_ras_1mm_zero_pad_240x240x160"
@@ -223,6 +224,7 @@ class L2TrendRunner:
         self._results = instrument_results
         self._nnunet_raw = nnunet_raw
         self._nnunet_preprocessed = nnunet_preprocessed
+        self._orientation = RasOrientation()
 
     def prep_inputs(self, samples, out_dir):
         import SimpleITK as sitk  # deferred: execution-side only (sugon system env)
@@ -237,7 +239,9 @@ class L2TrendRunner:
             # ADR-0008 adoption: the #38 InputPreparator geometry via the frozen
             # instrument adapter (B-spline + centred crop/pad) -- registered linear->B-spline
             # + centreing changes vs the pre-adoption top-left linear resize.
-            aligned = InstrumentGridAdapter.continuum().align(image)
+            # ADR-0020: the RAS write protocol world is asserted (never re-oriented) --
+            # the same world every instrument input assembly point enters.
+            aligned = InstrumentGridAdapter.continuum().align(self._orientation.require_ras(image))
             sitk.WriteImage(aligned, str(dst))
         return out
 

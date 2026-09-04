@@ -137,6 +137,11 @@ _Avoid_: 用真实通道补缺生成体(真实通道主导测量)、以生成模
 
 _Avoid_: 以线性插值喂仪器(已统一收敛为 B-spline)、非居中裁剪、把 xyz 轴序作用于 zyx 数组、在各脚本中散落重写此几何
 
+**方向世界(RAS direction world)**:
+整链统一声明的体数据方向语义——RAS,即 NVIDIA 上游既定约定(initial commit 全链 `Orientationd(axcodes="RAS")` 取证,经 [ADR-0020](docs/adr/0020-ras-direction-world.md) 钉板)。仪器输入组装两侧同世界:生成侧断言 RAS 写出协议世界(非 RAS 声明 = 上游协议破坏,响亮死)、real 侧 affine 驱动统一出 native 方向混合(BraTS ~89% LPS / ~11% RAS)、条件掩码防御统一;RAS→LPS flip 补偿已退役,错位 class 由构造消除。落地名:`ctmr.domain.orientation`(`RasOrientation`/`NotRasWorldError`)+ `InstrumentInputAssembler`(执行侧组装器);轴对齐边界(48 种 permute×flip 编码)内做无损统一,斜方向响亮死。
+
+_Avoid_: 生成侧静默改向(断言而非修正)、real 侧直通直拷(方向混合必须统一)、在新组装点旁路世界断言、以文件头区分组装后数组的世界(align 重置 direction 为 identity,断言住在组装路径)、斜 direction 静默近似重排
+
 **冻结仪器调用(FrozenInstrumentCommand)**:
 以冻结配置(fold 0、`nnUNetTrainer250Epochs`、镜像 TTA on;SSA 用 `3d_fullres_bs16`+`nnUNetPlans_SSA_bs16_v1`)驱动 L2 肿瘤测量仪器 nnU-Net 预测的唯一构造点——规格侧 `ctmr.domain.instrument_spec` 的 `FrozenInstrumentCommand.build(输入, 输出) -> argv` 纯方法 + 唯一 canonical 执行入口 `ctmr measure predict`(住址随 [ADR-0015](docs/adr/0015-ddd-layered-endstate.md) 甲案迁移;被取代的旧入口反向 shim 已于 #175 删除,git 历史即复现锚)。TTA on 为冻结不变量(无 TTA 形参、永不产出 `--disable_tta`);weights_only 白名单 scoped 收敛于 `nnunet_safe_globals()`。实现已落地(#107 收编 #108),执行侧居 `ctmr.infrastructure.nnunet_runner`,规格侧居 `ctmr.domain.instrument_spec`;口径经 ADR-0009 钉板,与 ADR-0002/0004 冻结读数一致。
 _Avoid_: 在各脚本散落手写 `nnUNetv2_predict` 命令、用非标准入口名 `nnUNetv2_predict_from_raw_data`、写 `--disable_tta False` token、import 时 `add_safe_globals` 改全局状态

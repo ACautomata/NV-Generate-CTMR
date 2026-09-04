@@ -51,6 +51,7 @@ from ctmr.domain.grid import (
 )
 from ctmr.domain.instrument_spec import INSTRUMENT_SPECS, FrozenInstrumentCommand
 from ctmr.domain.measurement import HierarchyChecker
+from ctmr.domain.orientation import RasOrientation
 
 pytestmark = pytest.mark.torch
 
@@ -394,6 +395,7 @@ def _trend_volume():
     zz, yy, xx = np.mgrid[0:80, 0:130, 0:300]  # zyx -> xyz size (300, 130, 80): crop x/y, pad z
     image = sitk.GetImageFromArray((100.0 * np.exp(-(((xx - 100.0) ** 2 + (yy - 65.0) ** 2 + (zz - 40.0) ** 2) / 2.0e4))).astype(np.float32))
     image.SetSpacing((1.0, 2.0, 1.5))  # xyz mm
+    image.SetDirection(RasOrientation.RAS_DIRECTION)  # the DM write protocol world (ADR-0020)
     return image
 
 
