@@ -124,7 +124,7 @@ def test_modality_label_watch_injects_the_device(monkeypatch, tmp_path):
     monkeypatch.setattr(ml_monitor, "MrTrendFeatures", lambda device: (features_box.append(device), Recording(device))[1])
     monkeypatch.setattr(ml_monitor, "RealReferenceBank", lambda *args: SimpleNamespace(build=lambda: object()))
     monkeypatch.setattr(ml_monitor, "CandidateSampler", lambda *args: (sampler_box.append(args[1]), Recording(*args))[1])
-    monkeypatch.setattr(ml_monitor, "L2TrendRunner", lambda *args: object())
+    monkeypatch.setattr(ml_monitor, "L2TrendRunner", lambda *args, **kwargs: object())  # real __init__ takes autodiscover_specs
     monkeypatch.setattr(ml_monitor, "WatchEngine", lambda **kwargs: SimpleNamespace(run=lambda cohort_file: 0))
 
     assert ml_monitor.main([*argv, "--device", "cpu"]) == 0
@@ -187,7 +187,7 @@ def test_mask_monitor_injects_the_device(monkeypatch, tmp_path):
     monkeypatch.setattr(mask_monitor, "MrTrendFeatures", lambda device: (features_box.append(device), Recording(device))[1])
     monkeypatch.setattr(mask_monitor, "RealReferenceBank", lambda *args: SimpleNamespace(build=lambda: object()))
     monkeypatch.setattr(mask_monitor, "CandidateSampler", lambda *args: (sampler_box.append(args[1]), Recording(*args))[1])
-    monkeypatch.setattr(mask_monitor, "L2TrendRunner", lambda *args: object())
+    monkeypatch.setattr(mask_monitor, "L2TrendRunner", lambda *args, **kwargs: object())  # real __init__ takes autodiscover_specs
     monkeypatch.setattr(mask_monitor, "WatchEngine", lambda **kwargs: SimpleNamespace(run=lambda cohort_file: 0))
 
     assert mask_monitor.main([*argv, "--device", "cpu"]) == 0
