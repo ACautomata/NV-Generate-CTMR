@@ -1,4 +1,4 @@
-"""Tests for scripts.create_brats_dataset_json — BRATS dataset.json 阶段①生成器（ticket T1, issue #17）.
+"""Tests for scripts.create_brats_dataset_json — the stage-1 BRATS dataset.json generator (ticket T1, issue #17).
 
 Fake data layout: 5 scans across 4 subjects; subject BraTS-GLI-00002 has two
 timepoints (-000/-001) to exercise the same-subject-stays-together invariant.
@@ -187,14 +187,13 @@ class TestBraTSDatasetList:
         assert all("-seg" not in entry["image"] for entry in dataset_list.to_dict()["training"])
 
     def test_validation_roster_keeps_timepoints_together(self, build_dataset_list) -> None:
-        dataset_list, _, _ = build_dataset_list(0.5)
+        dataset_list, index, _ = build_dataset_list(0.5)
 
-        roster = dataset_list.to_dict()["validation"]
-        roster_subjects = {BraTSScan(directory=case).subject for case in roster}
-        for subject in roster_subjects:
-            expected = [scan for scan in FAKE_SCANS if BraTSScan(directory=scan).subject == subject]
-            in_roster = [case for case in roster if BraTSScan(directory=case).subject == subject]
-            assert sorted(expected) == sorted(in_roster)
+        roster = set(dataset_list.to_dict()["validation"])
+        for subject in index.subjects:
+            cases = {scan.directory for scan in index.scans if scan.subject == subject}
+            in_roster = cases & roster
+            assert not in_roster or in_roster == cases
 
     def test_validation_cases_are_excluded_from_training(self, build_dataset_list) -> None:
         dataset_list, _, _ = build_dataset_list(0.25)

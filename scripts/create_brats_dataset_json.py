@@ -1,25 +1,43 @@
-"""BRATS dataset.json 阶段①生成器（spec #13 §②.3 / §②.4，ticket T1 #17）.
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-阶段①（latent 之前）：枚举 BraTS 2023 GLI 训练集 cases × 4 模态（seg 保留在盘，
-不进 dataset.json），按 subject 级切分（固定 seed，同 subject 多 timepoint 不跨集），
-产出单个 dataset.json：
+"""Stage-1 generator for the BRATS dataset.json (spec #13 sections 2.3 / 2.4, ticket T1 #17).
 
-- ``"training"``:   [{"image": <相对 data-base-dir>, "modality": <label 字符串>}, ...]
-  val cases 不在 training（§②.4：val 只作 BRATS FID 图像域参照，不建 latent）。
-- ``"validation"``: [case 目录名, ...] —— FID 参照切分名单（训练代码只读 training）。
+Stage 1 (before latent encoding): enumerate the BraTS 2023 GLI training cases x 4
+modalities (seg stays on disk and never enters dataset.json), split the subjects 95/5
+with a frozen seed (timepoints of one subject never cross the split), and emit a single
+dataset.json:
 
-modality 由文件后缀映射：t1n→``mri_t1n``、t1c→``mri_t1ce``、t2w→``mri_t2w``、t2f→``mri_t2f``。
-val subject 数 = floor(subject 总数 × val_fraction)；固定 seed ⇒ 重跑逐行复现。
-默认对字典序第一个 case 跑 §②.1 抽查断言（t1c shape (240, 240, 155)、seg ∈ {0,1,2,3}）。
+- ``"training"``:   [{"image": <relative to data-base-dir>, "modality": <label>}, ...]
+  Validation cases are absent from training (section 2.4: validation is only the
+  image-domain FID reference and is never latent-encoded).
+- ``"validation"``: [case directory name, ...] -- the FID reference roster (the training
+  code reads ``training`` only).
 
-用法（gauss，数据经共享池 symlink 就位）::
+Modality is mapped from the file suffix: t1n->``mri_t1n``, t1c->``mri_t1ce``,
+t2w->``mri_t2w``, t2f->``mri_t2f``.
+The number of validation subjects is floor(total subjects x val_fraction); with a fixed
+seed the output reproduces line by line. The section 2.1 spot-check assertions (t1c shape
+(240, 240, 155), seg in {0, 1, 2, 3}) run on the lexicographically first case on every
+invocation.
+
+Usage (on gauss, with the dataset linked from the shared pool)::
 
     uv run python -m scripts.create_brats_dataset_json \\
         --training-data-dir $RUN_ROOT/datasets/brats2023-gli/ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData \\
         --data-base-dir $RUN_ROOT/datasets \\
         --output $RUN_ROOT/datasets/brats2023-gli/dataset.json
 
-阶段②（latent 之后扫描 embedding header 写 sidecar）在本脚本之外另行扩展。
+Stage 2 (scanning embedding headers to write the sidecar after latent encoding) is a
+separate extension outside this script.
 """
 
 import argparse
@@ -43,30 +61,30 @@ SEG_LABELS = {0, 1, 2, 3}
 
 @dataclass(frozen=True)
 class BraTSScan:
-    """一个 BraTS case（单 timepoint scan），目录名形如 ``BraTS-GLI-00000-000``."""
+    """One BraTS case (a single-timepoint scan); the directory name looks like ``BraTS-GLI-00000-000``."""
 
     directory: str
 
     @property
     def subject(self) -> str:
-        """Longitudinal subject（``BraTS-GLI-XXXXX`` 段）；同 subject 多 timepoint 不跨 train/val。"""
+        """Longitudinal subject (the ``BraTS-GLI-XXXXX`` segment); timepoints of one subject never cross train/val."""
         return self.directory.rsplit("-", 1)[0]
 
     def path(self, root: Path, suffix: str) -> Path:
-        """case 文件在 ``root`` 下的完整路径；``<directory>-<suffix>.nii.gz`` 约定只此一处。"""
+        """Full path of a case file under ``root``; the ``<directory>-<suffix>.nii.gz`` convention lives only here."""
         return root / self.directory / f"{self.directory}-{suffix}{NIFTI_EXTENSION}"
 
 
 @dataclass(frozen=True)
 class SubjectSplit:
-    """subject 级 holdout 切分结果."""
+    """Result of a subject-level holdout split."""
 
     train: frozenset[str]
     val: frozenset[str]
 
 
 class BraTSScanIndex:
-    """训练数据目录的 case 索引：扫描目录名并校验每 case 五文件齐全."""
+    """Case index for a training-data directory: scan the directory names and check every case has all five files."""
 
     def __init__(self, training_data_dir: Path) -> None:
         self._training_data_dir = training_data_dir
@@ -76,12 +94,12 @@ class BraTSScanIndex:
 
     @property
     def scans(self) -> list[BraTSScan]:
-        """全部 case，按目录名排序."""
+        """All cases, sorted by directory name."""
         return list(self._scans)
 
     @property
     def subjects(self) -> list[str]:
-        """去重后的 subject 段，排序."""
+        """Deduplicated subject segments, sorted."""
         return sorted({scan.subject for scan in self._scans})
 
     def _scan_directories(self) -> list[BraTSScan]:
@@ -98,7 +116,7 @@ class BraTSScanIndex:
 
 
 class HoldoutSplitter:
-    """subject 级 95/5 切分：固定 seed 洗牌后取前 floor(n × val_fraction) 个 subject 进 val."""
+    """Subject-level 95/5 split: shuffle with a fixed seed, then take the first floor(n x val_fraction) subjects as validation."""
 
     def __init__(self, val_fraction: float = 0.05, seed: int = 42) -> None:
         self._val_fraction = val_fraction
@@ -112,7 +130,7 @@ class HoldoutSplitter:
 
 
 class BraTSDatasetList:
-    """阶段① dataset.json 组装：``training`` 条目（val cases 排除）+ ``validation`` 切分名单."""
+    """Stage-1 dataset.json assembly: ``training`` entries (validation cases excluded) plus the ``validation`` roster."""
 
     def __init__(
         self,
@@ -130,7 +148,7 @@ class BraTSDatasetList:
         return {"training": self._training_entries(), "validation": self._validation_roster()}
 
     def save(self, output_path: Path) -> dict:
-        """写入 dataset.json 并返回写出的 payload（调用方直接复用，避免重复组装）."""
+        """Write dataset.json and return the payload written, so callers reuse it instead of re-assembling."""
         payload = self.to_dict()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w") as file:
@@ -155,13 +173,13 @@ class BraTSDatasetList:
 
 
 class NiftiSpotCheck:
-    """§②.1 抽查断言：t1c shape == (240, 240, 155)、seg labels ⊆ {0, 1, 2, 3}."""
+    """Section 2.1 spot-check assertions: t1c shape == (240, 240, 155), seg labels subset of {0, 1, 2, 3}."""
 
     def __init__(self, training_data_dir: Path) -> None:
         self._training_data_dir = training_data_dir
 
     def run(self, scan: BraTSScan) -> None:
-        """断言不过即抛 ValueError（不用 assert：`python -O` 会剥离 assert，抽查静默失效）."""
+        """Raise ValueError on failure (not assert: ``python -O`` strips asserts and would silently disable the check)."""
         t1c = nib.load(str(scan.path(self._training_data_dir, "t1c")))
         if t1c.shape != EXPECTED_SHAPE:
             raise ValueError(f"{scan.directory}: t1c shape {t1c.shape} != {EXPECTED_SHAPE}")
@@ -177,31 +195,32 @@ def main() -> None:
         "--training-data-dir",
         type=Path,
         required=True,
-        help="ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData 目录",
+        help="the ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData directory",
     )
     parser.add_argument(
         "--data-base-dir",
         type=Path,
         required=True,
-        help="image 相对路径的基准目录（训练 env 的 data_base_dir）",
+        help="base directory of the relative image paths (the training env's data_base_dir)",
     )
-    parser.add_argument("--output", type=Path, required=True, help="输出 dataset.json 路径")
-    parser.add_argument("--seed", type=int, default=42, help="切分随机 seed（固定 ⇒ 可复现）")
+    parser.add_argument("--output", type=Path, required=True, help="path of the dataset.json to write")
+    parser.add_argument("--seed", type=int, default=42, help="random seed for the split (fixed => reproducible)")
     args = parser.parse_args()
 
     index = BraTSScanIndex(args.training_data_dir)
-    NiftiSpotCheck(args.training_data_dir).run(index.scans[0])
-    print(f"spot check passed for {index.scans[0].directory}")
+    scans = index.scans
+    NiftiSpotCheck(args.training_data_dir).run(scans[0])
+    print(f"spot check passed for {scans[0].directory}")
     split = HoldoutSplitter(seed=args.seed).split(index.subjects)
     dataset_list = BraTSDatasetList(
         training_data_dir=args.training_data_dir,
         data_base_dir=args.data_base_dir,
-        scans=index.scans,
+        scans=scans,
         split=split,
     )
     payload = dataset_list.save(args.output)
     print(
-        f"scans={len(index.scans)} subjects={len(index.subjects)} "
+        f"scans={len(scans)} subjects={len(index.subjects)} "
         f"training={len(payload['training'])} validation_cases={len(payload['validation'])} "
         f"validation_subjects={len(split.val)} seed={args.seed}"
     )
