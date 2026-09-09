@@ -58,6 +58,7 @@ REQUIRED_SUFFIXES = (SEG_SUFFIX, *SUFFIX_TO_MODALITY)
 EXPECTED_SHAPE = (240, 240, 155)
 SEG_LABELS = {0, 1, 2, 3}
 DEFAULT_SEED = 42
+DEFAULT_VAL_FRACTION = 0.05
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,7 @@ class BraTSScanIndex:
 class HoldoutSplitter:
     """Subject-level 95/5 split: shuffle with a fixed seed, then take the first floor(n x val_fraction) subjects as validation."""
 
-    def __init__(self, val_fraction: float = 0.05, seed: int = DEFAULT_SEED) -> None:
+    def __init__(self, val_fraction: float = DEFAULT_VAL_FRACTION, seed: int = DEFAULT_SEED) -> None:
         self._val_fraction = val_fraction
         self._seed = seed
 

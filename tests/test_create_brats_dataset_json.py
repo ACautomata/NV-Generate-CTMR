@@ -78,19 +78,32 @@ def training_data_dir(brats_root: Path) -> Path:
 
 
 @pytest.fixture
-def build_dataset_list(brats_root: Path, training_data_dir: Path) -> Callable[[float], tuple[BraTSDatasetList, BraTSScanIndex, SubjectSplit]]:
-    """Factory: build the generator's collaborators for a given val fraction."""
+def build_index_and_split(training_data_dir: Path) -> Callable[[float], tuple[BraTSScanIndex, SubjectSplit]]:
+    """Factory: index the fake training data and split its subjects for a given val fraction."""
 
-    def _build(val_fraction: float) -> tuple[BraTSDatasetList, BraTSScanIndex, SubjectSplit]:
+    def _build(val_fraction: float) -> tuple[BraTSScanIndex, SubjectSplit]:
         index = BraTSScanIndex(training_data_dir)
-        split = HoldoutSplitter(val_fraction=val_fraction, seed=42).split(index.subjects)
-        dataset_list = BraTSDatasetList(
+        return index, HoldoutSplitter(val_fraction=val_fraction, seed=42).split(index.subjects)
+
+    return _build
+
+
+@pytest.fixture
+def build_dataset_list(
+    brats_root: Path,
+    training_data_dir: Path,
+    build_index_and_split: Callable[[float], tuple[BraTSScanIndex, SubjectSplit]],
+) -> Callable[[float], BraTSDatasetList]:
+    """Factory: build the generator's dataset list for a given val fraction."""
+
+    def _build(val_fraction: float) -> BraTSDatasetList:
+        index, split = build_index_and_split(val_fraction)
+        return BraTSDatasetList(
             training_data_dir=training_data_dir,
             data_base_dir=brats_root.parent,
             scans=index.scans,
             split=split,
         )
-        return dataset_list, index, split
 
     return _build
 
@@ -175,8 +188,9 @@ class TestHoldoutSplitter:
 
 
 class TestBraTSDatasetList:
-    def test_training_entry_count_is_cases_times_modalities(self, build_dataset_list) -> None:
-        dataset_list, index, split = build_dataset_list(0.25)
+    def test_training_entry_count_is_cases_times_modalities(self, build_dataset_list, build_index_and_split) -> None:
+        dataset_list = build_dataset_list(0.25)
+        index, split = build_index_and_split(0.25)
 
         entries = dataset_list.to_dict()["training"]
 
@@ -184,7 +198,7 @@ class TestBraTSDatasetList:
         assert len(entries) == (len(FAKE_SCANS) - val_cases) * len(SUFFIX_TO_MODALITY)
 
     def test_training_entries_map_suffix_to_modality(self, build_dataset_list) -> None:
-        dataset_list, _, _ = build_dataset_list(0.0)
+        dataset_list = build_dataset_list(0.0)
 
         entries = dataset_list.to_dict()["training"]
         by_image = {entry["image"]: entry["modality"] for entry in entries}
@@ -195,12 +209,13 @@ class TestBraTSDatasetList:
                 assert by_image[image] == modality
 
     def test_seg_never_enters_training_entries(self, build_dataset_list) -> None:
-        dataset_list, _, _ = build_dataset_list(0.0)
+        dataset_list = build_dataset_list(0.0)
 
         assert all("-seg" not in entry["image"] for entry in dataset_list.to_dict()["training"])
 
-    def test_validation_roster_keeps_timepoints_together(self, build_dataset_list) -> None:
-        dataset_list, index, _ = build_dataset_list(0.5)
+    def test_validation_roster_keeps_timepoints_together(self, build_dataset_list, build_index_and_split) -> None:
+        dataset_list = build_dataset_list(0.5)
+        index, _ = build_index_and_split(0.5)
 
         roster = set(dataset_list.to_dict()["validation"])
         for subject in index.subjects:
@@ -209,7 +224,7 @@ class TestBraTSDatasetList:
             assert not in_roster or in_roster == cases
 
     def test_validation_cases_are_excluded_from_training(self, build_dataset_list) -> None:
-        dataset_list, _, _ = build_dataset_list(0.25)
+        dataset_list = build_dataset_list(0.25)
 
         payload = dataset_list.to_dict()
 
@@ -220,7 +235,7 @@ class TestBraTSDatasetList:
     def test_save_is_reproducible_byte_for_byte(self, build_dataset_list, tmp_path: Path) -> None:
         outputs = []
         for name in ("first.json", "second.json"):
-            dataset_list, _, _ = build_dataset_list(0.25)
+            dataset_list = build_dataset_list(0.25)
             output = tmp_path / name
             dataset_list.save(output)
             outputs.append(output.read_bytes())
