@@ -15,6 +15,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -424,6 +425,7 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
         logger.info(f"[config] lr -> {args.diffusion_unet_train['lr']}.")
         logger.info(f"[config] num_epochs -> {args.diffusion_unet_train['n_epochs']}.")
         logger.info(f"[config] num_train_timesteps -> {args.noise_scheduler['num_train_timesteps']}.")
+        logger.info(f"[config] save_interval -> {args.diffusion_unet_train.get('save_interval', 0)} (0 disables snapshots).")
 
         Path(args.model_dir).mkdir(parents=True, exist_ok=True)
 
@@ -471,6 +473,7 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
     scale_factor = calculate_scale_factor(train_loader, device, logger)
     optimizer = create_optimizer(unet, args.diffusion_unet_train["lr"])
 
+    save_interval = args.diffusion_unet_train.get("save_interval", 0)
     total_steps = (args.diffusion_unet_train["n_epochs"] * len(train_loader.dataset)) / args.diffusion_unet_train["batch_size"]
     lr_scheduler = create_lr_scheduler(optimizer, total_steps)
     loss_pt = torch.nn.L1Loss()
@@ -512,6 +515,13 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
                 args.model_dir,
                 args,
             )
+
+            # Snapshot copies for checkpoint selection (spec #13 §④.3): taken in the
+            # same process right after save_checkpoint, so there is no race window.
+            if save_interval > 0 and (epoch + 1) % save_interval == 0:
+                snapshot_path = f"{args.model_dir}/ckpt_epoch{epoch + 1}.pt"
+                shutil.copyfile(f"{args.model_dir}/{args.model_filename}", snapshot_path)
+                logger.info(f"Snapshot saved to {snapshot_path}.")
 
     if dist.is_initialized():
         dist.destroy_process_group()
