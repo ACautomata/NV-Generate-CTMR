@@ -153,15 +153,18 @@ class NiftiSpotCheck:
         self._training_data_dir = training_data_dir
 
     def run(self, scan: BraTSScan) -> None:
+        """断言不过即抛 ValueError（不用 assert：`python -O` 会剥离 assert，抽查静默失效）."""
         case_dir = self._training_data_dir / scan.directory
         t1c = nib.load(str(case_dir / f"{scan.directory}-t1c.nii.gz"))
-        assert t1c.shape == EXPECTED_SHAPE, f"{scan.directory}: t1c shape {t1c.shape} != {EXPECTED_SHAPE}"
+        if t1c.shape != EXPECTED_SHAPE:
+            raise ValueError(f"{scan.directory}: t1c shape {t1c.shape} != {EXPECTED_SHAPE}")
         seg = np.asarray(nib.load(str(case_dir / f"{scan.directory}-seg.nii.gz")).dataobj)
         labels = set(np.unique(seg).tolist())
-        assert labels <= SEG_LABELS, f"{scan.directory}: seg labels {sorted(labels)} not within {sorted(SEG_LABELS)}"
+        if not labels <= SEG_LABELS:
+            raise ValueError(f"{scan.directory}: seg labels {sorted(labels)} not within {sorted(SEG_LABELS)}")
 
 
-def parse_args() -> argparse.Namespace:
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--training-data-dir",
@@ -179,11 +182,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="切分随机 seed（固定 ⇒ 可复现）")
     parser.add_argument("--val-fraction", type=float, default=0.05, help="val subject 比例（§②.4 为 95/5）")
     parser.add_argument("--skip-spot-check", action="store_true", help="跳过 §②.1 nibabel 抽查断言")
-    return parser.parse_args()
+    args = parser.parse_args()
 
-
-def main() -> None:
-    args = parse_args()
     index = BraTSScanIndex(args.training_data_dir)
     if not args.skip_spot_check:
         NiftiSpotCheck(args.training_data_dir).run(index.scans[0])
