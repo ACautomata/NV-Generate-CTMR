@@ -33,8 +33,10 @@ import nibabel as nib
 import numpy as np
 
 SCAN_NAME_PATTERN = re.compile(r"BraTS-GLI-\d{5}-\d{3}")
+NIFTI_EXTENSION = ".nii.gz"
 SEG_SUFFIX = "seg"
 SUFFIX_TO_MODALITY = {"t1n": "mri_t1n", "t1c": "mri_t1ce", "t2w": "mri_t2w", "t2f": "mri_t2f"}
+REQUIRED_SUFFIXES = (SEG_SUFFIX, *SUFFIX_TO_MODALITY)
 EXPECTED_SHAPE = (240, 240, 155)
 SEG_LABELS = {0, 1, 2, 3}
 
@@ -49,6 +51,10 @@ class BraTSScan:
     def subject(self) -> str:
         """Longitudinal subject（``BraTS-GLI-XXXXX`` 段）；同 subject 多 timepoint 不跨 train/val。"""
         return self.directory.rsplit("-", 1)[0]
+
+    def path(self, root: Path, suffix: str) -> Path:
+        """case 文件在 ``root`` 下的完整路径；``<directory>-<suffix>.nii.gz`` 约定只此一处。"""
+        return root / self.directory / f"{self.directory}-{suffix}{NIFTI_EXTENSION}"
 
 
 @dataclass(frozen=True)
@@ -83,11 +89,11 @@ class BraTSScanIndex:
         for case_dir in sorted(path for path in self._training_data_dir.iterdir() if path.is_dir()):
             if not SCAN_NAME_PATTERN.fullmatch(case_dir.name):
                 raise ValueError(f"unexpected case directory name: {case_dir.name}")
-            present = {path.name[: -len(".nii.gz")].rsplit("-", 1)[-1] for path in case_dir.glob("*.nii.gz")}
-            missing = ({SEG_SUFFIX} | set(SUFFIX_TO_MODALITY)) - present
+            scan = BraTSScan(directory=case_dir.name)
+            missing = sorted(suffix for suffix in REQUIRED_SUFFIXES if not scan.path(self._training_data_dir, suffix).is_file())
             if missing:
-                raise ValueError(f"case {case_dir.name} is missing suffixes: {sorted(missing)}")
-            scans.append(BraTSScan(directory=case_dir.name))
+                raise ValueError(f"case {scan.directory} is missing suffixes: {missing}")
+            scans.append(scan)
         return scans
 
 
@@ -142,8 +148,7 @@ class BraTSDatasetList:
         return sorted(scan.directory for scan in self._scans if scan.subject in self._split.val)
 
     def _image_path(self, scan: BraTSScan, suffix: str) -> str:
-        image = self._training_data_dir / scan.directory / f"{scan.directory}-{suffix}.nii.gz"
-        return image.relative_to(self._data_base_dir).as_posix()
+        return scan.path(self._training_data_dir, suffix).relative_to(self._data_base_dir).as_posix()
 
 
 class NiftiSpotCheck:
@@ -154,11 +159,10 @@ class NiftiSpotCheck:
 
     def run(self, scan: BraTSScan) -> None:
         """断言不过即抛 ValueError（不用 assert：`python -O` 会剥离 assert，抽查静默失效）."""
-        case_dir = self._training_data_dir / scan.directory
-        t1c = nib.load(str(case_dir / f"{scan.directory}-t1c.nii.gz"))
+        t1c = nib.load(str(scan.path(self._training_data_dir, "t1c")))
         if t1c.shape != EXPECTED_SHAPE:
             raise ValueError(f"{scan.directory}: t1c shape {t1c.shape} != {EXPECTED_SHAPE}")
-        seg = np.asarray(nib.load(str(case_dir / f"{scan.directory}-seg.nii.gz")).dataobj)
+        seg = np.asarray(nib.load(str(scan.path(self._training_data_dir, SEG_SUFFIX))).dataobj)
         labels = set(np.unique(seg).tolist())
         if not labels <= SEG_LABELS:
             raise ValueError(f"{scan.directory}: seg labels {sorted(labels)} not within {sorted(SEG_LABELS)}")
@@ -180,7 +184,6 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True, help="输出 dataset.json 路径")
     parser.add_argument("--seed", type=int, default=42, help="切分随机 seed（固定 ⇒ 可复现）")
-    parser.add_argument("--val-fraction", type=float, default=0.05, help="val subject 比例（§②.4 为 95/5）")
     parser.add_argument("--skip-spot-check", action="store_true", help="跳过 §②.1 nibabel 抽查断言")
     args = parser.parse_args()
 
@@ -188,7 +191,7 @@ def main() -> None:
     if not args.skip_spot_check:
         NiftiSpotCheck(args.training_data_dir).run(index.scans[0])
         print(f"spot check passed for {index.scans[0].directory}")
-    split = HoldoutSplitter(val_fraction=args.val_fraction, seed=args.seed).split(index.subjects)
+    split = HoldoutSplitter(seed=args.seed).split(index.subjects)
     dataset_list = BraTSDatasetList(
         training_data_dir=args.training_data_dir,
         data_base_dir=args.data_base_dir,
@@ -200,7 +203,7 @@ def main() -> None:
     print(
         f"scans={len(index.scans)} subjects={len(index.subjects)} "
         f"training={len(payload['training'])} validation_cases={len(payload['validation'])} "
-        f"validation_subjects={len(split.val)} seed={args.seed} val_fraction={args.val_fraction}"
+        f"validation_subjects={len(split.val)} seed={args.seed}"
     )
     print(f"wrote {args.output}")
 

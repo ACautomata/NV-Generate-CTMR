@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from scripts.create_brats_dataset_json import (
+    SEG_SUFFIX,
     SUFFIX_TO_MODALITY,
     BraTSDatasetList,
     BraTSScan,
@@ -37,14 +38,25 @@ FAKE_SCANS = (
 
 
 @pytest.fixture
-def brats_root(tmp_path: Path) -> Path:
+def write_scan_files() -> Callable[[Path, str], None]:
+    """Factory: create a case directory holding all five expected files under ``training_data``."""
+
+    def _write(training_data: Path, scan: str) -> None:
+        bra_scan = BraTSScan(directory=scan)
+        for suffix in ALL_SUFFIXES:
+            path = bra_scan.path(training_data, suffix)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+
+    return _write
+
+
+@pytest.fixture
+def brats_root(tmp_path: Path, write_scan_files: Callable[[Path, str], None]) -> Path:
     """A fake brats2023-gli root whose TrainingData holds 5 scans / 4 subjects."""
     training_data = tmp_path / "brats2023-gli" / TRAINING_DATA_DIRNAME
     for scan in FAKE_SCANS:
-        scan_dir = training_data / scan
-        scan_dir.mkdir(parents=True)
-        for suffix in ALL_SUFFIXES:
-            (scan_dir / f"{scan}-{suffix}.nii.gz").touch()
+        write_scan_files(training_data, scan)
     return tmp_path / "brats2023-gli"
 
 
@@ -71,6 +83,21 @@ def build_dataset_list(brats_root: Path, training_data_dir: Path) -> Callable[[f
     return _build
 
 
+@pytest.fixture
+def spot_check_scan(tmp_path: Path) -> Callable[..., BraTSScan]:
+    """Factory: write one case's t1c/seg volumes and return its ``BraTSScan``."""
+
+    def _make(t1c: np.ndarray, seg: np.ndarray, scan: str = "BraTS-GLI-00000-000") -> BraTSScan:
+        bra_scan = BraTSScan(directory=scan)
+        for suffix, array in (("t1c", t1c), (SEG_SUFFIX, seg)):
+            path = bra_scan.path(tmp_path, suffix)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            nib.save(nib.Nifti1Image(array, affine=np.eye(4)), path)
+        return bra_scan
+
+    return _make
+
+
 class TestBraTSScanIndex:
     def test_finds_all_scans_sorted(self, training_data_dir: Path) -> None:
         index = BraTSScanIndex(training_data_dir)
@@ -95,11 +122,8 @@ class TestBraTSScanIndex:
         with pytest.raises(ValueError, match="seg"):
             BraTSScanIndex(training_data_dir)
 
-    def test_rejects_directory_with_unexpected_name(self, training_data_dir: Path) -> None:
-        stranger = training_data_dir / "BraTS-MEN-99999-000"
-        stranger.mkdir()
-        for suffix in ALL_SUFFIXES:
-            (stranger / f"BraTS-MEN-99999-000-{suffix}.nii.gz").touch()
+    def test_rejects_directory_with_unexpected_name(self, training_data_dir: Path, write_scan_files: Callable[[Path, str], None]) -> None:
+        write_scan_files(training_data_dir, "BraTS-MEN-99999-000")
 
         with pytest.raises(ValueError, match="BraTS-MEN-99999-000"):
             BraTSScanIndex(training_data_dir)
@@ -139,11 +163,11 @@ class TestHoldoutSplitter:
 
 class TestBraTSDatasetList:
     def test_training_entry_count_is_cases_times_modalities(self, build_dataset_list) -> None:
-        dataset_list, _, split = build_dataset_list(0.25)
+        dataset_list, index, split = build_dataset_list(0.25)
 
         entries = dataset_list.to_dict()["training"]
 
-        val_cases = sum(1 for scan in FAKE_SCANS if BraTSScan(directory=scan).subject in split.val)
+        val_cases = sum(1 for scan in index.scans if scan.subject in split.val)
         assert len(entries) == (len(FAKE_SCANS) - val_cases) * len(SUFFIX_TO_MODALITY)
 
     def test_training_entries_map_suffix_to_modality(self, build_dataset_list) -> None:
@@ -193,38 +217,29 @@ class TestBraTSDatasetList:
 
 
 class TestNiftiSpotCheck:
-    def _write_volume(self, directory: Path, scan: str, suffix: str, array: np.ndarray) -> None:
-        nib.save(nib.Nifti1Image(array, affine=np.eye(4)), directory / f"{scan}-{suffix}.nii.gz")
-
-    def test_passes_on_wellformed_scan(self, tmp_path: Path) -> None:
-        scan = "BraTS-GLI-00000-000"
-        scan_dir = tmp_path / scan
-        scan_dir.mkdir()
-        self._write_volume(scan_dir, scan, "t1c", np.zeros((240, 240, 155), dtype=np.float32))
+    def test_passes_on_wellformed_scan(self, spot_check_scan: Callable[..., BraTSScan], tmp_path: Path) -> None:
         rng = np.random.default_rng(0)
-        self._write_volume(scan_dir, scan, "seg", rng.integers(0, 4, size=(240, 240, 155)).astype(np.uint8))
+        scan = spot_check_scan(
+            np.zeros((240, 240, 155), dtype=np.float32),
+            rng.integers(0, 4, size=(240, 240, 155)).astype(np.uint8),
+        )
 
-        NiftiSpotCheck(training_data_dir=tmp_path).run(BraTSScan(directory=scan))
+        NiftiSpotCheck(training_data_dir=tmp_path).run(scan)
 
-    def test_rejects_wrong_shape(self, tmp_path: Path) -> None:
-        scan = "BraTS-GLI-00000-000"
-        scan_dir = tmp_path / scan
-        scan_dir.mkdir()
-        self._write_volume(scan_dir, scan, "t1c", np.zeros((240, 240, 154), dtype=np.float32))
-        self._write_volume(scan_dir, scan, "seg", np.zeros((240, 240, 154), dtype=np.uint8))
+    def test_rejects_wrong_shape(self, spot_check_scan: Callable[..., BraTSScan], tmp_path: Path) -> None:
+        scan = spot_check_scan(np.zeros((240, 240, 154), dtype=np.float32), np.zeros((240, 240, 154), dtype=np.uint8))
 
         with pytest.raises(ValueError, match="shape"):
-            NiftiSpotCheck(training_data_dir=tmp_path).run(BraTSScan(directory=scan))
+            NiftiSpotCheck(training_data_dir=tmp_path).run(scan)
 
-    def test_rejects_seg_labels_outside_domain(self, tmp_path: Path) -> None:
-        scan = "BraTS-GLI-00000-000"
-        scan_dir = tmp_path / scan
-        scan_dir.mkdir()
-        self._write_volume(scan_dir, scan, "t1c", np.zeros((240, 240, 155), dtype=np.float32))
-        self._write_volume(scan_dir, scan, "seg", np.full((240, 240, 155), 4, dtype=np.uint8))
+    def test_rejects_seg_labels_outside_domain(self, spot_check_scan: Callable[..., BraTSScan], tmp_path: Path) -> None:
+        scan = spot_check_scan(
+            np.zeros((240, 240, 155), dtype=np.float32),
+            np.full((240, 240, 155), 4, dtype=np.uint8),
+        )
 
         with pytest.raises(ValueError, match="seg"):
-            NiftiSpotCheck(training_data_dir=tmp_path).run(BraTSScan(directory=scan))
+            NiftiSpotCheck(training_data_dir=tmp_path).run(scan)
 
 
 class TestCommandLine:
