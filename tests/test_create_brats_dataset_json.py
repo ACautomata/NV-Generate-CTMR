@@ -84,18 +84,18 @@ def build_dataset_list(brats_root: Path, training_data_dir: Path) -> Callable[[f
 
 
 @pytest.fixture
-def spot_check_scan(tmp_path: Path) -> Callable[..., BraTSScan]:
-    """Factory: write one case's t1c/seg volumes and return its ``BraTSScan``."""
+def write_scan_volumes(tmp_path: Path) -> Callable[..., BraTSScan]:
+    """Factory: write one case's t1c/seg NIfTI volumes under ``root`` and return its ``BraTSScan``."""
 
-    def _make(t1c: np.ndarray, seg: np.ndarray, scan: str = "BraTS-GLI-00000-000") -> BraTSScan:
+    def _write(root: Path, t1c: np.ndarray, seg: np.ndarray, scan: str = "BraTS-GLI-00000-000") -> BraTSScan:
         bra_scan = BraTSScan(directory=scan)
         for suffix, array in (("t1c", t1c), (SEG_SUFFIX, seg)):
-            path = bra_scan.path(tmp_path, suffix)
+            path = bra_scan.path(root, suffix)
             path.parent.mkdir(parents=True, exist_ok=True)
             nib.save(nib.Nifti1Image(array, affine=np.eye(4)), path)
         return bra_scan
 
-    return _make
+    return _write
 
 
 class TestBraTSScanIndex:
@@ -217,23 +217,25 @@ class TestBraTSDatasetList:
 
 
 class TestNiftiSpotCheck:
-    def test_passes_on_wellformed_scan(self, spot_check_scan: Callable[..., BraTSScan], tmp_path: Path) -> None:
+    def test_passes_on_wellformed_scan(self, write_scan_volumes: Callable[..., BraTSScan], tmp_path: Path) -> None:
         rng = np.random.default_rng(0)
-        scan = spot_check_scan(
+        scan = write_scan_volumes(
+            tmp_path,
             np.zeros((240, 240, 155), dtype=np.float32),
             rng.integers(0, 4, size=(240, 240, 155)).astype(np.uint8),
         )
 
         NiftiSpotCheck(training_data_dir=tmp_path).run(scan)
 
-    def test_rejects_wrong_shape(self, spot_check_scan: Callable[..., BraTSScan], tmp_path: Path) -> None:
-        scan = spot_check_scan(np.zeros((240, 240, 154), dtype=np.float32), np.zeros((240, 240, 154), dtype=np.uint8))
+    def test_rejects_wrong_shape(self, write_scan_volumes: Callable[..., BraTSScan], tmp_path: Path) -> None:
+        scan = write_scan_volumes(tmp_path, np.zeros((240, 240, 154), dtype=np.float32), np.zeros((240, 240, 154), dtype=np.uint8))
 
         with pytest.raises(ValueError, match="shape"):
             NiftiSpotCheck(training_data_dir=tmp_path).run(scan)
 
-    def test_rejects_seg_labels_outside_domain(self, spot_check_scan: Callable[..., BraTSScan], tmp_path: Path) -> None:
-        scan = spot_check_scan(
+    def test_rejects_seg_labels_outside_domain(self, write_scan_volumes: Callable[..., BraTSScan], tmp_path: Path) -> None:
+        scan = write_scan_volumes(
+            tmp_path,
             np.zeros((240, 240, 155), dtype=np.float32),
             np.full((240, 240, 155), 4, dtype=np.uint8),
         )
@@ -243,7 +245,13 @@ class TestNiftiSpotCheck:
 
 
 class TestCommandLine:
-    def test_end_to_end_generation(self, brats_root: Path, tmp_path: Path) -> None:
+    def test_end_to_end_generation(self, brats_root: Path, write_scan_volumes: Callable[..., BraTSScan], tmp_path: Path) -> None:
+        training_data = brats_root / TRAINING_DATA_DIRNAME
+        write_scan_volumes(
+            training_data,
+            np.zeros((240, 240, 155), dtype=np.float32),
+            np.zeros((240, 240, 155), dtype=np.uint8),
+        )
         output = tmp_path / "dataset.json"
         result = subprocess.run(
             [
@@ -251,12 +259,11 @@ class TestCommandLine:
                 "-m",
                 "scripts.create_brats_dataset_json",
                 "--training-data-dir",
-                str(brats_root / TRAINING_DATA_DIRNAME),
+                str(training_data),
                 "--data-base-dir",
                 str(brats_root.parent),
                 "--output",
                 str(output),
-                "--skip-spot-check",
             ],
             cwd=REPO_ROOT,
             capture_output=True,
@@ -264,6 +271,7 @@ class TestCommandLine:
         )
 
         assert result.returncode == 0, result.stderr
+        assert "spot check passed" in result.stdout
         payload = json.loads(output.read_text())
         assert set(payload) == {"training", "validation"}
         assert len(payload["training"]) == len(FAKE_SCANS) * 4

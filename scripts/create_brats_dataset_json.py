@@ -184,13 +184,11 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True, help="输出 dataset.json 路径")
     parser.add_argument("--seed", type=int, default=42, help="切分随机 seed（固定 ⇒ 可复现）")
-    parser.add_argument("--skip-spot-check", action="store_true", help="跳过 §②.1 nibabel 抽查断言")
     args = parser.parse_args()
 
     index = BraTSScanIndex(args.training_data_dir)
-    if not args.skip_spot_check:
-        NiftiSpotCheck(args.training_data_dir).run(index.scans[0])
-        print(f"spot check passed for {index.scans[0].directory}")
+    NiftiSpotCheck(args.training_data_dir).run(index.scans[0])
+    print(f"spot check passed for {index.scans[0].directory}")
     split = HoldoutSplitter(seed=args.seed).split(index.subjects)
     dataset_list = BraTSDatasetList(
         training_data_dir=args.training_data_dir,
