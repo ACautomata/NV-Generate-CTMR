@@ -71,7 +71,7 @@ class BraTSScan:
         return self.directory.rsplit("-", 1)[0]
 
     def path(self, root: Path, suffix: str) -> Path:
-        """Full path of a case file under ``root``; the ``<directory>-<suffix>.nii.gz`` convention lives only here."""
+        """Full path of a case file under ``root``; the one place production code builds ``<directory>-<suffix>.nii.gz``."""
         return root / self.directory / f"{self.directory}-{suffix}{NIFTI_EXTENSION}"
 
 

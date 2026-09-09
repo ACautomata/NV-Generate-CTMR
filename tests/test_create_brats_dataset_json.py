@@ -273,5 +273,5 @@ class TestCommandLine:
         assert "spot check passed" in result.stdout
         payload = json.loads(output.read_text())
         assert set(payload) == {"training", "validation"}
-        assert len(payload["training"]) == len(FAKE_SCANS) * 4
+        assert len(payload["training"]) == len(FAKE_SCANS) * len(SUFFIX_TO_MODALITY)
         assert all(entry["modality"] in set(SUFFIX_TO_MODALITY.values()) for entry in payload["training"])
