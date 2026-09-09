@@ -57,6 +57,7 @@ SUFFIX_TO_MODALITY = {"t1n": "mri_t1n", "t1c": "mri_t1ce", "t2w": "mri_t2w", "t2
 REQUIRED_SUFFIXES = (SEG_SUFFIX, *SUFFIX_TO_MODALITY)
 EXPECTED_SHAPE = (240, 240, 155)
 SEG_LABELS = {0, 1, 2, 3}
+DEFAULT_SEED = 42
 
 
 @dataclass(frozen=True)
@@ -118,7 +119,7 @@ class BraTSScanIndex:
 class HoldoutSplitter:
     """Subject-level 95/5 split: shuffle with a fixed seed, then take the first floor(n x val_fraction) subjects as validation."""
 
-    def __init__(self, val_fraction: float = 0.05, seed: int = 42) -> None:
+    def __init__(self, val_fraction: float = 0.05, seed: int = DEFAULT_SEED) -> None:
         self._val_fraction = val_fraction
         self._seed = seed
 
@@ -204,7 +205,7 @@ def main() -> None:
         help="base directory of the relative image paths (the training env's data_base_dir)",
     )
     parser.add_argument("--output", type=Path, required=True, help="path of the dataset.json to write")
-    parser.add_argument("--seed", type=int, default=42, help="random seed for the split (fixed => reproducible)")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for the split (fixed => reproducible)")
     args = parser.parse_args()
 
     index = BraTSScanIndex(args.training_data_dir)
