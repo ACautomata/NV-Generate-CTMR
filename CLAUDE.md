@@ -13,3 +13,7 @@ Default five-role triage vocabulary (`needs-triage`, `needs-info`, `ready-for-ag
 ### Domain docs
 
 Single-context: `CONTEXT.md` at the repo root + `docs/adr/`. See `docs/agents/domain.md`.
+
+### Experiment releases
+
+After any experiment finishes (training, inference, evaluation), publish its outputs — checkpoints, raw records, typical example images, one-off scripts — to a GitHub Release instead of committing them. See [`skills/publish_experiment.md`](skills/publish_experiment.md).
