@@ -129,11 +129,14 @@ class BraTSDatasetList:
     def to_dict(self) -> dict:
         return {"training": self._training_entries(), "validation": self._validation_roster()}
 
-    def save(self, output_path: Path) -> None:
+    def save(self, output_path: Path) -> dict:
+        """写入 dataset.json 并返回写出的 payload（调用方直接复用，避免重复组装）."""
+        payload = self.to_dict()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w") as file:
-            json.dump(self.to_dict(), file, indent=2)
+            json.dump(payload, file, indent=2)
             file.write("\n")
+        return payload
 
     def _training_entries(self) -> list[dict]:
         entries = []
@@ -196,8 +199,7 @@ def main() -> None:
         scans=index.scans,
         split=split,
     )
-    dataset_list.save(args.output)
-    payload = dataset_list.to_dict()
+    payload = dataset_list.save(args.output)
     print(
         f"scans={len(index.scans)} subjects={len(index.subjects)} "
         f"training={len(payload['training'])} validation_cases={len(payload['validation'])} "
