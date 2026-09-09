@@ -14,3 +14,6 @@ ignore = ["E501", "N812"]  # E501: line length handled by formatter; N812: `func
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
