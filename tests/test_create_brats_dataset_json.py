@@ -46,6 +46,7 @@ FAKE_SCANS = (
     "BraTS-GLI-00002-001",
     "BraTS-GLI-00003-000",
 )
+MANY_SUBJECTS = [f"BraTS-GLI-{i:05d}" for i in range(100)]
 
 
 @pytest.fixture
@@ -95,7 +96,7 @@ def build_dataset_list(brats_root: Path, training_data_dir: Path) -> Callable[[f
 
 
 @pytest.fixture
-def write_scan_volumes(tmp_path: Path) -> Callable[..., BraTSScan]:
+def write_scan_volumes() -> Callable[..., BraTSScan]:
     """Factory: write one case's t1c/seg NIfTI volumes under ``root`` and return its ``BraTSScan``."""
 
     def _write(root: Path, t1c: np.ndarray, seg: np.ndarray, scan: str = "BraTS-GLI-00000-000") -> BraTSScan:
@@ -139,6 +140,13 @@ class TestBraTSScanIndex:
         with pytest.raises(ValueError, match="BraTS-MEN-99999-000"):
             BraTSScanIndex(training_data_dir)
 
+    def test_rejects_empty_training_data_dir(self, tmp_path: Path) -> None:
+        empty = tmp_path / "empty"
+        empty.mkdir()
+
+        with pytest.raises(ValueError, match="no BraTS case directories"):
+            BraTSScanIndex(empty)
+
 
 class TestHoldoutSplitter:
     def test_partition_covers_all_subjects_disjointly(self) -> None:
@@ -149,25 +157,19 @@ class TestHoldoutSplitter:
         assert not (split.train & split.val)
 
     def test_val_size_rounds_down_to_fraction(self) -> None:
-        subjects = [f"BraTS-GLI-{i:05d}" for i in range(100)]
-
-        split = HoldoutSplitter(val_fraction=0.05, seed=42).split(subjects)
+        split = HoldoutSplitter(val_fraction=0.05, seed=42).split(MANY_SUBJECTS)
 
         assert len(split.val) == 5
 
     def test_same_seed_reproduces_split(self) -> None:
-        subjects = [f"BraTS-GLI-{i:05d}" for i in range(100)]
-
-        first = HoldoutSplitter(val_fraction=0.05, seed=42).split(subjects)
-        second = HoldoutSplitter(val_fraction=0.05, seed=42).split(subjects)
+        first = HoldoutSplitter(val_fraction=0.05, seed=42).split(MANY_SUBJECTS)
+        second = HoldoutSplitter(val_fraction=0.05, seed=42).split(MANY_SUBJECTS)
 
         assert first == second
 
     def test_different_seed_changes_split(self) -> None:
-        subjects = [f"BraTS-GLI-{i:05d}" for i in range(100)]
-
-        first = HoldoutSplitter(val_fraction=0.05, seed=42).split(subjects)
-        second = HoldoutSplitter(val_fraction=0.05, seed=7).split(subjects)
+        first = HoldoutSplitter(val_fraction=0.05, seed=42).split(MANY_SUBJECTS)
+        second = HoldoutSplitter(val_fraction=0.05, seed=7).split(MANY_SUBJECTS)
 
         assert first != second
 

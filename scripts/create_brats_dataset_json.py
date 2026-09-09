@@ -92,6 +92,8 @@ class BraTSScanIndex:
         if not training_data_dir.is_dir():
             raise FileNotFoundError(f"training data dir not found: {training_data_dir}")
         self._scans = self._scan_directories()
+        if not self._scans:
+            raise ValueError(f"no BraTS case directories under {training_data_dir}")
 
     @property
     def scans(self) -> list[BraTSScan]:
