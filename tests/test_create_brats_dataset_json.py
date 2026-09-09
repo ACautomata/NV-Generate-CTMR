@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 
 from scripts.create_brats_dataset_json import (
+    REQUIRED_SUFFIXES,
     SEG_SUFFIX,
     SUFFIX_TO_MODALITY,
     BraTSDatasetList,
@@ -38,7 +39,6 @@ from scripts.create_brats_dataset_json import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRAINING_DATA_DIRNAME = "ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData"
-ALL_SUFFIXES = ("seg", "t1c", "t1n", "t2f", "t2w")
 FAKE_SCANS = (
     "BraTS-GLI-00000-000",
     "BraTS-GLI-00001-000",
@@ -54,7 +54,7 @@ def write_scan_files() -> Callable[[Path, str], None]:
 
     def _write(training_data: Path, scan: str) -> None:
         bra_scan = BraTSScan(directory=scan)
-        for suffix in ALL_SUFFIXES:
+        for suffix in REQUIRED_SUFFIXES:
             path = bra_scan.path(training_data, suffix)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
