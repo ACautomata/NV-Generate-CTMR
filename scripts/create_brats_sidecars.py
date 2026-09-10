@@ -62,6 +62,10 @@ class TrainingEntry:
         """Latent path relative to the embedding base dir (same replacement as ``diff_model_train.load_filenames``)."""
         return self.image.replace(".nii.gz", "_emb.nii.gz")
 
+    def sidecar_relative_path(self) -> str:
+        """Sidecar path relative to the embedding base dir: the latent path plus the sidecar extension."""
+        return self.embedding_relative_path() + SIDECAR_EXTENSION
+
 
 class BratsSidecarGenerator:
     """Writes one spacing/modality sidecar per training latent, reading the spacing from the latent NIfTI header."""
@@ -70,28 +74,31 @@ class BratsSidecarGenerator:
         self._dataset_json_path = dataset_json_path
         self._embedding_base_dir = embedding_base_dir
 
-    def write_sidecars(self) -> dict:
+    def write_sidecars(self) -> int:
         """Write every sidecar and return the count; abort without writing if any latent is missing."""
-        entries = self.entries()
-        latents = [self._embedding_base_dir / entry.embedding_relative_path() for entry in entries]
+        entries = self._entries()
+        latents = [self._latent_path(entry) for entry in entries]
         missing = [latent for latent in latents if not latent.is_file()]
         if missing:
             preview = ", ".join(str(path) for path in missing[:5])
             raise ValueError(f"{len(missing)} of {len(latents)} latents missing under {self._embedding_base_dir}, e.g.: {preview}")
 
-        for entry, latent in zip(entries, latents, strict=True):
-            self._write_sidecar(entry, latent)
-        return {"written": len(entries)}
+        for entry in entries:
+            self._write_sidecar(entry)
+        return len(entries)
 
-    def entries(self) -> list[TrainingEntry]:
+    def _entries(self) -> list[TrainingEntry]:
         """The dataset.json training records, in file order."""
         with self._dataset_json_path.open() as file:
             payload = json.load(file)
         return [TrainingEntry(image=item["image"], modality=item["modality"]) for item in payload["training"]]
 
-    def _write_sidecar(self, entry: TrainingEntry, latent: Path) -> None:
-        spacing = [float(value) for value in nib.load(str(latent)).header.get_zooms()[:3]]
-        sidecar = latent.with_name(latent.name + SIDECAR_EXTENSION)
+    def _latent_path(self, entry: TrainingEntry) -> Path:
+        return self._embedding_base_dir / entry.embedding_relative_path()
+
+    def _write_sidecar(self, entry: TrainingEntry) -> None:
+        spacing = [float(value) for value in nib.load(str(self._latent_path(entry))).header.get_zooms()[:3]]
+        sidecar = self._embedding_base_dir / entry.sidecar_relative_path()
         with sidecar.open("w") as file:
             json.dump({"spacing": spacing, "modality": entry.modality}, file, indent=2)
             file.write("\n")
@@ -109,8 +116,7 @@ def main() -> None:
     args = parser.parse_args()
 
     generator = BratsSidecarGenerator(dataset_json_path=args.dataset_json, embedding_base_dir=args.embedding_base_dir)
-    stats = generator.write_sidecars()
-    print(f"sidecars={stats['written']}")
+    print(f"sidecars={generator.write_sidecars()}")
 
 
 if __name__ == "__main__":
