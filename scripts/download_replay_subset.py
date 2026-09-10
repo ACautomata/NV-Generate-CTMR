@@ -121,6 +121,10 @@ class ManifestCandidate:
         """``(study_uid, series_id)``: the identity the verdict log resumes on."""
         return (self.study_uid, self.series_id)
 
+    def as_row(self) -> dict[str, str]:
+        """This candidate as a manifest CSV row, in the frozen column order."""
+        return {name: getattr(self, name) for name in MANIFEST_COLUMNS}
+
 
 @dataclass(frozen=True)
 class SeriesVerdict:
@@ -162,7 +166,7 @@ class SeriesVerdict:
         first append lines up with every row written afterwards.
         """
         values = {
-            **{name: getattr(candidate, name) for name in MANIFEST_COLUMNS},
+            **candidate.as_row(),
             "verdict": self.status,
             "mask_voxel_ratio": f"{self.mask_voxel_ratio:.6f}",
             "fov_mm": " ".join(f"{extent:.2f}" for extent in self.fov_mm),
@@ -407,7 +411,7 @@ class ReplayDownloader:
 
     def _process_study(self, group: list[ManifestCandidate], download_root: Path) -> list[StudyOutcome]:
         """Extract, filter and derive every listed series of one study, then drop its zip."""
-        candidates = list({candidate.key: candidate for candidate in group}.values())
+        candidates = self._unique(group)
         archive = download_root / candidates[0].repo_zip_path
         staging = self._download_dir / "staging" / candidates[0].study_uid
         try:
@@ -474,13 +478,21 @@ class ReplayDownloader:
             groups.append(current)
         return groups
 
-    @staticmethod
-    def _split_by_study(chunk: list[ManifestCandidate]) -> list[list[ManifestCandidate]]:
+    def _split_by_study(self, chunk: list[ManifestCandidate]) -> list[list[ManifestCandidate]]:
         """Split one fetched chunk into per-study groups, preserving order; duplicates collapse."""
         groups: dict[str, list[ManifestCandidate]] = {}
         for candidate in chunk:
             groups.setdefault(candidate.study_uid, []).append(candidate)
-        return [list({candidate.key: candidate for candidate in group}.values()) for group in groups.values()]
+        return [self._unique(group) for group in groups.values()]
+
+    @staticmethod
+    def _unique(candidates: list[ManifestCandidate]) -> list[ManifestCandidate]:
+        """Collapse repeats of the same series, preserving order.
+
+        A study zip names each of its series once, but a manifest can list one twice; the
+        pipeline must extract, filter and record it once either way.
+        """
+        return list({candidate.key: candidate for candidate in candidates}.values())
 
 
 def main() -> None:
