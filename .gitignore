@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .venv/
 uv.lock
+# MR-RATE (CC BY-NC-SA 4.0, no redistribution): pulled metadata CSVs + generated manifests
+data/MR-RATE/
