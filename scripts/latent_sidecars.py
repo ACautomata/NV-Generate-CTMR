@@ -59,6 +59,15 @@ class LatentEntry:
         """Sidecar path relative to the embedding base dir: the latent path plus the sidecar extension."""
         return self.embedding_relative_path + SIDECAR_EXTENSION
 
+    def to_record(self) -> dict[str, str]:
+        """The dataset.json record this entry stands for.
+
+        The two fields are the whole record, and the training loader reads the latent and
+        sidecar paths back out of ``image`` by convention -- so a record and an entry cannot
+        be allowed to drift apart.  Deriving one from the other keeps them the same fact.
+        """
+        return {"image": self.image, "modality": self.modality}
+
 
 class LatentSidecarWriter:
     """Writes one spacing/modality sidecar per latent, reading the spacing from the latent header."""
@@ -66,18 +75,13 @@ class LatentSidecarWriter:
     def __init__(self, embedding_base_dir: Path) -> None:
         self._embedding_base_dir = embedding_base_dir
 
-    @property
-    def base_dir(self) -> Path:
-        """The tree the latents live under; callers asking "is this encoded yet?" need it."""
-        return self._embedding_base_dir
+    def has(self, entry: LatentEntry) -> bool:
+        """Whether this entry's latent is already on disk -- the encoder's own skip condition."""
+        return (self._embedding_base_dir / entry.embedding_relative_path).is_file()
 
     def missing_latents(self, entries: list[LatentEntry]) -> list[Path]:
         """The latents that are not on disk yet; the stage-2 contract is that none may be."""
-        return [
-            self._embedding_base_dir / entry.embedding_relative_path
-            for entry in entries
-            if not (self._embedding_base_dir / entry.embedding_relative_path).is_file()
-        ]
+        return [self._embedding_base_dir / entry.embedding_relative_path for entry in entries if not self.has(entry)]
 
     def require_all(self, entries: list[LatentEntry], stage: str) -> None:
         """Raise before anything is written when a latent is missing, so no partial sidecar set can exist."""

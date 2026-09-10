@@ -19,11 +19,13 @@ down the same sequence -- never re-drawing.
 import csv
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from scripts.create_replay_manifest import MANIFEST_COLUMNS
+from scripts.mrrate_series import WHOLE_BRAIN_LABEL
 from scripts.refill_replay_manifest import (
     RefilledReplayManifests,
     ReplayOrderingIndex,
@@ -33,34 +35,44 @@ from scripts.refill_replay_manifest import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MODALITY_LABELS = {"t1w": "mri_t1", "t2w": "mri_t2", "flair": "mri_flair", "swi": "mri_swi", "mra": "mri_mra"}
-
-
-def manifest_row(index: int, modality: str) -> dict[str, str]:
-    """One manifest row; ``index`` is its position in the ordering, so the study uid is unique."""
-    study = f"STUDY{index:04d}"
-    series = f"{modality}-raw-axi"
-    return {
-        "patient_uid": f"{index}",
-        "study_uid": study,
-        "series_id": series,
-        "modality": modality,
-        "label": MODALITY_LABELS[modality],
-        "split": "Train",
-        "image_path": f"mri/batch00/{study}/img/{study}_{series}.nii.gz",
-    }
-
-
-def write_manifest(path: Path, rows: list[dict[str, str]]) -> Path:
-    with path.open("w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=list(MANIFEST_COLUMNS))
-        writer.writeheader()
-        writer.writerows(rows)
-    return path
 
 
 @pytest.fixture
-def ordering(tmp_path: Path) -> Path:
+def manifest_row() -> Callable[[int, str], dict[str, str]]:
+    """Factory for one manifest row; ``index`` is its position, so the study uid is unique."""
+
+    def build(index: int, modality: str) -> dict[str, str]:
+        study = f"STUDY{index:04d}"
+        series = f"{modality}-raw-axi"
+        return {
+            "patient_uid": f"{index}",
+            "study_uid": study,
+            "series_id": series,
+            "modality": modality,
+            "label": WHOLE_BRAIN_LABEL[modality],
+            "split": "Train",
+            "image_path": f"mri/batch00/{study}/img/{study}_{series}.nii.gz",
+        }
+
+    return build
+
+
+@pytest.fixture
+def write_manifest() -> Callable[[Path, list[dict[str, str]]], Path]:
+    """Factory writing a manifest CSV in the frozen column order."""
+
+    def build(path: Path, rows: list[dict[str, str]]) -> Path:
+        with path.open("w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=list(MANIFEST_COLUMNS))
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    return build
+
+
+@pytest.fixture
+def ordering(tmp_path: Path, manifest_row: Callable[[int, str], dict[str, str]], write_manifest: Callable) -> Path:
     """Orderings per modality, interleaved so position in the file never equals position per modality."""
     rows = []
     for index in range(12):
@@ -92,16 +104,16 @@ def rejected(tmp_path: Path, ordering: Path) -> Path:
 class TestTierTarget:
     def test_cap_rules_follow_the_layered_policy(self) -> None:
         target = TierTarget("N1000", 1000)
-        assert target.cap_for("t1w") == 1000
-        assert target.cap_for("flair") == 1000
-        assert target.cap_for("swi") == 1000
-        assert target.cap_for("t2w") == 669
-        assert TierTarget("N300", 300).cap_for("t2w") == 300
+        assert target.policy.cap_for("t1w") == 1000
+        assert target.policy.cap_for("flair") == 1000
+        assert target.policy.cap_for("swi") == 1000
+        assert target.policy.cap_for("t2w") == 669
+        assert TierTarget("N300", 300).policy.cap_for("t2w") == 300
 
     def test_mra_is_uncapped_like_the_generator(self) -> None:
         """MRA takes every available subject, so its N never bounds the roster (section 3.3)."""
         for n in (300, 500, 1000):
-            assert TierTarget(f"N{n}", n).cap_for("mra") is None
+            assert TierTarget(f"N{n}", n).policy.cap_for("mra") is None
 
     def test_output_filename_names_the_tier(self) -> None:
         assert TierTarget("N500", 500).output_filename == "replay_manifest_N500_final.csv"
@@ -182,10 +194,12 @@ class TestUnrefillableModalities:
     """T2w and MRA cannot be refilled from a bigger N, so their shortfalls are permanent."""
 
     def test_t2w_is_capped_so_raising_n_adds_no_candidates(self) -> None:
-        assert TierTarget("N1000", 1000).cap_for("t2w") == 669
-        assert TierTarget("N5000", 5000).cap_for("t2w") == 669
+        assert TierTarget("N1000", 1000).policy.cap_for("t2w") == 669
+        assert TierTarget("N5000", 5000).policy.cap_for("t2w") == 669
 
-    def test_a_rejected_t2w_leaves_its_tier_one_short(self, tmp_path: Path) -> None:
+    def test_a_rejected_t2w_leaves_its_tier_one_short(
+        self, tmp_path: Path, manifest_row: Callable[[int, str], dict[str, str]], write_manifest: Callable
+    ) -> None:
         rows = [manifest_row(index, "t2w") for index in range(4)]
         ordering = write_manifest(tmp_path / "ordering.csv", rows)
         rejected_path = tmp_path / "rejected.csv"

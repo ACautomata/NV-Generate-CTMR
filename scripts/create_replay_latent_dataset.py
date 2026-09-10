@@ -77,7 +77,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .download_replay_subset import MANIFEST_COLUMNS, ManifestCandidate
+from .create_replay_manifest import MANIFEST_COLUMNS
+from .download_replay_subset import ManifestCandidate
 from .latent_sidecars import LatentEntry, LatentSidecarWriter
 
 STAGES = ("encode", "finalize")
@@ -123,16 +124,16 @@ class ReplayDatasetEntry:
 
     candidate: ManifestCandidate
 
-    def training_entries(self) -> list[dict[str, str]]:
-        """The two dataset.json records, in the order the dual derivation was decided (source first)."""
+    def latent_entries(self) -> list[LatentEntry]:
+        """The two entries, in the order the dual derivation was decided (whole-brain first)."""
         return [
-            {"image": self.candidate.image_path, "modality": self.candidate.variant.label},
-            {"image": self.candidate.variant.skull_stripped_path, "modality": self.candidate.variant.skull_stripped_label},
+            LatentEntry(image=self.candidate.image_path, modality=self.candidate.variant.label),
+            LatentEntry(image=self.candidate.variant.skull_stripped_path, modality=self.candidate.variant.skull_stripped_label),
         ]
 
-    def latent_entries(self) -> list[LatentEntry]:
-        """The same two entries as path adapters, for the shared sidecar writer."""
-        return [LatentEntry(image=record["image"], modality=record["modality"]) for record in self.training_entries()]
+    def training_entries(self) -> list[dict[str, str]]:
+        """The same two entries as dataset.json records."""
+        return [entry.to_record() for entry in self.latent_entries()]
 
 
 class ReplayLatentDataset:
@@ -148,12 +149,13 @@ class ReplayLatentDataset:
         with self._tier.manifest_path.open(newline="") as file:
             return [ManifestCandidate.from_row({name: row[name] for name in MANIFEST_COLUMNS}) for row in csv.DictReader(file)]
 
-    def training_entries(self) -> list[dict[str, str]]:
-        """Every training record for the tier: two per accepted series."""
-        entries = []
-        for candidate in self.candidates():
-            entries.extend(ReplayDatasetEntry(candidate).training_entries())
-        return entries
+    def latent_entries(self) -> list[LatentEntry]:
+        """Every entry the tier needs: both halves of the dual derivation, per accepted series."""
+        return [entry for candidate in self.candidates() for entry in ReplayDatasetEntry(candidate).latent_entries()]
+
+    def _is_downloaded(self, entry: LatentEntry) -> bool:
+        """Whether this entry's source volume is on disk under the data root."""
+        return (self._data_base_dir / entry.image).is_file()
 
     def write_source_list(self, output_dir: Path) -> dict:
         """Write the encoder's input list for this tier; return a summary.
@@ -175,14 +177,10 @@ class ReplayLatentDataset:
         rerun cheap.  Rerunning after the download advances picks up whatever arrived, and
         ``--stage finalize`` still refuses to finish until every latent is on disk.
         """
-        entries = self.training_entries()
-        pending = sum(1 for record in entries if not (self._data_base_dir / record["image"]).is_file())
-        outstanding = [
-            record
-            for record in entries
-            if (self._data_base_dir / record["image"]).is_file()
-            and not (self._sidecar_writer.base_dir / LatentEntry(record["image"], record["modality"]).embedding_relative_path).is_file()
-        ]
+        entries = self.latent_entries()
+        downloaded = [entry for entry in entries if self._is_downloaded(entry)]
+        pending = len(entries) - len(downloaded)
+        outstanding = [entry for entry in downloaded if not self._sidecar_writer.has(entry)]
         if not outstanding:
             # Distinguish "the tier is finished" from "everything that has arrived is encoded but
             # the download is still running".  The second looks identical from the file system and
@@ -191,7 +189,7 @@ class ReplayLatentDataset:
             state = "complete" if pending == 0 else f"caught up, {pending} still downloading"
             print(f"{self._tier.name}: nothing outstanding ({state}); entries={len(entries)}")
             return {"tier": self._tier.name, "stage": "encode", "source_entries": 0, "not_yet_downloaded": pending, "output": None}
-        output_path = self._write_json(output_dir / self._tier.source_filename, outstanding)
+        output_path = self._write_json(output_dir / self._tier.source_filename, [entry.to_record() for entry in outstanding])
         print(f"{self._tier.name}: source_entries={len(outstanding)} not_yet_downloaded={pending} -> {output_path}")
         return {
             "tier": self._tier.name,
@@ -203,13 +201,12 @@ class ReplayLatentDataset:
 
     def write(self, output_dir: Path) -> dict:
         """``--stage finalize``: write the sidecars, then the training dataset.json; return a summary."""
-        entries = self.training_entries()
+        entries = self.latent_entries()
         self._require_source_volumes(entries)
-        latent_entries = [LatentEntry(image=record["image"], modality=record["modality"]) for record in entries]
-        self._sidecar_writer.require_all(latent_entries, f"{self._tier.name} latents")
-        sidecars = self._sidecar_writer.write(latent_entries)
+        self._sidecar_writer.require_all(entries, f"{self._tier.name} latents")
+        sidecars = self._sidecar_writer.write(entries)
 
-        output_path = self._write_json(output_dir / self._tier.dataset_filename, entries)
+        output_path = self._write_json(output_dir / self._tier.dataset_filename, [entry.to_record() for entry in entries])
         counts = self._counts(entries)
         print(f"{self._tier.name}: series={len(entries) // 2} training_entries={len(entries)} sidecars={sidecars} -> {output_path}")
         print(f"{self._tier.name}: per-label {counts}")
@@ -223,13 +220,13 @@ class ReplayLatentDataset:
             file.write("\n")
         return path
 
-    def _require_source_volumes(self, entries: list[dict[str, str]]) -> None:
+    def _require_source_volumes(self, entries: list[LatentEntry]) -> None:
         """Fail loudly when the accepted manifest does not line up with the downloaded tree.
 
         A path typo here would otherwise surface as "training just sees fewer samples", which
         the training loop cannot distinguish from an intended subset.
         """
-        missing = [record["image"] for record in entries if not (self._data_base_dir / record["image"]).is_file()]
+        missing = [entry.image for entry in entries if not self._is_downloaded(entry)]
         if missing:
             preview = ", ".join(missing[:5])
             raise FileNotFoundError(
@@ -237,10 +234,10 @@ class ReplayLatentDataset:
             )
 
     @staticmethod
-    def _counts(entries: list[dict[str, str]]) -> dict[str, int]:
+    def _counts(entries: list[LatentEntry]) -> dict[str, int]:
         counts: dict[str, int] = {}
-        for record in entries:
-            counts[record["modality"]] = counts.get(record["modality"], 0) + 1
+        for entry in entries:
+            counts[entry.modality] = counts.get(entry.modality, 0) + 1
         return dict(sorted(counts.items()))
 
 

@@ -82,13 +82,12 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
-from .mrrate_series import MrRateVariant
+from .mrrate_series import WHOLE_BRAIN_LABEL, MrRateVariant
 
 METADATA_GLOB = "batch*_metadata.csv"
 TRAIN_SPLIT = "train"
 SPLIT_VALUES = {"train": "Train", "val": "Val", "test": "Test"}
 MODALITIES = ("t1w", "t2w", "flair", "swi", "mra")
-MODALITY_TO_LABEL = {"t1w": "mri_t1", "t2w": "mri_t2", "flair": "mri_flair", "swi": "mri_swi", "mra": "mri_mra"}
 EXCLUDED_FLAGS = ("is_derived", "is_localizer", "is_subtraction")
 T2W_CAP = 669
 MANIFEST_COLUMNS = ("patient_uid", "study_uid", "series_id", "modality", "label", "split", "image_path")
@@ -110,19 +109,29 @@ class MrRateSeries:
     series_number: float
 
     @property
+    def variant(self) -> MrRateVariant:
+        """The path/label view of this series, built by the module that owns the layout."""
+        return MrRateVariant.for_series(self.batch, self.study_uid, self.series_id)
+
+    @property
     def label(self) -> str:
-        """Whole-brain v1 label string (the skull-stripped twin is derived downstream)."""
-        return MODALITY_TO_LABEL[self.modality]
+        """Whole-brain v1 label string (the skull-stripped twin is derived downstream).
+
+        Read from the row's own ``classified_modality`` rather than from the series id: the
+        two are independent metadata columns, and the manifest records what the metadata
+        says.  A row where they disagree is refused by the download stage, not papered over.
+        """
+        return WHOLE_BRAIN_LABEL[self.modality]
 
     @property
     def image_path(self) -> str:
         """Path relative to the MR-RATE data root, official unzip layout (zip root == study dir)."""
-        return MrRateVariant.for_series(self.batch, self.study_uid, self.series_id).whole_brain_path
+        return self.variant.whole_brain_path
 
     @property
     def mask_path(self) -> str:
         """HD-BET brain mask path, same voxel grid as the image."""
-        return MrRateVariant.for_series(self.batch, self.study_uid, self.series_id).mask_path
+        return self.variant.mask_path
 
 
 class MrRateCatalog:
@@ -191,7 +200,7 @@ class MrRateCatalog:
             return None
         raw_modality = record["classified_modality"]
         modality = raw_modality.lower()
-        if modality not in MODALITY_TO_LABEL:
+        if modality not in MODALITIES:
             raise ValueError(f"{path}: unexpected classified_modality {raw_modality!r}")
         # The pull writes Python-style booleans; anything else would silently flip the
         # exclusion, so fail loudly instead (verified "True"/"False" on the 2026-09 pull).
@@ -230,7 +239,7 @@ class ModalitySubjectIndex:
             key = (item.modality, item.patient_uid)
             if key not in best or (item.series_number, item.series_id) < (best[key].series_number, best[key].series_id):
                 best[key] = item
-        grouped: dict[str, list[MrRateSeries]] = {modality: [] for modality in MODALITY_TO_LABEL}
+        grouped: dict[str, list[MrRateSeries]] = {modality: [] for modality in MODALITIES}
         for (modality, _patient), item in best.items():
             grouped[modality].append(item)
         for entries in grouped.values():
@@ -291,7 +300,7 @@ class ReplayManifest:
         return {"rows": len(self._selected), "counts": self._counts()}
 
     def _counts(self) -> dict[str, int]:
-        counts = {label: 0 for label in MODALITY_TO_LABEL.values()}
+        counts = {label: 0 for label in WHOLE_BRAIN_LABEL.values()}
         for item in self._selected:
             counts[item.label] += 1
         return counts

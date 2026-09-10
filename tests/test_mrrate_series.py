@@ -17,8 +17,8 @@ zip structure, so the download, filter, skull-strip and encode stages cannot dri
 
 import pytest
 
-from scripts.create_replay_manifest import MODALITIES, MODALITY_TO_LABEL, MrRateSeries
-from scripts.mrrate_series import SKULL_STRIPPED_LABEL, MrRateVariant
+from scripts.create_replay_manifest import MODALITIES, MrRateSeries
+from scripts.mrrate_series import SKULL_STRIPPED_LABEL, WHOLE_BRAIN_LABEL, MrRateVariant
 
 
 @pytest.fixture
@@ -72,10 +72,20 @@ class TestMrRateVariantPaths:
 
 
 class TestMrRateVariantLabels:
-    def test_whole_brain_label_matches_the_replay_label_table(self) -> None:
-        for modality in MODALITIES:
+    def test_whole_brain_label_table_follows_the_spec(self) -> None:
+        """Spec section 3.2's table, pinned against literals: these strings are the contract with v1."""
+        assert dict(WHOLE_BRAIN_LABEL) == {
+            "t1w": "mri_t1",
+            "t2w": "mri_t2",
+            "flair": "mri_flair",
+            "swi": "mri_swi",
+            "mra": "mri_mra",
+        }
+
+    def test_a_series_id_resolves_to_its_modalitys_label(self) -> None:
+        for modality, label in WHOLE_BRAIN_LABEL.items():
             variant = MrRateVariant.for_series("batch00", "STUDY123", f"{modality}-raw-axi")
-            assert variant.label == MODALITY_TO_LABEL[modality]
+            assert variant.label == label
 
     def test_skull_stripped_label_is_the_dual_twin(self) -> None:
         variant = MrRateVariant.for_series("batch00", "STUDY123", "flair-raw-sag")

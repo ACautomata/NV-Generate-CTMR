@@ -94,10 +94,6 @@ class TierTarget:
         """The layered-cap rule (section 3.3), owned by the generator so the two cannot drift."""
         return CapPolicy(n_per_label=self.n_per_label)
 
-    def cap_for(self, modality: str) -> int | None:
-        """Layered cap: head labels N, T2w ``min(N, 669)``, MRA uncapped (``None``)."""
-        return self.policy.cap_for(modality)
-
     @classmethod
     def parse(cls, specification: str) -> "TierTarget":
         match = TIER_PATTERN.fullmatch(specification)
@@ -167,7 +163,7 @@ class TierRoster:
         selected = []
         for modality in sorted({row["modality"] for row in self._index.rows}):
             ordering = self._index.modality(modality)
-            selected.extend(ordering.take(self._target.cap_for(modality)))
+            selected.extend(ordering.take(self._target.policy.cap_for(modality)))
         return selected
 
     def shortages(self) -> dict[str, int]:
@@ -178,7 +174,7 @@ class TierRoster:
         """
         short = {}
         for modality in sorted({row["modality"] for row in self._index.rows}):
-            cap = self._target.cap_for(modality)
+            cap = self._target.policy.cap_for(modality)
             if cap is None:
                 continue
             deficit = cap - self._index.modality(modality).available
