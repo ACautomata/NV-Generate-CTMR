@@ -118,24 +118,6 @@ class ReplayTier:
         return cls(name=match["name"], manifest_path=Path(match["manifest"]))
 
 
-@dataclass(frozen=True)
-class ReplayDatasetEntry:
-    """The training entries one accepted replay series contributes: whole-brain plus its twin."""
-
-    candidate: ManifestCandidate
-
-    def latent_entries(self) -> list[LatentEntry]:
-        """The two entries, in the order the dual derivation was decided (whole-brain first)."""
-        return [
-            LatentEntry(image=self.candidate.image_path, modality=self.candidate.variant.label),
-            LatentEntry(image=self.candidate.variant.skull_stripped_path, modality=self.candidate.variant.skull_stripped_label),
-        ]
-
-    def training_entries(self) -> list[dict[str, str]]:
-        """The same two entries as dataset.json records."""
-        return [entry.to_record() for entry in self.latent_entries()]
-
-
 class ReplayLatentDataset:
     """Assembles and writes one tier's dataset.json plus the sidecars every entry needs."""
 
@@ -151,7 +133,21 @@ class ReplayLatentDataset:
 
     def latent_entries(self) -> list[LatentEntry]:
         """Every entry the tier needs: both halves of the dual derivation, per accepted series."""
-        return [entry for candidate in self.candidates() for entry in ReplayDatasetEntry(candidate).latent_entries()]
+        return [entry for candidate in self.candidates() for entry in self._dual_derivation(candidate)]
+
+    @staticmethod
+    def _dual_derivation(candidate: ManifestCandidate) -> list[LatentEntry]:
+        """The two training entries one accepted series becomes (section 3.3 "双产"), whole-brain first.
+
+        One downloaded volume is encoded once and yields both conditions the v1 model was trained
+        on: the source image under its v1 label (``mri_t1`` ...), and the skull-stripped twin
+        derived from it under the matching ``_skull_stripped`` label (29-33).
+        """
+        variant = candidate.variant
+        return [
+            LatentEntry(image=variant.whole_brain_path, modality=variant.label),
+            LatentEntry(image=variant.skull_stripped_path, modality=variant.skull_stripped_label),
+        ]
 
     def _is_downloaded(self, entry: LatentEntry) -> bool:
         """Whether this entry's source volume is on disk under the data root."""
@@ -180,7 +176,7 @@ class ReplayLatentDataset:
         entries = self.latent_entries()
         downloaded = [entry for entry in entries if self._is_downloaded(entry)]
         pending = len(entries) - len(downloaded)
-        outstanding = [entry for entry in downloaded if not self._sidecar_writer.has(entry)]
+        outstanding = [entry for entry in downloaded if not self._sidecar_writer.has_latent(entry)]
         if not outstanding:
             # Distinguish "the tier is finished" from "everything that has arrived is encoded but
             # the download is still running".  The second looks identical from the file system and

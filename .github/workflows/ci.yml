@@ -48,7 +48,9 @@ jobs:
         run: |
           # CPU-only torch keeps the job fast; the default PyPI wheel bundles CUDA.
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install pytest numpy nibabel monai fire scipy scikit-image
+          # huggingface_hub is a declared dependency (requirements.txt) and is imported at module
+          # level by the replay downloader, so the tests need it installed like any other.
+          pip install pytest numpy nibabel monai fire scipy scikit-image huggingface_hub
 
       - name: Run tests
         run: pytest -q

@@ -19,8 +19,9 @@ binary and shares the image's voxel grid, so the derivation is a single elementw
 multiply -- no resampling, no interpolation, no intensity normalization: the intensity
 transform of the original preprocessing pipeline runs later, on the encoded side.
 
-Deliberately dependency-light (nibabel + numpy) and callable on its own, next to
-``scripts.spine_filter``, which applies the same image/mask pair's verdict.
+Deliberately dependency-light (nibabel + numpy, plus the shared ``scripts.image_mask_pair``
+loader that proves the image and the mask share a voxel grid) and callable on its own, next to
+``scripts.spine_filter``, which applies the same pair's verdict.
 
 Usage (single pair, for inspection and manual repair)::
 
@@ -41,21 +42,20 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 
+from .image_mask_pair import ImageMaskPair
+
 
 class SkullStrippedCreator:
     """Multiplies an image by its brain mask, preserving the image's geometry and dtype."""
 
     def create(self, image_path: Path, mask_path: Path, output_path: Path) -> Path:
         """Write ``image x mask`` to ``output_path``; raise ValueError if the pair is off-grid."""
-        image = nib.load(str(image_path))
-        mask = nib.load(str(mask_path))
-        if image.shape != mask.shape:
-            raise ValueError(f"image {image.shape} and mask {mask.shape} differ in voxel grid ({image_path})")
-        image_data = np.asanyarray(image.dataobj)
-        mask_data = np.asanyarray(mask.dataobj) != 0
+        pair = ImageMaskPair(image_path, mask_path)
+        image_data = np.asanyarray(pair.image.dataobj)
+        mask_data = np.asanyarray(pair.mask.dataobj) != 0
         stripped = image_data * mask_data.astype(image_data.dtype)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        nib.save(nib.Nifti1Image(stripped, affine=image.affine, header=image.header), str(output_path))
+        nib.save(nib.Nifti1Image(stripped, affine=pair.image.affine, header=pair.image.header), str(output_path))
         return output_path
 
 

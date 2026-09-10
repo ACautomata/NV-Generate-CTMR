@@ -75,13 +75,13 @@ class LatentSidecarWriter:
     def __init__(self, embedding_base_dir: Path) -> None:
         self._embedding_base_dir = embedding_base_dir
 
-    def has(self, entry: LatentEntry) -> bool:
+    def has_latent(self, entry: LatentEntry) -> bool:
         """Whether this entry's latent is already on disk -- the encoder's own skip condition."""
         return (self._embedding_base_dir / entry.embedding_relative_path).is_file()
 
     def missing_latents(self, entries: list[LatentEntry]) -> list[Path]:
         """The latents that are not on disk yet; the stage-2 contract is that none may be."""
-        return [self._embedding_base_dir / entry.embedding_relative_path for entry in entries if not self.has(entry)]
+        return [self._embedding_base_dir / entry.embedding_relative_path for entry in entries if not self.has_latent(entry)]
 
     def require_all(self, entries: list[LatentEntry], stage: str) -> None:
         """Raise before anything is written when a latent is missing, so no partial sidecar set can exist."""

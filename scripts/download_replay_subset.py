@@ -53,6 +53,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from huggingface_hub import snapshot_download
+
 from .create_replay_manifest import MANIFEST_COLUMNS
 from .create_skull_stripped import SkullStrippedCreator
 from .mrrate_series import MrRateVariant
@@ -100,7 +102,7 @@ class ManifestCandidate:
     @property
     def batch(self) -> str:
         """The MR-RATE batch the study zip lives in (``mri/<batch>/<study_uid>.zip``)."""
-        return self.image_path.split("/")[1]
+        return self.variant.batch
 
     @property
     def variant(self) -> MrRateVariant:
@@ -231,15 +233,11 @@ class HuggingFaceZipSource:
         raise RuntimeError("unreachable")
 
     def download(self, repo_paths: list[str]) -> str:
-        """One ``snapshot_download`` call: the default collaborator, imported at call time.
+        """One ``snapshot_download`` call: fetch every listed repo path into the ambient HF cache.
 
-        The import is deliberately not at module level: the test job installs a deliberately
-        narrow dependency set (``.github/workflows/ci.yml`` installs pytest/numpy/nibabel/
-        monai/fire/scipy/scikit-image and not ``huggingface_hub``), and this module has to
-        stay importable there.  ``snapshot_download`` is the only entry point either way.
+        ``huggingface_hub`` is a declared dependency (``requirements.txt``) rather than an
+        optional one, so it is imported at module level like every other dependency.
         """
-        from huggingface_hub import snapshot_download
-
         return str(
             snapshot_download(
                 self._repo_id,
@@ -398,7 +396,7 @@ class ReplayDownloader:
         print(f"manifest={len(candidates)} already_recorded={len(candidates) - len(todo)} to_process={len(todo)}")
         failed = 0
         for chunk, download_root in self._chunks(todo):
-            for group in self._split_by_study(chunk):
+            for group in self._group_by_study(chunk):
                 failed += sum(outcome.verdict is None for outcome in self._process_study(group, download_root))
             print(f"  recorded={len(self._log.completed())} failed={failed}")
         self._clear_staging()
@@ -459,12 +457,18 @@ class ReplayDownloader:
         incrementally rather than after the whole ~277 GB has been fetched.  A chunk holds
         at most ``workers`` distinct studies and is never split across fetches.
         """
-        for chunk in self._group_by_study(candidates):
+        for chunk in self._fetch_batches(candidates):
             root = self._source.fetch(sorted({candidate.repo_zip_path for candidate in chunk}))
             yield chunk, root
 
-    def _group_by_study(self, candidates: list[ManifestCandidate]) -> list[list[ManifestCandidate]]:
-        """Chunk candidates into groups of at most ``workers`` distinct studies, preserving manifest order."""
+    def _fetch_batches(self, candidates: list[ManifestCandidate]) -> list[list[ManifestCandidate]]:
+        """Split the todo list into download batches of at most ``workers`` distinct studies.
+
+        The batch is the unit of fetching, and every series of one study is extracted from the
+        one zip the batch pulls, so a batch may not straddle a study; manifest order is kept so
+        the verdict log still reads in roster order.  ``_group_by_study`` then walks each batch
+        study by study -- the two split different things for different reasons.
+        """
         groups: list[list[ManifestCandidate]] = []
         current: list[ManifestCandidate] = []
         seen: set[str] = set()
@@ -478,12 +482,16 @@ class ReplayDownloader:
             groups.append(current)
         return groups
 
-    def _split_by_study(self, chunk: list[ManifestCandidate]) -> list[list[ManifestCandidate]]:
-        """Split one fetched chunk into per-study groups, preserving order; duplicates collapse."""
+    def _group_by_study(self, chunk: list[ManifestCandidate]) -> list[list[ManifestCandidate]]:
+        """Split one fetched batch into per-study groups, preserving order.
+
+        Repeats of a series survive this grouping on purpose: collapsing them belongs next to
+        the extraction they would otherwise repeat, in ``_process_study``.
+        """
         groups: dict[str, list[ManifestCandidate]] = {}
         for candidate in chunk:
             groups.setdefault(candidate.study_uid, []).append(candidate)
-        return [self._unique(group) for group in groups.values()]
+        return list(groups.values())
 
     @staticmethod
     def _unique(candidates: list[ManifestCandidate]) -> list[ManifestCandidate]:

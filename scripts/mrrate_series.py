@@ -53,6 +53,8 @@ BRAIN_MASK_SUFFIX = "_brain-mask"
 SKULL_STRIPPED_SUFFIX = "_skull_stripped"
 IMAGE_DIRNAME = "img"
 SEGMENTATION_DIRNAME = "seg"
+# The published layout ``mri/<batch>/<study>/img/<file>``: mri/ is parts[0], so the batch is 1.
+BATCH_DIRNAME_PART_INDEX = 1
 
 
 class MrRateVariant:
@@ -66,6 +68,7 @@ class MrRateVariant:
 
     def __init__(self, image_path: str) -> None:
         self._image_path = image_path
+        self._stem = Path(image_path).name.removesuffix(NIFTI_EXTENSION)
 
     @classmethod
     def for_series(cls, batch: str, study_uid: str, series_id: str) -> "MrRateVariant":
@@ -76,6 +79,11 @@ class MrRateVariant:
     def whole_brain_path(self) -> str:
         """The published defaced native-space image."""
         return self._image_path
+
+    @property
+    def batch(self) -> str:
+        """The batch directory the study zip lives in (``mri/<batch>/<study_uid>.zip`` upstream)."""
+        return Path(self._image_path).parts[BATCH_DIRNAME_PART_INDEX]
 
     @property
     def mask_path(self) -> str:
@@ -113,7 +121,3 @@ class MrRateVariant:
     def study_uid(self) -> str:
         """The study directory name, which is also the file stem's leading underscore-delimited field."""
         return Path(self._image_path).parent.parent.name
-
-    @property
-    def _stem(self) -> str:
-        return Path(self._image_path).name.removesuffix(NIFTI_EXTENSION)

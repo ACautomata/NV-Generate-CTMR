@@ -135,6 +135,19 @@ class TestReplayOrderingIndex:
     def test_a_missing_reject_file_means_nothing_was_rejected(self, ordering: Path) -> None:
         assert ReplayOrderingIndex(ordering, None).modality("t1w").available == 12
 
+    def test_a_full_verdict_log_is_read_for_its_rejects_only(self, ordering: Path, rejected: Path, tmp_path: Path) -> None:
+        """The download run leaves the log and the rejects extract side by side; either one is accepted."""
+        measurements = {"mask_voxel_ratio": "0.2", "fov_mm": "200 200 200", "reasons": ""}
+        accepted_rows = [{**row, **measurements, "verdict": "accept"} for row in csv.DictReader(ordering.open())]
+        log = tmp_path / "verdicts.csv"
+        with log.open("w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=[*MANIFEST_COLUMNS, "verdict", "mask_voxel_ratio", "fov_mm", "reasons"])
+            writer.writeheader()
+            writer.writerows([*csv.DictReader(rejected.open()), *accepted_rows])
+
+        assert ReplayOrderingIndex(ordering, log).rejected == ReplayOrderingIndex(ordering, rejected).rejected
+        assert ReplayOrderingIndex(ordering, log).modality("t1w").available == 10
+
 
 class TestTierRoster:
     def test_refill_skips_rejects_and_continues_the_ordering(self, ordering: Path, rejected: Path) -> None:

@@ -76,9 +76,9 @@ Verified on real data during the T6 run: the derived twins are voxel-exact
 (``image x mask``, geometry preserved), both for replay volumes and for the forgetting
 reference set.
 
-The module is deliberately dependency-light (nibabel + numpy only) and callable without
-the sampling script, so the forgetting gen-real reference-set sampling (spec section
-5.1, ticket D5) reuses it as-is.
+The module is deliberately dependency-light (numpy, plus the shared ``scripts.image_mask_pair``
+loader that carries the image/mask grid check) and callable without the sampling script, so the
+forgetting gen-real reference-set sampling (spec section 5.1, ticket D5) reuses it as-is.
 
 Usage (single pair, for calibration and inspection)::
 
@@ -99,8 +99,9 @@ import json
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-import nibabel as nib
 import numpy as np
+
+from .image_mask_pair import ImageMaskPair
 
 
 @dataclass(frozen=True)
@@ -130,11 +131,9 @@ class SpineFilter:
 
     def check(self, image_path: Path, mask_path: Path) -> SpineFilterResult:
         """Raise ValueError if the pair does not share a voxel grid; never on a spine verdict."""
-        image = nib.load(str(image_path))
-        mask = nib.load(str(mask_path))
-        if image.shape != mask.shape:
-            raise ValueError(f"image {image.shape} and mask {mask.shape} differ in voxel grid ({image_path})")
-        mask_voxels = int(np.count_nonzero(np.asanyarray(mask.dataobj)))
+        pair = ImageMaskPair(image_path, mask_path)
+        image = pair.image
+        mask_voxels = int(np.count_nonzero(np.asanyarray(pair.mask.dataobj)))
         total_voxels = int(np.prod(image.shape))
         ratio = mask_voxels / total_voxels
         zooms = image.header.get_zooms()[: len(image.shape)]

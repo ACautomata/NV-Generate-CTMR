@@ -386,7 +386,7 @@ class TestReplayDownloader:
 
         # First pass processes only the first study, as a crash after chunk one would.
         chunk, root = next(iter(downloader._chunks(downloader.candidates())))
-        downloader._process_study(downloader._split_by_study(chunk)[0], root)
+        downloader._process_study(downloader._group_by_study(chunk)[0], root)
         assert len(log.read_rows()) == 1
 
         downloader, resumed_source, _ = downloader_factory(workers=1)
@@ -447,9 +447,7 @@ class TestOffGridPair:
 
     @staticmethod
     def run(downloader: ReplayDownloader) -> dict:
-        return downloader.run(
-            accepted_csv=downloader._download_dir / "accepted.csv", rejected_csv=downloader._download_dir / "rejected.csv"
-        )
+        return downloader.run(accepted_csv=downloader._download_dir / "accepted.csv", rejected_csv=downloader._download_dir / "rejected.csv")
 
     def test_the_pair_is_recorded_as_a_reject_rather_than_escaping(self, off_grid_downloader) -> None:
         """Letting the ValueError out would kill an hours-long run on one unusable series."""

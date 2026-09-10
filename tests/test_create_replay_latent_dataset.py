@@ -23,13 +23,11 @@ import pytest
 
 from scripts.create_replay_latent_dataset import (
     DATASET_FILENAME_TEMPLATE,
-    ReplayDatasetEntry,
     ReplayLatentDataset,
     ReplayLatentDatasetSet,
     ReplayTier,
     main,
 )
-from scripts.download_replay_subset import ManifestCandidate
 from scripts.latent_sidecars import LatentEntry, LatentSidecarWriter
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +36,8 @@ SERIES = [
     ("STUDYA", "t1w-raw-axi", "mri_t1"),
     ("STUDYB", "flair-raw-sag", "mri_flair"),
     ("STUDYC", "mra-raw-cor", "mri_mra"),
+    ("STUDYD", "t2w-raw-sag", "mri_t2"),
+    ("STUDYE", "swi-raw-axi", "mri_swi"),
 ]
 
 
@@ -112,54 +112,29 @@ class TestReplayTier:
             ReplayTier.parse("N300")
 
 
-class TestReplayDatasetEntry:
-    def test_one_series_becomes_two_training_entries_whole_brain_first(self) -> None:
-        candidate = ManifestCandidate.from_row(
-            {
-                "patient_uid": "1",
-                "study_uid": "STUDYA",
-                "series_id": "t1w-raw-axi",
-                "modality": "t1w",
-                "label": "mri_t1",
-                "split": "Train",
-                "image_path": "mri/batch00/STUDYA/img/STUDYA_t1w-raw-axi.nii.gz",
-            }
-        )
-        entries = ReplayDatasetEntry(candidate).training_entries()
-        assert entries == [
-            {"image": "mri/batch00/STUDYA/img/STUDYA_t1w-raw-axi.nii.gz", "modality": "mri_t1"},
-            {
-                "image": "mri/batch00/STUDYA/img/STUDYA_t1w-raw-axi_skull_stripped.nii.gz",
-                "modality": "mri_t1_skull_stripped",
-            },
+class TestDualDerivation:
+    """Section 3.3 "双产": one accepted series becomes a whole-brain entry and its skull-stripped twin."""
+
+    def test_one_series_becomes_two_entries_whole_brain_first(self, dataset: ReplayLatentDataset) -> None:
+        study, series_id, label = SERIES[0]
+        entries = [entry for entry in dataset.latent_entries() if series_id in entry.image]
+
+        assert [(entry.image, entry.modality) for entry in entries] == [
+            (f"mri/batch00/{study}/img/{study}_{series_id}.nii.gz", label),
+            (f"mri/batch00/{study}/img/{study}_{series_id}_skull_stripped.nii.gz", f"{label}_skull_stripped"),
         ]
 
-    def test_every_modality_pairs_with_its_own_skull_stripped_label(self) -> None:
-        for modality, whole_brain, skull_stripped in (
-            ("t2w", "mri_t2", "mri_t2_skull_stripped"),
-            ("swi", "mri_swi", "mri_swi_skull_stripped"),
-            ("mra", "mri_mra", "mri_mra_skull_stripped"),
-        ):
-            candidate = ManifestCandidate.from_row(
-                {
-                    "patient_uid": "1",
-                    "study_uid": "STUDYA",
-                    "series_id": f"{modality}-raw-axi",
-                    "modality": modality,
-                    "label": whole_brain,
-                    "split": "Train",
-                    "image_path": f"mri/batch00/STUDYA/img/STUDYA_{modality}-raw-axi.nii.gz",
-                }
-            )
-            entries = ReplayDatasetEntry(candidate).training_entries()
-            assert [record["modality"] for record in entries] == [whole_brain, skull_stripped]
+    def test_every_modality_pairs_with_its_own_skull_stripped_label(self, dataset: ReplayLatentDataset) -> None:
+        labels = [entry.modality for entry in dataset.latent_entries()]
+        for _study, _series_id, whole_brain in SERIES:
+            assert labels.index(f"{whole_brain}_skull_stripped") == labels.index(whole_brain) + 1
 
-    def test_latent_entries_match_the_training_entries(self, dataset: ReplayLatentDataset) -> None:
-        candidate = dataset.candidates()[0]
-        dataset_entry = ReplayDatasetEntry(candidate)
-        assert [(item.image, item.modality) for item in dataset_entry.latent_entries()] == [
-            (record["image"], record["modality"]) for record in dataset_entry.training_entries()
-        ]
+    def test_the_written_records_are_exactly_the_latent_entries(self, dataset: ReplayLatentDataset, tmp_path: Path) -> None:
+        """A dataset.json record and the latent entry it stands for must not be able to drift apart."""
+        dataset.write(tmp_path)
+
+        payload = json.loads((tmp_path / dataset._tier.dataset_filename).read_text())
+        assert payload["training"] == [entry.to_record() for entry in dataset.latent_entries()]
 
 
 class TestReplayLatentDataset:
@@ -177,6 +152,10 @@ class TestReplayLatentDataset:
             "mri_flair_skull_stripped",
             "mri_mra",
             "mri_mra_skull_stripped",
+            "mri_t2",
+            "mri_t2_skull_stripped",
+            "mri_swi",
+            "mri_swi_skull_stripped",
         ]
 
     def test_entries_carry_exactly_the_training_fields(self, dataset: ReplayLatentDataset, tmp_path: Path) -> None:
@@ -194,7 +173,7 @@ class TestReplayLatentDataset:
 
     def test_sidecar_count_equals_the_training_entry_count(self, dataset: ReplayLatentDataset, embedding_base_dir: Path, tmp_path: Path) -> None:
         summary = dataset.write(tmp_path)
-        assert summary["sidecars"] == summary["training_entries"] == 6
+        assert summary["sidecars"] == summary["training_entries"] == 10
         assert [path.name for path in sorted(embedding_base_dir.rglob("*.json"))].count("STUDYA_t1w-raw-axi_emb.nii.gz.json") == 1
 
     def test_a_missing_latent_aborts_before_anything_is_written(self, dataset: ReplayLatentDataset, embedding_base_dir: Path, tmp_path: Path) -> None:
@@ -252,7 +231,7 @@ class TestReplayLatentDatasetSet:
             sidecar_writer=LatentSidecarWriter(embedding_base_dir),
         )
         summaries = dataset_set.write_all(tmp_path, stage="finalize")
-        assert [summary["training_entries"] for summary in summaries] == [2, 6]
+        assert [summary["training_entries"] for summary in summaries] == [2, 10]
 
         small_payload = json.loads((tmp_path / "dataset_replay_rflow-mr-brain_N300.json").read_text())
         large_payload = json.loads((tmp_path / "dataset_replay_rflow-mr-brain_N1000.json").read_text())
@@ -293,6 +272,10 @@ class TestEncodeStage:
             "mri_flair_skull_stripped",
             "mri_mra",
             "mri_mra_skull_stripped",
+            "mri_t2",
+            "mri_t2_skull_stripped",
+            "mri_swi",
+            "mri_swi_skull_stripped",
         ]
         assert any(record["image"].endswith("_skull_stripped.nii.gz") for record in payload["training"])
 
@@ -363,7 +346,7 @@ class TestEncodeStage:
 
         assert summary["source_entries"] == len(SERIES)
         payload = json.loads((tmp_path / "replay_source_N300.json").read_text())
-        assert [record["modality"] for record in payload["training"]] == ["mri_t1", "mri_flair", "mri_mra"]
+        assert [record["modality"] for record in payload["training"]] == [label for _study, _series_id, label in SERIES]
 
     def test_finalize_would_refuse_the_same_tree(self, data_base_dir: Path, accepted_manifest: Path, tmp_path: Path) -> None:
         """The two stages have opposite preconditions; this is why both exist."""
@@ -400,7 +383,7 @@ class TestCommandLine:
         main()
 
         payload = json.loads((tmp_path / "dataset_replay_rflow-mr-brain_N300.json").read_text())
-        assert len(payload["training"]) == 6
+        assert len(payload["training"]) == len(SERIES) * 2
 
     def test_cli_is_invocable_as_a_module(self) -> None:
         result = subprocess.run(

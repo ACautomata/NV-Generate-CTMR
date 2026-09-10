@@ -72,7 +72,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .create_replay_manifest import MANIFEST_COLUMNS, CapPolicy
-from .download_replay_subset import VerdictLog
+from .download_replay_subset import VERDICT_REJECT, VerdictLog
 
 TIER_PATTERN = re.compile(r"(?P<name>[A-Za-z0-9_-]+)=(?P<n>\d+)")
 OUTPUT_TEMPLATE = "replay_manifest_{tier}_final.csv"
@@ -135,6 +135,10 @@ class ReplayOrderingIndex:
     def rejected(self) -> set[tuple[str, str]]:
         return set(self._rejected)
 
+    def modalities(self) -> list[str]:
+        """The modalities this ordering mentions, in the order the rosters and their checks walk them."""
+        return sorted({row["modality"] for row in self._rows})
+
     def modality(self, modality: str) -> ModalityOrdering:
         """The ordering restricted to one modality, with rejected series removed."""
         return ModalityOrdering([row for row in self._rows if row["modality"] == modality], self._rejected)
@@ -146,9 +150,16 @@ class ReplayOrderingIndex:
 
     @staticmethod
     def _reject_keys(rejected_path: Path | None) -> set[tuple[str, str]]:
+        """``(study_uid, series_id)`` of every series the record marks rejected.
+
+        The verdict is read, not assumed from the file's name: a download run leaves both a full
+        verdict log and a rejects-only extract in the same directory, and taking the whole log as
+        "rejected" would empty every tier instead of refilling it.
+        """
         if rejected_path is None or not rejected_path.is_file():
             return set()
-        return {(row["study_uid"], row["series_id"]) for row in VerdictLog(rejected_path).read_rows()}
+        rows = VerdictLog(rejected_path).read_rows()
+        return {(row["study_uid"], row["series_id"]) for row in rows if row["verdict"] == VERDICT_REJECT}
 
 
 class TierRoster:
@@ -161,7 +172,7 @@ class TierRoster:
     def rows(self) -> list[dict[str, str]]:
         """This tier's rows: each modality's first ``cap`` survivors of the ordering."""
         selected = []
-        for modality in sorted({row["modality"] for row in self._index.rows}):
+        for modality in self._index.modalities():
             ordering = self._index.modality(modality)
             selected.extend(ordering.take(self._target.policy.cap_for(modality)))
         return selected
@@ -173,7 +184,7 @@ class TierRoster:
         MRA takes whatever exists, so reporting it as short would be noise.
         """
         short = {}
-        for modality in sorted({row["modality"] for row in self._index.rows}):
+        for modality in self._index.modalities():
             cap = self._target.policy.cap_for(modality)
             if cap is None:
                 continue
@@ -182,8 +193,10 @@ class TierRoster:
                 short[modality] = deficit
         return short
 
-    def counts(self) -> dict[str, int]:
-        return dict(sorted(Counter(row["label"] for row in self.rows()).items()))
+    @staticmethod
+    def counts(rows: list[dict[str, str]]) -> dict[str, int]:
+        """``label -> row count`` over an already-selected roster, in label order."""
+        return dict(sorted(Counter(row["label"] for row in rows).items()))
 
     def write(self, output_dir: Path) -> dict:
         """Write the tier's roster CSV; return a summary with counts and shortages."""
@@ -195,10 +208,11 @@ class TierRoster:
             writer.writeheader()
             writer.writerows(rows)
         shortages = self.shortages()
-        print(f"{self._target.name}: rows={len(rows)} per-label={self.counts()} -> {destination}")
+        counts = self.counts(rows)
+        print(f"{self._target.name}: rows={len(rows)} per-label={counts} -> {destination}")
         if shortages:
             print(f"{self._target.name}: WARNING short of cap for {shortages} (candidate pool exhausted)")
-        return {"tier": self._target.name, "rows": len(rows), "counts": self.counts(), "shortages": shortages, "output": str(destination)}
+        return {"tier": self._target.name, "rows": len(rows), "counts": counts, "shortages": shortages, "output": str(destination)}
 
 
 class RefilledReplayManifests:
@@ -230,7 +244,7 @@ class RefilledReplayManifests:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--ordering", type=Path, required=True, help="the full-ordering manifest (largest cap)")
-    parser.add_argument("--rejected", type=Path, default=None, help="the spine filter's rejected-series manifest")
+    parser.add_argument("--rejected", type=Path, default=None, help="the spine filter's record: a rejects-only extract or the full verdict log")
     parser.add_argument("--tier", action="append", required=True, metavar="NAME=N", help="one experiment point, e.g. N300=300 (repeatable)")
     parser.add_argument("--output-dir", type=Path, required=True, help="where the *_final.csv rosters go")
     parser.add_argument("--topup-manifest", type=Path, default=None, help="also write the union of rows every tier needs")
