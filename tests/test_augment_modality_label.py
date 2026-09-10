@@ -15,7 +15,7 @@
 ``augment_modality_label`` is expected to treat the new labels exactly like the
 old MRI labels (>=9): ~10% collapse to 8 (``mri`` generic embedding) and ~10%
 zero out (CFG unconditional) — never the CT collapse to 1. Requires torch;
-skipped in the CI environment, which only installs pytest/numpy/nibabel.
+the guard keeps environments without torch (e.g. minimal local setups) green.
 """
 
 import pytest
