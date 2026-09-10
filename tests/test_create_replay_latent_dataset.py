@@ -188,6 +188,17 @@ class TestReplayLatentDataset:
         with pytest.raises(FileNotFoundError, match="source volumes missing"):
             dataset.write(tmp_path)
 
+    def test_a_val_roster_cannot_become_a_training_set(
+        self, dataset: ReplayLatentDataset, accepted_manifest: Path, embedding_base_dir: Path, tmp_path: Path
+    ) -> None:
+        """The reference set runs through this pipeline too, but section 3.4 keeps it out of training."""
+        accepted_manifest.write_text(accepted_manifest.read_text().replace(",Train,", ",Val,"))
+
+        with pytest.raises(ValueError, match="non-Train rows"):
+            dataset.write(tmp_path)
+        assert not list(tmp_path.glob("dataset_*.json"))
+        assert not list(embedding_base_dir.rglob("*.json"))
+
     def test_latent_paths_follow_the_training_code_replacement(self, dataset: ReplayLatentDataset) -> None:
         entry = LatentEntry(image=dataset.candidates()[0].image_path, modality="mri_t1")
         assert entry.embedding_relative_path.endswith("_emb.nii.gz")
@@ -357,6 +368,19 @@ class TestEncodeStage:
         )
         with pytest.raises(ValueError, match="latents missing"):
             dataset.write(tmp_path)
+
+    def test_a_val_roster_is_still_listable_for_encoding(self, data_base_dir: Path, accepted_manifest: Path, tmp_path: Path) -> None:
+        """The forgetting reference set shares this pipeline up to the latents, so encode must take it."""
+        accepted_manifest.write_text(accepted_manifest.read_text().replace(",Train,", ",Val,"))
+        dataset = ReplayLatentDataset(
+            tier=ReplayTier("REFERENCE", accepted_manifest),
+            data_base_dir=data_base_dir,
+            sidecar_writer=LatentSidecarWriter(tmp_path / "empty_embeddings"),
+        )
+
+        summary = dataset.write_source_list(tmp_path)
+
+        assert summary["source_entries"] == len(SERIES) * 2
 
 
 class TestCommandLine:

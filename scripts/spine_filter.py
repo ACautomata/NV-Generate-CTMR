@@ -49,7 +49,7 @@ constructor/CLI parameter, and the defaults live in one place:
   the boundary the calibration chose, and holding the line costs one top-up rather than
   letting a class of borderline volumes through.  Raising the ceiling to swallow
   float noise would be the change to make if false rejects ever became expensive; today
-  they are not (1 in 1,791 processed series).
+  they are not (2 of the complete 3,810-series roster).
 - **Mask-volume ratio [2 %, 35 %] — calibrated 2026-09-10 against the first real
   HD-BET masks on disk**, two directions:
   (a) *False rejects* — 1,494 paired brain series from atlas-registered studies (the
@@ -68,13 +68,21 @@ constructor/CLI parameter, and the defaults live in one place:
   passing.  So the upper bound is not untested slack: thick-slice brain acquisitions can
   climb towards it, and a future tightening of the ceiling should be checked against those
   volumes rather than assumed free.
-  Consequence for the top-up loop: **the replay sweep and the reference set have together
-  rejected 0 series**, so the refill path is implemented and tested but has not yet had to
-  fire on real data.
+  Consequence for the top-up loop: the two conditions together rejected **2 of the 3,810
+  series** in the T6 sweep -- both on FOV, neither on the ratio -- and 0 of the reference
+  set's 202.  The refill path is implemented and tested, but has not yet had to fire on
+  real data.
 
 Verified on real data during the T6 run: the derived twins are voxel-exact
 (``image x mask``, geometry preserved), both for replay volumes and for the forgetting
 reference set.
+
+The calibration numbers above come from one-off scripts, not from anything committed: they read
+volumes out of the HF caches, and the project's convention (``skills/publish_experiment.md``)
+publishes experiment one-offs as release assets rather than as repo code.  They ship in the T6
+run release's ``scripts-t6-replay-latent-20260910.tar.gz`` (``spine_calibration.py`` and
+``spine_calib2..4.py``), next to the run's verdict logs, from which the replay and reference
+populations are recomputed without re-reading a volume.
 
 The module is deliberately dependency-light (numpy, plus the shared ``scripts.image_mask_pair``
 loader that carries the image/mask grid check) and callable without the sampling script, so the

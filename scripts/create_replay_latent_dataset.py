@@ -77,7 +77,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .create_replay_manifest import MANIFEST_COLUMNS
+from .create_replay_manifest import MANIFEST_COLUMNS, SPLIT_VALUES, TRAIN_SPLIT
 from .download_replay_subset import ManifestCandidate
 from .latent_sidecars import LatentEntry, LatentSidecarWriter
 
@@ -133,7 +133,12 @@ class ReplayLatentDataset:
 
     def latent_entries(self) -> list[LatentEntry]:
         """Every entry the tier needs: both halves of the dual derivation, per accepted series."""
-        return [entry for candidate in self.candidates() for entry in self._dual_derivation(candidate)]
+        return self._entries_for(self.candidates())
+
+    @classmethod
+    def _entries_for(cls, candidates: list[ManifestCandidate]) -> list[LatentEntry]:
+        """The dual derivation applied to an already-read roster (section 3.3 "双产")."""
+        return [entry for candidate in candidates for entry in cls._dual_derivation(candidate)]
 
     @staticmethod
     def _dual_derivation(candidate: ManifestCandidate) -> list[LatentEntry]:
@@ -197,7 +202,9 @@ class ReplayLatentDataset:
 
     def write(self, output_dir: Path) -> dict:
         """``--stage finalize``: write the sidecars, then the training dataset.json; return a summary."""
-        entries = self.latent_entries()
+        candidates = self.candidates()
+        self._require_training_split(candidates)
+        entries = self._entries_for(candidates)
         self._require_source_volumes(entries)
         self._sidecar_writer.require_all(entries, f"{self._tier.name} latents")
         sidecars = self._sidecar_writer.write(entries)
@@ -215,6 +222,21 @@ class ReplayLatentDataset:
             json.dump({"training": entries}, file, indent=2)
             file.write("\n")
         return path
+
+    def _require_training_split(self, candidates: list[ManifestCandidate]) -> None:
+        """Refuse to build a training set out of anything but the Train split.
+
+        The forgetting reference set (spec section 5.1) is drawn from **val** and runs through this
+        same pipeline up to the latents, so its roster is a valid ``--stage encode`` tier and an
+        invalid ``--stage finalize`` one.  Without this check, naming it as a tier would mint a
+        training dataset.json of volumes the model is supposed to have never seen.
+        """
+        strangers = sorted({candidate.split for candidate in candidates} - {SPLIT_VALUES[TRAIN_SPLIT]})
+        if strangers:
+            raise ValueError(
+                f"{self._tier.name}: roster holds non-{SPLIT_VALUES[TRAIN_SPLIT]} rows ({', '.join(strangers)}); "
+                f"a training dataset.json must be drawn from the {SPLIT_VALUES[TRAIN_SPLIT]} split"
+            )
 
     def _require_source_volumes(self, entries: list[LatentEntry]) -> None:
         """Fail loudly when the accepted manifest does not line up with the downloaded tree.
