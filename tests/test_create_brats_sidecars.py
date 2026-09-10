@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 
 from scripts.create_brats_dataset_json import SUFFIX_TO_MODALITY
-from scripts.create_brats_sidecars import BratsSidecarGenerator, TrainingEntry
+from scripts.create_brats_sidecars import SIDECAR_EXTENSION, BratsSidecarGenerator, TrainingEntry
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRAINING_DATA_DIRNAME = "ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData"
@@ -35,12 +35,13 @@ FAKE_CASES = ("BraTS-GLI-00000-000", "BraTS-GLI-00001-000")
 LATENT_SPACING = (0.9375, 0.9375, 1.2109375)
 
 
-def dataset_entries(root: str = "brats2023-gli") -> list[dict]:
+@pytest.fixture
+def dataset_entries() -> list[dict]:
     """The dataset.json training entries for the fake cases, one per suffix."""
     entries = []
     for case in FAKE_CASES:
         for suffix, modality in sorted(SUFFIX_TO_MODALITY.items()):
-            image = f"{root}/{TRAINING_DATA_DIRNAME}/{case}/{case}-{suffix}.nii.gz"
+            image = f"brats2023-gli/{TRAINING_DATA_DIRNAME}/{case}/{case}-{suffix}.nii.gz"
             entries.append({"image": image, "modality": modality})
     return entries
 
@@ -60,27 +61,37 @@ def write_latent() -> Callable[[Path, str, tuple[float, float, float]], Path]:
 
 
 @pytest.fixture
-def sidecar_root(tmp_path: Path, write_latent: Callable[[Path, str, tuple[float, float, float]], Path]) -> Path:
+def embedding_base_dir(tmp_path: Path, write_latent: Callable[[Path, str, tuple[float, float, float]], Path], dataset_entries: list[dict]) -> Path:
     """An embedding base dir holding one latent per fake dataset.json entry, all with LATENT_SPACING."""
-    embedding_base_dir = tmp_path / "embeddings"
-    for entry in dataset_entries():
-        write_latent(embedding_base_dir, TrainingEntry(**entry).embedding_relative_path(), LATENT_SPACING)
-    return embedding_base_dir
+    base = tmp_path / "embeddings"
+    for entry in dataset_entries:
+        write_latent(base, TrainingEntry(**entry).embedding_relative_path(), LATENT_SPACING)
+    return base
 
 
 @pytest.fixture
-def dataset_json(tmp_path: Path) -> Path:
+def dataset_json(tmp_path: Path, dataset_entries: list[dict]) -> Path:
     path = tmp_path / "dataset.json"
-    path.write_text(json.dumps({"training": dataset_entries(), "validation": []}))
+    path.write_text(json.dumps({"training": dataset_entries, "validation": []}))
     return path
 
 
 @pytest.fixture
-def build_generator(dataset_json: Path, sidecar_root: Path) -> Callable[[], BratsSidecarGenerator]:
+def sidecar_path() -> Callable[[Path], Path]:
+    """Factory: the sidecar path of a latent — written next to it, plus the sidecar extension."""
+
+    def _path(latent: Path) -> Path:
+        return latent.with_name(latent.name + SIDECAR_EXTENSION)
+
+    return _path
+
+
+@pytest.fixture
+def build_generator(dataset_json: Path, embedding_base_dir: Path) -> Callable[[], BratsSidecarGenerator]:
     """Factory: a generator over the fake dataset.json and latent tree."""
 
     def _build() -> BratsSidecarGenerator:
-        return BratsSidecarGenerator(dataset_json_path=dataset_json, embedding_base_dir=sidecar_root)
+        return BratsSidecarGenerator(dataset_json_path=dataset_json, embedding_base_dir=embedding_base_dir)
 
     return _build
 
@@ -92,58 +103,84 @@ class TestTrainingEntry:
 
 
 class TestBratsSidecarGenerator:
-    def test_writes_one_sidecar_per_training_entry(self, build_generator: Callable[[], BratsSidecarGenerator]) -> None:
+    def test_writes_one_sidecar_per_training_entry(self, build_generator: Callable[[], BratsSidecarGenerator], dataset_entries: list[dict]) -> None:
         stats = build_generator().write_sidecars()
 
-        assert stats == {"written": len(FAKE_CASES) * len(SUFFIX_TO_MODALITY)}
+        assert stats == {"written": len(dataset_entries)}
 
-    def test_sidecar_lies_next_to_latent_with_json_extension(self, build_generator: Callable[[], BratsSidecarGenerator], sidecar_root: Path) -> None:
+    def test_sidecar_lies_next_to_latent_with_json_extension(
+        self,
+        build_generator: Callable[[], BratsSidecarGenerator],
+        embedding_base_dir: Path,
+        dataset_entries: list[dict],
+        sidecar_path: Callable[[Path], Path],
+    ) -> None:
         build_generator().write_sidecars()
 
-        latent = sidecar_root / TrainingEntry(**dataset_entries()[0]).embedding_relative_path()
-        assert latent.with_name(latent.name + ".json").is_file()
+        latent = embedding_base_dir / TrainingEntry(**dataset_entries[0]).embedding_relative_path()
+        assert sidecar_path(latent).is_file()
 
-    def test_sidecar_records_header_spacing_and_modality(self, build_generator: Callable[[], BratsSidecarGenerator], sidecar_root: Path) -> None:
+    def test_sidecar_records_header_spacing_and_modality(
+        self,
+        build_generator: Callable[[], BratsSidecarGenerator],
+        embedding_base_dir: Path,
+        dataset_entries: list[dict],
+        sidecar_path: Callable[[Path], Path],
+    ) -> None:
         build_generator().write_sidecars()
 
-        latent = sidecar_root / TrainingEntry(**dataset_entries()[0]).embedding_relative_path()
-        sidecar = json.loads(latent.with_name(latent.name + ".json").read_text())
+        latent = embedding_base_dir / TrainingEntry(**dataset_entries[0]).embedding_relative_path()
+        sidecar = json.loads(sidecar_path(latent).read_text())
         assert sidecar["spacing"] == pytest.approx(list(LATENT_SPACING))
-        assert sidecar["modality"] == dataset_entries()[0]["modality"]
+        assert sidecar["modality"] == dataset_entries[0]["modality"]
 
-    def test_spacing_matches_each_latent_header(self, build_generator: Callable[[], BratsSidecarGenerator], sidecar_root: Path) -> None:
+    def test_sidecar_spacing_tracks_replaced_latent(
+        self,
+        build_generator: Callable[[], BratsSidecarGenerator],
+        embedding_base_dir: Path,
+        dataset_entries: list[dict],
+        sidecar_path: Callable[[Path], Path],
+    ) -> None:
         odd_spacing = (2.0, 1.5, 3.25)
-        entry = dataset_entries()[-1]
+        entry = dataset_entries[-1]
         latent = TrainingEntry(**entry).embedding_relative_path()
-        (sidecar_root / latent).unlink()
+        (embedding_base_dir / latent).unlink()
         nib.save(
             nib.Nifti1Image(np.zeros((4, 4, 2), dtype=np.float32), affine=np.diag((*odd_spacing, 1.0))),
-            sidecar_root / latent,
+            embedding_base_dir / latent,
         )
         build_generator().write_sidecars()
 
-        latent_path = sidecar_root / latent
-        sidecar = json.loads(latent_path.with_name(latent_path.name + ".json").read_text())
+        latent_path = embedding_base_dir / latent
+        sidecar = json.loads(sidecar_path(latent_path).read_text())
         assert sidecar["spacing"] == pytest.approx(list(odd_spacing))
 
-    def test_sidecar_modality_matches_dataset_json_entry_wise(self, build_generator: Callable[[], BratsSidecarGenerator], sidecar_root: Path) -> None:
+    def test_sidecar_modality_matches_dataset_json_entry_wise(
+        self,
+        build_generator: Callable[[], BratsSidecarGenerator],
+        embedding_base_dir: Path,
+        dataset_entries: list[dict],
+        sidecar_path: Callable[[Path], Path],
+    ) -> None:
         build_generator().write_sidecars()
 
-        for entry in dataset_entries():
-            latent = sidecar_root / TrainingEntry(**entry).embedding_relative_path()
-            sidecar = json.loads(latent.with_name(latent.name + ".json").read_text())
+        for entry in dataset_entries:
+            latent = embedding_base_dir / TrainingEntry(**entry).embedding_relative_path()
+            sidecar = json.loads(sidecar_path(latent).read_text())
             assert sidecar["modality"] == entry["modality"], entry["image"]
 
-    def test_missing_latent_raises_and_writes_no_sidecars(self, build_generator: Callable[[], BratsSidecarGenerator], sidecar_root: Path) -> None:
-        (sidecar_root / TrainingEntry(**dataset_entries()[0]).embedding_relative_path()).unlink()
+    def test_missing_latent_raises_and_writes_no_sidecars(
+        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_entries: list[dict]
+    ) -> None:
+        (embedding_base_dir / TrainingEntry(**dataset_entries[0]).embedding_relative_path()).unlink()
 
         with pytest.raises(ValueError, match="missing"):
             build_generator().write_sidecars()
 
-        assert not list(sidecar_root.rglob("*.json"))
+        assert not list(embedding_base_dir.rglob("*.json"))
 
     def test_rerun_overwrites_sidecars_to_match_updated_dataset_json(
-        self, build_generator: Callable[[], BratsSidecarGenerator], sidecar_root: Path, dataset_json: Path
+        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_json: Path, sidecar_path: Callable[[Path], Path]
     ) -> None:
         build_generator().write_sidecars()
         payload = json.loads(dataset_json.read_text())
@@ -151,13 +188,13 @@ class TestBratsSidecarGenerator:
         dataset_json.write_text(json.dumps(payload))
         build_generator().write_sidecars()
 
-        latent = sidecar_root / TrainingEntry(**payload["training"][0]).embedding_relative_path()
-        sidecar = json.loads(latent.with_name(latent.name + ".json").read_text())
+        latent = embedding_base_dir / TrainingEntry(**payload["training"][0]).embedding_relative_path()
+        sidecar = json.loads(sidecar_path(latent).read_text())
         assert sidecar["modality"] == "mri_t1ce"
 
 
 class TestCommandLine:
-    def test_end_to_end_generation(self, tmp_path: Path, sidecar_root: Path, dataset_json: Path) -> None:
+    def test_end_to_end_generation(self, embedding_base_dir: Path, dataset_json: Path, dataset_entries: list[dict]) -> None:
         result = subprocess.run(
             [
                 sys.executable,
@@ -166,7 +203,7 @@ class TestCommandLine:
                 "--dataset-json",
                 str(dataset_json),
                 "--embedding-base-dir",
-                str(sidecar_root),
+                str(embedding_base_dir),
             ],
             cwd=REPO_ROOT,
             capture_output=True,
@@ -174,7 +211,7 @@ class TestCommandLine:
         )
 
         assert result.returncode == 0, result.stderr
-        assert f"sidecars={len(FAKE_CASES) * len(SUFFIX_TO_MODALITY)}" in result.stdout
-        sidecars = sorted(sidecar_root.rglob("*.json"))
-        assert len(sidecars) == len(FAKE_CASES) * len(SUFFIX_TO_MODALITY)
+        assert f"sidecars={len(dataset_entries)}" in result.stdout
+        sidecars = sorted(embedding_base_dir.rglob("*.json"))
+        assert len(sidecars) == len(dataset_entries)
         assert all(json.loads(path.read_text())["spacing"] == pytest.approx(list(LATENT_SPACING)) for path in sidecars)

@@ -25,6 +25,11 @@ training code's convention (``scripts/diff_model_train.py``): the image path wit
 ``.nii.gz`` replaced by ``_emb.nii.gz``, plus ``.json``. Rerunning overwrites the
 sidecars, keeping them in lockstep with the dataset.json they were generated from.
 
+Entries are enumerated from the dataset.json rather than by scanning the embedding
+base dir (section 2.3 says "scan"); the two are equivalent because every training
+entry has exactly one latent and validation cases are never encoded (section 2.4) —
+a stray latent outside the dataset.json is not a training sample and gets no sidecar.
+
 Missing latents abort the run before anything is written: the stage-2 contract is that
 the training data is directly consumable afterwards (section 2.5), so a partial latent
 set must not yield a partial set of sidecars.
@@ -105,7 +110,7 @@ def main() -> None:
 
     generator = BratsSidecarGenerator(dataset_json_path=args.dataset_json, embedding_base_dir=args.embedding_base_dir)
     stats = generator.write_sidecars()
-    print(f"entries={len(generator.entries())} sidecars={stats['written']}")
+    print(f"sidecars={stats['written']}")
 
 
 if __name__ == "__main__":
