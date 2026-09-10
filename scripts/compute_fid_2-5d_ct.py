@@ -89,6 +89,14 @@ Function Arguments (main):
     model_name (str):
         Model identifier. Typically "radimagenet_resnet50" or "squeezenet1_1".
 
+    modality (str):
+        Which intensity-domain preprocessing to apply to BOTH datasets:
+        "ct" — fixed HU window (padding -1000, clip [-1000, 1000]); "mr" —
+        dynamic percentile mapping (padding 0, same (0, 99.5) percentile
+        window as the training pipeline, into the generator-side (0, 1000)
+        output domain). MR intensity is scanner/sequence dependent, so no
+        fixed clip is applied.
+
     num_images (int):
         Max number of images to process from each dataset (truncate if more are present).
 
@@ -104,6 +112,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -123,6 +132,32 @@ if not logger.handlers:
     # Configure logger only if it has no handlers (avoid reconfiguring in multi-rank scenarios)
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger.setLevel(logging.INFO)
+
+
+@dataclass(frozen=True)
+class ModalityPreprocessing:
+    """
+    Per-modality intensity-domain constants for the 2.5D FID preprocessing.
+
+    CT has an absolute physical scale (HU), so both datasets share a fixed
+    [-1000, 1000] clip window. MR intensity is scanner/sequence dependent —
+    real volumes can far exceed 1000 — so both datasets are instead mapped
+    with the dynamic percentile window the training pipeline uses
+    (scripts/transforms.py: ScaleIntensityRangePercentilesd(0, 99.5), clip
+    off) into the generator-side (0, 1000) output domain
+    (scripts/utils_infer.py). The same single Compose instance must serve
+    both the real and the synth loader so FID stays comparable.
+    """
+
+    padding_value: float
+    intensity_range: tuple[float, float]
+    percentile_range: tuple[float, float] | None = None
+
+
+MODALITY_PREPROCESSING = {
+    "ct": ModalityPreprocessing(padding_value=-1000, intensity_range=(-1000, 1000)),
+    "mr": ModalityPreprocessing(padding_value=0, intensity_range=(0, 1000), percentile_range=(0.0, 99.5)),
+}
 
 
 def drop_empty_slice(slices, empty_threshold: float):
@@ -378,6 +413,7 @@ def main(
     enable_resampling_spacing: str = None,
     ignore_existing: bool = False,
     model_name: str = "radimagenet_resnet50",
+    modality: str = "ct",
     num_images: int = 100,
     output_root: str = "./features/features-512x512x512",
     target_shape: str = "512x512x512",
@@ -443,6 +479,14 @@ def main(
         model_name (str):
             Model identifier. Typically "radimagenet_resnet50" or "squeezenet1_1".
 
+        modality (str):
+            Which intensity-domain preprocessing to apply to BOTH datasets:
+            "ct" — fixed HU window (padding -1000, clip [-1000, 1000]); "mr" —
+            dynamic percentile mapping (padding 0, same (0, 99.5) percentile
+            window as the training pipeline, into the generator-side (0, 1000)
+            output domain). MR intensity is scanner/sequence dependent, so no
+            fixed clip is applied.
+
         num_images (int):
             Maximum number of images to load from each dataset (truncate if more are present).
 
@@ -474,6 +518,10 @@ def main(
     if not isinstance(ignore_existing, bool):
         ignore_existing = ignore_existing.lower() == "true"
 
+    if modality not in MODALITY_PREPROCESSING:
+        raise ValueError(f"Unsupported modality: {modality!r}. Choose from {sorted(MODALITY_PREPROCESSING)}.")
+    preprocessing = MODALITY_PREPROCESSING[modality]
+
     # Merge logic for center slices
     enable_center_slices = enable_center_slices_ratio is not None
 
@@ -491,6 +539,7 @@ def main(
         logger.info(f"enable_resampling_spacing: {enable_resampling_spacing}")
         logger.info(f"enable_resampling: {enable_resampling}")
         logger.info(f"ignore_existing: {ignore_existing}")
+        logger.info(f"modality: {modality}")
 
     # -------------------------------------------------------------------------
     # Load feature extraction model
@@ -561,13 +610,26 @@ def main(
     if enable_resampling:
         transform_list.append(monai.transforms.Spacingd(keys=["image"], pixdim=rs_spacing_tuple, mode=["bilinear"]))
 
-    if enable_padding:
-        transform_list.append(monai.transforms.SpatialPadd(keys=["image"], spatial_size=target_shape_tuple, mode="constant", value=-1000))
-
     if enable_center_cropping:
         transform_list.append(monai.transforms.CenterSpatialCropd(keys=["image"], roi_size=target_shape_tuple))
 
-    transform_list.append(monai.transforms.ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=1000, b_min=-1000, b_max=1000, clip=True))
+    # Intensity windowing runs BEFORE padding: CT's fixed clip is
+    # order-invariant (padding sits inside the window), but MR's percentile
+    # statistics must be computed on the actual content — padding voxels can
+    # outnumber the content and would dilute the percentiles by a volume-size
+    # dependent share, making real/synth normalization inconsistent.
+    if preprocessing.percentile_range is not None:
+        lower, upper = preprocessing.percentile_range
+        b_min, b_max = preprocessing.intensity_range
+        transform_list.append(
+            monai.transforms.ScaleIntensityRangePercentilesd(keys=["image"], lower=lower, upper=upper, b_min=b_min, b_max=b_max, clip=False)
+        )
+    else:
+        a_min, a_max = preprocessing.intensity_range
+        transform_list.append(monai.transforms.ScaleIntensityRanged(keys=["image"], a_min=a_min, a_max=a_max, b_min=a_min, b_max=a_max, clip=True))
+
+    if enable_padding:
+        transform_list.append(monai.transforms.SpatialPadd(keys=["image"], spatial_size=target_shape_tuple, mode="constant", value=preprocessing.padding_value))
     transforms = Compose(transform_list)
 
     # -------------------------------------------------------------------------
