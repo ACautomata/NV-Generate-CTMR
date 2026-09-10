@@ -302,7 +302,7 @@ def main() -> None:
     policy = CapPolicy(n_per_label=args.n_per_label)
 
     selected = []
-    shortages = {}
+    below_cap = {}  # modality -> (sampled, requested cap) where availability fell short
     for modality in MODALITIES:
         candidates = index.entries(modality)
         cap = policy.cap_for(modality)
@@ -310,7 +310,7 @@ def main() -> None:
         selected.extend(chosen)
         requested = "all" if cap is None else cap
         if cap is not None and len(chosen) < cap:
-            shortages[modality] = cap
+            below_cap[modality] = (len(chosen), cap)
         print(f"{modality}: availability={len(candidates)} requested={requested} sampled={len(chosen)}")
 
     manifest = ReplayManifest(selected)
@@ -318,8 +318,8 @@ def main() -> None:
     counts = ", ".join(f"{label}={count}" for label, count in summary["counts"].items())
     print(f"sampled per modality: {counts}")
     print(f"manifest rows={summary['rows']} (dual derivation doubles this into training entries)")
-    if shortages:
-        print(f"WARNING: availability below cap for {shortages}; top-up after spine filtering can refill")
+    if below_cap:
+        print(f"WARNING: availability below cap for {below_cap}; top-up after spine filtering can refill")
     print(f"wrote {args.output} (seed={args.seed}, n_per_label={args.n_per_label})")
 
 

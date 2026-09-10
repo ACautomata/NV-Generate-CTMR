@@ -14,6 +14,7 @@
 import csv
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -43,43 +44,66 @@ METADATA_COLUMNS = [
 ]
 
 
-def series_row(
-    patient: str,
-    study: str,
-    series_id: str,
-    modality: str,
-    series_number: str,
-    is_derived: str = "False",
-    is_localizer: str = "False",
-    is_subtraction: str = "False",
-) -> dict:
-    return {
-        "patient_uid": patient,
-        "study_uid": study,
-        "series_id": series_id,
-        "classified_modality": modality,
-        "is_derived": is_derived,
-        "acquisition_plane": "AXIAL",
-        "SeriesNumber": series_number,
-        "is_localizer": is_localizer,
-        "is_subtraction": is_subtraction,
-    }
+@pytest.fixture
+def series_row() -> Callable[..., dict]:
+    """Builder for one metadata CSV row (defaults: clean, raw, axial, unflagged series)."""
 
+    def build(
+        patient: str,
+        study: str,
+        series_id: str,
+        modality: str,
+        series_number: str,
+        is_derived: str = "False",
+        is_localizer: str = "False",
+        is_subtraction: str = "False",
+    ) -> dict:
+        return {
+            "patient_uid": patient,
+            "study_uid": study,
+            "series_id": series_id,
+            "classified_modality": modality,
+            "is_derived": is_derived,
+            "acquisition_plane": "AXIAL",
+            "SeriesNumber": series_number,
+            "is_localizer": is_localizer,
+            "is_subtraction": is_subtraction,
+        }
 
-def splits_row(patient: str, study: str, split: str, batch: str = "batch00") -> dict:
-    return {"batch_id": batch, "patient_uid": patient, "study_uid": study, "split": split}
-
-
-def write_csv(path: Path, columns: list, rows: list) -> Path:
-    with path.open("w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(rows)
-    return path
+    return build
 
 
 @pytest.fixture
-def metadata_dir(tmp_path: Path) -> Path:
+def splits_row() -> Callable[..., dict]:
+    """Builder for one splits.csv row."""
+
+    def build(patient: str, study: str, split: str, batch: str = "batch00") -> dict:
+        return {"batch_id": batch, "patient_uid": patient, "study_uid": study, "split": split}
+
+    return build
+
+
+@pytest.fixture
+def write_csv() -> Callable[[Path, list, list], Path]:
+    """Builder writing one CSV file from columns + rows."""
+
+    def build(path: Path, columns: list, rows: list) -> Path:
+        with path.open("w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    return build
+
+
+@pytest.fixture
+def metadata_dir(
+    tmp_path: Path,
+    series_row: Callable[..., dict],
+    splits_row: Callable[..., dict],
+    write_csv: Callable[[Path, list, list], Path],
+) -> Path:
     """Fixture metadata: multi-series subjects, flag-excluded rows, non-train patients, two batches."""
     write_csv(
         tmp_path / "splits.csv",
@@ -158,7 +182,13 @@ class TestMrRateCatalog:
         assert series[("2", "t2w-raw-axi")].batch == "batch01"
         assert series[("1", "flair-raw-sag")].modality == "flair"
 
-    def test_duplicate_study_series_raises(self, tmp_path: Path) -> None:
+    def test_duplicate_study_series_raises(
+        self,
+        tmp_path: Path,
+        series_row: Callable[..., dict],
+        splits_row: Callable[..., dict],
+        write_csv: Callable[[Path, list, list], Path],
+    ) -> None:
         splits = write_csv(
             tmp_path / "splits.csv",
             ["batch_id", "patient_uid", "study_uid", "split"],
@@ -170,7 +200,12 @@ class TestMrRateCatalog:
         with pytest.raises(ValueError, match="duplicate"):
             MrRateCatalog(splits_csv=splits, metadata_paths=[first, second]).train_brain_series()
 
-    def test_empty_metadata_paths_raise(self, tmp_path: Path) -> None:
+    def test_empty_metadata_paths_raise(
+        self,
+        tmp_path: Path,
+        splits_row: Callable[..., dict],
+        write_csv: Callable[[Path, list, list], Path],
+    ) -> None:
         splits = write_csv(
             tmp_path / "splits.csv",
             ["batch_id", "patient_uid", "study_uid", "split"],
@@ -179,7 +214,13 @@ class TestMrRateCatalog:
         with pytest.raises(FileNotFoundError, match="no metadata CSVs"):
             MrRateCatalog(splits_csv=splits, metadata_paths=[])
 
-    def test_unexpected_boolean_encoding_raises(self, tmp_path: Path) -> None:
+    def test_unexpected_boolean_encoding_raises(
+        self,
+        tmp_path: Path,
+        series_row: Callable[..., dict],
+        splits_row: Callable[..., dict],
+        write_csv: Callable[[Path, list, list], Path],
+    ) -> None:
         """A future pull writing 'true'/'1' must fail loudly instead of silently keeping flagged rows."""
         splits = write_csv(
             tmp_path / "splits.csv",

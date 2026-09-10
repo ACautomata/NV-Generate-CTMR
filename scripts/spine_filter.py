@@ -70,7 +70,7 @@ Programmatic use::
 
 import argparse
 import json
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import nibabel as nib
@@ -149,15 +149,8 @@ def main() -> None:
     verdict = {
         "image": str(args.image),
         "mask": str(args.mask),
-        "is_brain": result.is_brain,
-        "mask_voxel_ratio": result.mask_voxel_ratio,
-        "fov_mm": list(result.fov_mm),
-        "reasons": list(result.reasons),
-        "thresholds": {
-            "mask_ratio_min": thresholds.mask_ratio_min,
-            "mask_ratio_max": thresholds.mask_ratio_max,
-            "fov_max_mm": thresholds.fov_max_mm,
-        },
+        **asdict(result),
+        "thresholds": asdict(thresholds),
     }
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
