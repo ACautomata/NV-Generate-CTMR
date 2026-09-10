@@ -159,11 +159,10 @@ class MrRateCatalog:
 
     @staticmethod
     def _column_index(header: list[str], path: Path) -> dict[str, int]:
-        index = {name: header.index(name) for name in SERIES_COLUMNS}
-        missing = sorted(name for name in SERIES_COLUMNS if name not in index)
+        missing = sorted(name for name in SERIES_COLUMNS if name not in header)
         if missing:
             raise ValueError(f"{path}: metadata is missing columns {missing}")
-        return index
+        return {name: header.index(name) for name in SERIES_COLUMNS}
 
     def _to_series(self, record: dict[str, str], path: Path) -> MrRateSeries | None:
         if record["patient_uid"] not in self._train_patients:
@@ -201,10 +200,6 @@ class ModalitySubjectIndex:
     def entries(self, modality: str) -> list[MrRateSeries]:
         """Candidate series of one modality, one per subject, sorted by ``patient_uid``."""
         return list(self._entries[modality])
-
-    def availability(self) -> dict[str, int]:
-        """Candidate subject count per modality (pre-spine-filter)."""
-        return {modality: len(entries) for modality, entries in self._entries.items()}
 
     @staticmethod
     def _reduce_to_subjects(series: list[MrRateSeries]) -> dict[str, list[MrRateSeries]]:

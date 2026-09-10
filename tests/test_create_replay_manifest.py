@@ -236,6 +236,27 @@ class TestMrRateCatalog:
         with pytest.raises(ValueError, match="unexpected is_derived"):
             catalog.train_brain_series()
 
+    def test_missing_required_columns_raise(
+        self,
+        tmp_path: Path,
+        series_row: Callable[..., dict],
+        splits_row: Callable[..., dict],
+        write_csv: Callable[[Path, list, list], Path],
+    ) -> None:
+        """A metadata CSV lacking a required column fails with the columns listed, not a bare lookup error."""
+        splits = write_csv(
+            tmp_path / "splits.csv",
+            ["batch_id", "patient_uid", "study_uid", "split"],
+            [splits_row("1", "AAA111AAA", "train")],
+        )
+        columns = [name for name in METADATA_COLUMNS if name != "SeriesNumber"]
+        row = series_row("1", "AAA111AAA", "t1w-raw-axi", "T1w", "1.0")
+        row.pop("SeriesNumber")
+        metadata = write_csv(tmp_path / "batch00_metadata.csv", columns, [row])
+        catalog = MrRateCatalog(splits_csv=splits, metadata_paths=[metadata])
+        with pytest.raises(ValueError, match="missing columns"):
+            catalog.train_brain_series()
+
 
 class TestModalitySubjectIndex:
     def test_min_series_number_wins_per_subject_and_modality(self, catalog: MrRateCatalog) -> None:

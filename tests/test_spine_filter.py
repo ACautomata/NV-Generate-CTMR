@@ -14,6 +14,7 @@
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import nibabel as nib
@@ -26,10 +27,10 @@ VOXEL_MM = 1.0
 
 
 @pytest.fixture
-def volume_factory(tmp_path: Path):
+def volume_factory(tmp_path: Path) -> Callable[..., tuple[Path, Path]]:
     """Factory building image/mask NIfTI pairs on a shared grid; mask_ratio and fov drive the verdict."""
 
-    def build(name: str, shape: tuple, zooms: tuple, mask_ratio: float) -> tuple:
+    def build(name: str, shape: tuple[int, ...], zooms: tuple[float, ...], mask_ratio: float) -> tuple[Path, Path]:
         image = np.zeros(shape, dtype=np.float32)
         mask = np.zeros(shape, dtype=np.uint8)
         if mask_ratio > 0:
