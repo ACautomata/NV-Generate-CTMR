@@ -18,8 +18,10 @@ replay download/encoding ticket and the dataset.json merge generator both consum
 
 Selection rules (spec #13 section 3.3, decisions D1/D3 of issue #7):
 
-- **Train split only**: candidates are metadata rows whose ``patient_uid`` is a
-  ``train`` patient in ``splits.csv``; the manifest ``split`` column records ``Train``.
+- **One split at a time**: candidates are metadata rows whose ``patient_uid`` belongs to
+  the requested split in ``splits.csv`` (default ``train``; the forgetting reference set
+  of spec section 5.1 is the same sampling applied to ``val``).  The manifest ``split``
+  column records the capitalized split name (``Train``).
 - **Subject-level sampling**: one series per (subject, modality) -- when a subject has
   several series of a modality, the one with the smallest ``SeriesNumber`` wins (the
   official pre-contrast heuristic).  Sampling by subject avoids the bias towards
@@ -29,6 +31,8 @@ Selection rules (spec #13 section 3.3, decisions D1/D3 of issue #7):
   subjects each; T2w samples ``min(N, 669)`` (669 = v1's usable brain-T2w source-volume
   count, ``data/README.md`` section 3.4); MRA takes every available subject (141 in the
   current Train split -- the spec's "all 157" predates the split-restricted count).
+  The forgetting reference set (section 5.1) wants 50 volumes per old label, so it runs
+  the same ladder with ``--modalities t1w t2w flair swi mra --n-per-label 50`` on ``val``.
 - **Data-quality exclusion**: rows flagged ``is_derived`` / ``is_localizer`` /
   ``is_subtraction`` are never candidates (scouts, post-processed and subtraction
   volumes are unusable for replay).  Availability counts quoted anywhere are
@@ -57,6 +61,13 @@ Usage::
         --n-per-label 300 \
         --output data/MR-RATE/manifests/replay_manifest_N300.csv
 
+    # forgetting gen-real reference set (section 5.1): same ladder, val split, 50 per label
+    python -m scripts.create_replay_manifest \
+        --splits-csv data/MR-RATE/splits.csv \
+        --metadata-dir data/MR-RATE/metadata \
+        --split val --n-per-label 50 \
+        --output data/MR-RATE/manifests/reference_manifest_val.csv
+
 Spine filtering is deliberately NOT applied here (the metadata carries no body-part
 label); it happens after download via ``scripts.spine_filter``, followed by a top-up
 re-run of this script.
@@ -69,9 +80,11 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
+from .mrrate_series import MrRateVariant
+
 METADATA_GLOB = "batch*_metadata.csv"
 TRAIN_SPLIT = "train"
-MANIFEST_SPLIT_VALUE = "Train"
+SPLIT_VALUES = {"train": "Train", "val": "Val", "test": "Test"}
 MODALITIES = ("t1w", "t2w", "flair", "swi", "mra")
 MODALITY_TO_LABEL = {"t1w": "mri_t1", "t2w": "mri_t2", "flair": "mri_flair", "swi": "mri_swi", "mra": "mri_mra"}
 EXCLUDED_FLAGS = ("is_derived", "is_localizer", "is_subtraction")
@@ -102,33 +115,39 @@ class MrRateSeries:
     @property
     def image_path(self) -> str:
         """Path relative to the MR-RATE data root, official unzip layout (zip root == study dir)."""
-        return f"mri/{self.batch}/{self.study_uid}/img/{self.study_uid}_{self.series_id}.nii.gz"
+        return MrRateVariant.for_series(self.batch, self.study_uid, self.series_id).whole_brain_path
 
     @property
     def mask_path(self) -> str:
         """HD-BET brain mask path, same voxel grid as the image."""
-        return f"mri/{self.batch}/{self.study_uid}/seg/{self.study_uid}_{self.series_id}_brain-mask.nii.gz"
+        return MrRateVariant.for_series(self.batch, self.study_uid, self.series_id).mask_path
 
 
 class MrRateCatalog:
     """Repository over ``splits.csv`` and the 28 batch metadata CSVs.
 
-    Loads and validates the raw rows; answers with the series that qualify as replay
-    candidates (Train-split patients, brain modalities, data-quality flags excluded).
+    Loads and validates the raw rows; answers with the series that qualify as candidates
+    (patients of the requested split, brain modalities, data-quality flags excluded).
+    The forgetting reference set is the same repository with ``split="val"``.
     """
 
-    def __init__(self, splits_csv: Path, metadata_paths: list[Path]) -> None:
-        self.splits_csv = splits_csv
-        self.metadata_paths = metadata_paths
+    def __init__(self, splits_csv: Path, metadata_paths: list[Path], split: str = TRAIN_SPLIT) -> None:
         if not metadata_paths:
             raise FileNotFoundError(f"no metadata CSVs provided (expected files like {METADATA_GLOB})")
-        self._train_patients = self._load_train_patients()
+        self._metadata_paths = metadata_paths
+        self._split = split
+        self._patients = self._load_split_patients(splits_csv, split)
 
-    def train_brain_series(self) -> list[MrRateSeries]:
+    @property
+    def split(self) -> str:
+        """The lowercase split this catalog answers for (``train`` / ``val`` / ``test``)."""
+        return self._split
+
+    def brain_series(self) -> list[MrRateSeries]:
         """All qualifying series rows across every batch, in stable load order."""
         series: list[MrRateSeries] = []
         seen: set[tuple[str, str]] = set()
-        for path in self.metadata_paths:
+        for path in self._metadata_paths:
             for row in self._read_series_rows(path):
                 key = (row.study_uid, row.series_id)
                 if key in seen:
@@ -137,11 +156,12 @@ class MrRateCatalog:
                 series.append(row)
         return series
 
-    def _load_train_patients(self) -> frozenset[str]:
-        with self.splits_csv.open(newline="") as file:
-            patients = {row["patient_uid"] for row in csv.DictReader(file) if row["split"] == TRAIN_SPLIT}
+    @staticmethod
+    def _load_split_patients(splits_csv: Path, split: str) -> frozenset[str]:
+        with splits_csv.open(newline="") as file:
+            patients = {row["patient_uid"] for row in csv.DictReader(file) if row["split"] == split}
         if not patients:
-            raise ValueError(f"no '{TRAIN_SPLIT}' patients found in {self.splits_csv}")
+            raise ValueError(f"no '{split}' patients found in {splits_csv}")
         return frozenset(patients)
 
     def _read_series_rows(self, path: Path) -> list[MrRateSeries]:
@@ -165,7 +185,7 @@ class MrRateCatalog:
         return {name: header.index(name) for name in SERIES_COLUMNS}
 
     def _to_series(self, record: dict[str, str], path: Path) -> MrRateSeries | None:
-        if record["patient_uid"] not in self._train_patients:
+        if record["patient_uid"] not in self._patients:
             return None
         raw_modality = record["classified_modality"]
         modality = raw_modality.lower()
@@ -254,8 +274,9 @@ class StratifiedSubjectSampler:
 class ReplayManifest:
     """Assembles the selected series into the manifest CSV (spec section 3.4 columns)."""
 
-    def __init__(self, selected: list[MrRateSeries]) -> None:
+    def __init__(self, selected: list[MrRateSeries], split_value: str = SPLIT_VALUES[TRAIN_SPLIT]) -> None:
         self._selected = sorted(selected, key=lambda item: (MODALITIES.index(item.modality), item.patient_uid, item.study_uid, item.series_id))
+        self._split_value = split_value
 
     def save(self, output_path: Path) -> dict:
         """Write the manifest CSV; return a summary dict with "rows" and per-label "counts"."""
@@ -264,7 +285,7 @@ class ReplayManifest:
             writer = csv.writer(file)
             writer.writerow(MANIFEST_COLUMNS)
             for item in self._selected:
-                writer.writerow([item.patient_uid, item.study_uid, item.series_id, item.modality, item.label, MANIFEST_SPLIT_VALUE, item.image_path])
+                writer.writerow([item.patient_uid, item.study_uid, item.series_id, item.modality, item.label, self._split_value, item.image_path])
         return {"rows": len(self._selected), "counts": self._counts()}
 
     def _counts(self) -> dict[str, int]:
@@ -284,38 +305,60 @@ def main() -> None:
         required=True,
         help="N: head labels sample N subjects each, T2w min(N, 669), MRA all available",
     )
-    parser.add_argument("--output", type=Path, required=True, help="path of the replay manifest CSV to write")
+    parser.add_argument("--output", type=Path, required=True, help="path of the manifest CSV to write")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed (fixed => reproducible manifest)")
+    parser.add_argument("--split", choices=sorted(SPLIT_VALUES), default=TRAIN_SPLIT, help="patient split to sample from")
+    parser.add_argument(
+        "--modalities",
+        nargs="+",
+        choices=MODALITIES,
+        default=list(MODALITIES),
+        help="modalities to sample (default: all five; the reference set uses the same five on val)",
+    )
     args = parser.parse_args()
 
     catalog = MrRateCatalog(
         splits_csv=args.splits_csv,
         metadata_paths=sorted(args.metadata_dir.glob(METADATA_GLOB)),
+        split=args.split,
     )
-    index = ModalitySubjectIndex(catalog.train_brain_series())
+    index = ModalitySubjectIndex(catalog.brain_series())
     sampler = StratifiedSubjectSampler(seed=args.seed)
     policy = CapPolicy(n_per_label=args.n_per_label)
 
     selected = []
-    below_cap = {}  # modality -> (sampled, requested cap) where availability fell short
-    for modality in MODALITIES:
+    below_cap = {}  # modality -> (sampled, requested cap) where a capped draw fell short
+    whole_pool = {}  # modality -> (pool size, requested N) for uncapped draws below N
+    for modality in args.modalities:
         candidates = index.entries(modality)
         cap = policy.cap_for(modality)
         chosen = sampler.select(modality, candidates, cap=cap)
         selected.extend(chosen)
-        requested = "all" if cap is None else cap
-        if cap is not None and len(chosen) < cap:
-            below_cap[modality] = (len(chosen), cap)
+        if cap is None:
+            requested = "all"
+            if len(chosen) < args.n_per_label:
+                whole_pool[modality] = (len(chosen), args.n_per_label)
+        else:
+            requested = cap
+            if len(chosen) < cap:
+                below_cap[modality] = (len(chosen), cap)
         print(f"{modality}: availability={len(candidates)} requested={requested} sampled={len(chosen)}")
 
-    manifest = ReplayManifest(selected)
+    manifest = ReplayManifest(selected, split_value=SPLIT_VALUES[catalog.split])
     summary = manifest.save(args.output)
     counts = ", ".join(f"{label}={count}" for label, count in summary["counts"].items())
     print(f"sampled per modality: {counts}")
     print(f"manifest rows={summary['rows']} (dual derivation doubles this into training entries)")
     if below_cap:
         print(f"WARNING: availability below cap for {below_cap}; top-up after spine filtering can refill")
-    print(f"wrote {args.output} (seed={args.seed}, n_per_label={args.n_per_label})")
+    if whole_pool:
+        # An uncapped modality takes everything there is, so this is the candidate pool talking,
+        # not a sampling decision -- e.g. MRA has 141 Train subjects where the replay layers
+        # wanted "all" anyway, but only 2 subjects in the val split that the reference set
+        # wanted 50 of.  Stated plainly so a per-label target is never quietly missed.
+        for modality, (available, wanted) in whole_pool.items():
+            print(f"NOTE: {modality} has no cap and only {available} subjects exist, below the requested {wanted} per label")
+    print(f"wrote {args.output} (split={catalog.split}, seed={args.seed}, n_per_label={args.n_per_label})")
 
 
 if __name__ == "__main__":

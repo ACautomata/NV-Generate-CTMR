@@ -181,7 +181,7 @@ def catalog(metadata_dir: Path) -> MrRateCatalog:
 
 class TestMrRateCatalog:
     def test_train_brain_series_excludes_non_train_and_flagged_rows(self, catalog: MrRateCatalog) -> None:
-        series = catalog.train_brain_series()
+        series = catalog.brain_series()
         keys = {(item.patient_uid, item.series_id) for item in series}
         assert ("4", "t1w-raw-axi") not in keys  # val patient
         assert ("5", "t1w-raw-axi") not in keys  # test patient
@@ -191,7 +191,7 @@ class TestMrRateCatalog:
         assert ("1", "t1w-raw-axi") in keys
 
     def test_batch_and_modality_are_carried_through(self, catalog: MrRateCatalog) -> None:
-        series = {(item.patient_uid, item.series_id): item for item in catalog.train_brain_series()}
+        series = {(item.patient_uid, item.series_id): item for item in catalog.brain_series()}
         assert series[("1", "t1w-raw-axi")].batch == "batch00"
         assert series[("2", "t2w-raw-axi")].batch == "batch01"
         assert series[("1", "flair-raw-sag")].modality == "flair"
@@ -207,7 +207,7 @@ class TestMrRateCatalog:
         first = write_csv(tmp_path / "batch00_metadata.csv", METADATA_COLUMNS, rows)
         second = write_csv(tmp_path / "batch01_metadata.csv", METADATA_COLUMNS, rows)
         with pytest.raises(ValueError, match="duplicate"):
-            MrRateCatalog(splits_csv=single_train_splits, metadata_paths=[first, second]).train_brain_series()
+            MrRateCatalog(splits_csv=single_train_splits, metadata_paths=[first, second]).brain_series()
 
     def test_empty_metadata_paths_raise(self, single_train_splits: Path) -> None:
         with pytest.raises(FileNotFoundError, match="no metadata CSVs"):
@@ -228,7 +228,7 @@ class TestMrRateCatalog:
         )
         catalog = MrRateCatalog(splits_csv=single_train_splits, metadata_paths=[metadata])
         with pytest.raises(ValueError, match="unexpected is_derived"):
-            catalog.train_brain_series()
+            catalog.brain_series()
 
     def test_missing_required_columns_raise(
         self,
@@ -244,25 +244,25 @@ class TestMrRateCatalog:
         metadata = write_csv(tmp_path / "batch00_metadata.csv", columns, [row])
         catalog = MrRateCatalog(splits_csv=single_train_splits, metadata_paths=[metadata])
         with pytest.raises(ValueError, match="missing columns"):
-            catalog.train_brain_series()
+            catalog.brain_series()
 
 
 class TestModalitySubjectIndex:
     def test_min_series_number_wins_per_subject_and_modality(self, catalog: MrRateCatalog) -> None:
-        index = ModalitySubjectIndex(catalog.train_brain_series())
+        index = ModalitySubjectIndex(catalog.brain_series())
         t1w = {entry.patient_uid: entry for entry in index.entries("t1w")}
         assert set(t1w) == {"1", "3"} | {str(number) for number in range(6, 16)}
         assert t1w["1"].series_id == "t1w-raw-axi"  # SeriesNumber 3.0 beats 5.0 and 7.0
         assert t1w["3"].series_id == "t1w-raw-axi"
 
     def test_subjects_across_batches_are_indexed(self, catalog: MrRateCatalog) -> None:
-        index = ModalitySubjectIndex(catalog.train_brain_series())
+        index = ModalitySubjectIndex(catalog.brain_series())
         t2w = {entry.patient_uid: entry for entry in index.entries("t2w")}
         assert t2w["2"].series_id == "t2w-raw-axi"  # 2.0 beats 9.0; study lives in batch01
         assert t2w["2"].batch == "batch01"
 
     def test_entries_are_sorted_by_patient_uid(self, catalog: MrRateCatalog) -> None:
-        index = ModalitySubjectIndex(catalog.train_brain_series())
+        index = ModalitySubjectIndex(catalog.brain_series())
         for modality in MODALITIES:
             patients = [entry.patient_uid for entry in index.entries(modality)]
             assert patients == sorted(patients)
@@ -270,7 +270,7 @@ class TestModalitySubjectIndex:
 
 class TestStratifiedSubjectSampler:
     def test_same_seed_selects_the_same_subjects(self, catalog: MrRateCatalog) -> None:
-        index = ModalitySubjectIndex(catalog.train_brain_series())
+        index = ModalitySubjectIndex(catalog.brain_series())
         t1w = index.entries("t1w")
         first = StratifiedSubjectSampler(seed=42).select("t1w", t1w, cap=6)
         second = StratifiedSubjectSampler(seed=42).select("t1w", t1w, cap=6)
@@ -278,14 +278,14 @@ class TestStratifiedSubjectSampler:
 
     def test_the_seed_actually_feeds_the_draw(self, catalog: MrRateCatalog) -> None:
         """Across many seeds a capped draw from 12 candidates cannot always return the same set."""
-        index = ModalitySubjectIndex(catalog.train_brain_series())
+        index = ModalitySubjectIndex(catalog.brain_series())
         t1w = index.entries("t1w")
         selections = {tuple(entry.patient_uid for entry in StratifiedSubjectSampler(seed=seed).select("t1w", t1w, cap=6)) for seed in range(20)}
         assert len(selections) >= 2
 
     def test_capped_selection_is_the_prefix_of_the_full_ordering(self, catalog: MrRateCatalog) -> None:
         """Top-up contract (ticket 6): continue down the same ordering when refilling shortages."""
-        index = ModalitySubjectIndex(catalog.train_brain_series())
+        index = ModalitySubjectIndex(catalog.brain_series())
         t1w = index.entries("t1w")
         sampler = StratifiedSubjectSampler(seed=7)
         full = sampler.select("t1w", t1w, cap=None)
@@ -293,7 +293,7 @@ class TestStratifiedSubjectSampler:
             assert sampler.select("t1w", t1w, cap=cap) == full[:cap]
 
     def test_cap_none_takes_all(self, catalog: MrRateCatalog) -> None:
-        index = ModalitySubjectIndex(catalog.train_brain_series())
+        index = ModalitySubjectIndex(catalog.brain_series())
         mra = StratifiedSubjectSampler(seed=42).select("mra", index.entries("mra"), cap=None)
         assert [entry.patient_uid for entry in mra] == ["1"]
 
@@ -330,7 +330,7 @@ class TestReplayManifest:
         assert MANIFEST_COLUMNS == ("patient_uid", "study_uid", "series_id", "modality", "label", "split", "image_path")
 
     def test_save_writes_rows_and_reports_counts(self, tmp_path: Path, catalog: MrRateCatalog) -> None:
-        index = ModalitySubjectIndex(catalog.train_brain_series())
+        index = ModalitySubjectIndex(catalog.brain_series())
         sampler = StratifiedSubjectSampler(seed=42)
         policy = CapPolicy(n_per_label=1)
         selected = []
