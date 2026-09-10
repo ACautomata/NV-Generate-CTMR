@@ -479,6 +479,45 @@ class TestOffGridPair:
         assert not (downloader._download_dir / "mri/batch00/OFFGRID/seg/OFFGRID_t1w-raw-axi_brain-mask.nii.gz").exists()
 
 
+class TestUnreadableVolume:
+    """A member nibabel cannot parse reaches the same reject path as an off-grid pair."""
+
+    def test_a_corrupt_member_is_recorded_as_a_reject_rather_than_escaping(self, tmp_path: Path) -> None:
+        """Letting it out would end the run; leaving it unrecorded would retry the series forever."""
+        image = tmp_path / "CORRUPT_t1w-raw-axi.nii.gz"
+        image.write_bytes(b"\x1f\x8b" + bytes(range(40)) * 3)
+        mask = tmp_path / "CORRUPT_t1w-raw-axi_brain-mask.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros(BRAIN_SHAPE, dtype=np.uint8), AFFINE), mask)
+
+        archive = tmp_path / "store" / "CORRUPT.zip"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.write(image, "CORRUPT/img/CORRUPT_t1w-raw-axi.nii.gz")
+            zipped.write(mask, "CORRUPT/seg/CORRUPT_t1w-raw-axi_brain-mask.nii.gz")
+
+        manifest = tmp_path / "corrupt_manifest.csv"
+        with manifest.open("w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(MANIFEST_COLUMNS)
+            writer.writerow(["1", "CORRUPT", "t1w-raw-axi", "t1w", "mri_t1", "Train", "mri/batch00/CORRUPT/img/CORRUPT_t1w-raw-axi.nii.gz"])
+
+        log = VerdictLog(tmp_path / "corrupt_verdicts.csv")
+        downloader = ReplayDownloader(
+            manifest_path=manifest,
+            download_dir=tmp_path / "data",
+            source=RecordingZipSource({"mri/batch00/CORRUPT.zip": archive}, tmp_path / "downloads"),
+            verdict_log=log,
+        )
+
+        summary = downloader.run(accepted_csv=tmp_path / "accepted.csv", rejected_csv=tmp_path / "rejected.csv")
+
+        assert summary["failed"] == 0
+        assert summary["rejected"] == 1
+        row = log.read_rows()[0]
+        assert row["verdict"] == "reject"
+        assert "could not be read" in row["reasons"]
+
+
 class TestThresholdOverridesReachTheFilter:
     def test_tightening_the_floor_rejects_every_brain_like_series(self, manifest_path: Path, tmp_path: Path, replay_data: dict[str, Path]) -> None:
         """The verdicts are the filter's own, so a threshold override must change them."""
