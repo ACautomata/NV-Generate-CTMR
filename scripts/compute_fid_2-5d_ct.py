@@ -52,8 +52,9 @@ Function Arguments (main):
         Text file listing 3D images for the real dataset.
 
     real_features_dir (str):
-        Subdirectory (under `output_root`) in which to store feature files
-        extracted from the real dataset.
+        Subdirectory (under `output_root/<modality>/`) in which to store
+        feature files extracted from the real dataset. The modality segment
+        keeps the cache safe to reuse across runs with different --modality.
 
     synth_dataset_root (str):
         Root folder for the synthetic dataset.
@@ -62,8 +63,10 @@ Function Arguments (main):
         Text file listing 3D images for the synthetic dataset.
 
     synth_features_dir (str):
-        Subdirectory (under `output_root`) in which to store feature files
-        extracted from the synthetic dataset.
+        Subdirectory (under `output_root/<modality>/`) in which to store
+        feature files extracted from the synthetic dataset. The modality
+        segment keeps the cache safe to reuse across runs with different
+        --modality.
 
     enable_center_slices_ratio (float or None):
         - If not None, only slices around the specified center ratio will be used
@@ -151,12 +154,23 @@ class ModalityPreprocessing:
     stays comparable.
     """
 
+    name: str
     padding_value: float
     # Destination intensity domain of the windowing step. For CT it doubles
     # as the fixed clip window (input window == output domain, a_min/b_min
     # and a_max/b_max identical).
     output_range: tuple[float, float]
     percentile_range: tuple[float, float] | None = None
+
+    def feature_cache_dir(self, output_root: str, features_dir: str) -> str:
+        """
+        Directory under ``output_root`` where this modality's .pt feature
+        cache lives. Namespacing by modality keeps the default
+        ``ignore_existing=False`` reuse safe: a run must never serve .pt
+        features that were extracted from volumes preprocessed for a
+        different modality's intensity domain.
+        """
+        return os.path.join(output_root, self.name, features_dir)
 
     def compose(
         self,
@@ -195,7 +209,9 @@ class ModalityPreprocessing:
             )
         else:
             a_min, a_max = self.output_range
-            transform_list.append(monai.transforms.ScaleIntensityRanged(keys=["image"], a_min=a_min, a_max=a_max, b_min=a_min, b_max=a_max, clip=True))
+            transform_list.append(
+                monai.transforms.ScaleIntensityRanged(keys=["image"], a_min=a_min, a_max=a_max, b_min=a_min, b_max=a_max, clip=True)
+            )
 
         if pad:
             transform_list.append(monai.transforms.SpatialPadd(keys=["image"], spatial_size=target_shape, mode="constant", value=self.padding_value))
@@ -203,8 +219,8 @@ class ModalityPreprocessing:
 
 
 MODALITY_PREPROCESSING = {
-    "ct": ModalityPreprocessing(padding_value=-1000, output_range=(-1000, 1000)),
-    "mr": ModalityPreprocessing(padding_value=0, output_range=(0, 1000), percentile_range=(0.0, 99.5)),
+    "ct": ModalityPreprocessing(name="ct", padding_value=-1000, output_range=(-1000, 1000)),
+    "mr": ModalityPreprocessing(name="mr", padding_value=0, output_range=(0, 1000), percentile_range=(0.0, 99.5)),
 }
 
 
@@ -487,7 +503,7 @@ def main(
                 ...
             These entries will be appended to `real_dataset_root`.
         real_features_dir (str):
-            Name of the directory under `output_root` in which to store
+            Name of the directory under `output_root/<modality>/` in which to store
             extracted features for the real dataset.
 
         synth_dataset_root (str):
@@ -501,7 +517,7 @@ def main(
                 ...
             These entries will be appended to `synth_dataset_root`.
         synth_features_dir (str):
-            Name of the directory under `output_root` in which to store
+            Name of the directory under `output_root/<modality>/` in which to store
             extracted features for the synthetic dataset.
 
         enable_center_slices_ratio (float or None):
@@ -625,7 +641,7 @@ def main(
     # -------------------------------------------------------------------------
     # Prepare Real Dataset
     # -------------------------------------------------------------------------
-    output_root_real = os.path.join(output_root, real_features_dir)
+    output_root_real = preprocessing.feature_cache_dir(output_root, real_features_dir)
     with open(real_filelist) as rf:
         real_lines = [line.strip() for line in rf.readlines()]
     real_lines.sort()
@@ -637,7 +653,7 @@ def main(
     # -------------------------------------------------------------------------
     # Prepare Synthetic Dataset
     # -------------------------------------------------------------------------
-    output_root_synth = os.path.join(output_root, synth_features_dir)
+    output_root_synth = preprocessing.feature_cache_dir(output_root, synth_features_dir)
     with open(synth_filelist) as sf:
         synth_lines = [line.strip() for line in sf.readlines()]
     synth_lines.sort()

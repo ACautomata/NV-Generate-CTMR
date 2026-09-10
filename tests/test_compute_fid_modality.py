@@ -24,6 +24,7 @@ keeps FID comparable.
 """
 
 import importlib
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -31,7 +32,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 import torch
-from monai.transforms import Compose, ScaleIntensityRanged, ScaleIntensityRangePercentilesd, SpatialPadd
+from monai.transforms import ScaleIntensityRanged, ScaleIntensityRangePercentilesd, SpatialPadd
 
 # Module name carries a hyphen, so import it programmatically.
 compute_fid = importlib.import_module("scripts.compute_fid_2-5d_ct")
@@ -113,9 +114,7 @@ class TestModalityIntensityBehavior:
         assert out[0, 0, 1, 0] == 1000  # over-range clipped to HU max
         assert out[0, 0, 1, 1] == -1000  # below-range clipped to HU min
 
-    def test_mr_maps_percentile_window_without_clipping_high_intensities(
-        self, modality_preprocessing: dict[str, ModalityPreprocessing]
-    ) -> None:
+    def test_mr_maps_percentile_window_without_clipping_high_intensities(self, modality_preprocessing: dict[str, ModalityPreprocessing]) -> None:
         """Real MR volumes can far exceed 1000 — the mapping must keep the dynamic tail."""
         mr = modality_preprocessing["mr"]
         lower, upper = mr.percentile_range
@@ -136,6 +135,32 @@ class TestModalityIntensityBehavior:
         assert out[0, 5, 5, 5] == 1000  # the 99.5th percentile maps to b_max
         assert out[0, 0, 0, 1] == 4000  # above-window intensity is preserved, not clipped
         assert out.max() == 4000
+
+
+class TestFeatureCacheNamespacing:
+    """Regression (PR #33 review, codex P1): the .pt feature cache is reused across
+    runs by default (``ignore_existing=False``), so its directory must be namespaced
+    by modality. Otherwise re-running with a different ``--modality`` on the same
+    ``--output_root`` silently serves features preprocessed for the other
+    modality's intensity domain and produces wrong FID values.
+    """
+
+    def test_cache_dir_layout_includes_modality_segment(self, modality_preprocessing: dict[str, ModalityPreprocessing]) -> None:
+        assert modality_preprocessing["ct"].feature_cache_dir("/out", "datasetA") == os.path.join("/out", "ct", "datasetA")
+        assert modality_preprocessing["mr"].feature_cache_dir("/out", "datasetA") == os.path.join("/out", "mr", "datasetA")
+
+    def test_mr_run_does_not_hit_ct_cache_in_reused_output_root(
+        self, modality_preprocessing: dict[str, ModalityPreprocessing], tmp_path: Path
+    ) -> None:
+        # Run 1 (--modality ct): real features cached under the shared output root.
+        ct_dir = Path(modality_preprocessing["ct"].feature_cache_dir(str(tmp_path), "features_real"))
+        ct_dir.mkdir(parents=True)
+        (ct_dir / "case_001.pt").touch()
+
+        # Run 2 (--modality mr, same --output_root, default ignore_existing=False):
+        # the stale CT cache must be invisible to the MR run.
+        mr_dir = Path(modality_preprocessing["mr"].feature_cache_dir(str(tmp_path), "features_real"))
+        assert not (mr_dir / "case_001.pt").exists()
 
 
 class TestComposeChainOrdering:
