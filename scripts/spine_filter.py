@@ -53,10 +53,14 @@ constructor/CLI parameter, and the defaults live in one place:
   floor is therefore doing its job by construction rather than by lucky calibration: a
   spine FOV has almost no brain tissue for HD-BET to find, so its ratio collapses toward
   zero rather than edging under the threshold.
-  Consequence for the top-up loop: **the replay sweep has rejected 0 series so far**, so
-  the refill path is implemented and tested but has not yet had to fire.  The ceiling
-  (35 %) remains untested by real data — every measured volume, brain or spine, is far
-  below it — so expect the floor, not the ceiling, to be the operative bound.
+  (c) *The ceiling has since been approached* — the forgetting reference set (val split,
+  202 series) reached 0.337 on a SWI volume, within 1.4 % of the 35 % ceiling while still
+  passing.  So the upper bound is not untested slack: thick-slice brain acquisitions can
+  climb towards it, and a future tightening of the ceiling should be checked against those
+  volumes rather than assumed free.
+  Consequence for the top-up loop: **the replay sweep and the reference set have together
+  rejected 0 series**, so the refill path is implemented and tested but has not yet had to
+  fire on real data.
 
 Verified on real data during the T6 run: the derived twins are voxel-exact
 (``image x mask``, geometry preserved), both for replay volumes and for the forgetting
