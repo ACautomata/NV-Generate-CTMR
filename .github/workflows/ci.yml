@@ -45,7 +45,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install test dependencies
-        run: pip install pytest numpy nibabel
+        run: |
+          # CPU-only torch keeps the job fast; the default PyPI wheel bundles CUDA.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install pytest numpy nibabel monai fire scipy scikit-image
 
       - name: Run tests
         run: pytest -q

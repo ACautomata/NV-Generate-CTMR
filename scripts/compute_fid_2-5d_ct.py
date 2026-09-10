@@ -52,8 +52,9 @@ Function Arguments (main):
         Text file listing 3D images for the real dataset.
 
     real_features_dir (str):
-        Subdirectory (under `output_root`) in which to store feature files
-        extracted from the real dataset.
+        Subdirectory (under `output_root/<modality>/`) in which to store
+        feature files extracted from the real dataset. The modality segment
+        keeps the cache safe to reuse across runs with different --modality.
 
     synth_dataset_root (str):
         Root folder for the synthetic dataset.
@@ -62,8 +63,10 @@ Function Arguments (main):
         Text file listing 3D images for the synthetic dataset.
 
     synth_features_dir (str):
-        Subdirectory (under `output_root`) in which to store feature files
-        extracted from the synthetic dataset.
+        Subdirectory (under `output_root/<modality>/`) in which to store
+        feature files extracted from the synthetic dataset. The modality
+        segment keeps the cache safe to reuse across runs with different
+        --modality.
 
     enable_center_slices_ratio (float or None):
         - If not None, only slices around the specified center ratio will be used
@@ -89,6 +92,14 @@ Function Arguments (main):
     model_name (str):
         Model identifier. Typically "radimagenet_resnet50" or "squeezenet1_1".
 
+    modality (str):
+        Which intensity-domain preprocessing to apply to BOTH datasets:
+        "ct" — fixed HU window (padding -1000, clip [-1000, 1000]); "mr" —
+        dynamic percentile mapping (padding 0, same (0, 99.5) percentile
+        window as the training pipeline, into the generator-side (0, 1000)
+        output domain). MR intensity is scanner/sequence dependent, so no
+        fixed clip is applied.
+
     num_images (int):
         Max number of images to process from each dataset (truncate if more are present).
 
@@ -104,6 +115,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -123,6 +135,93 @@ if not logger.handlers:
     # Configure logger only if it has no handlers (avoid reconfiguring in multi-rank scenarios)
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger.setLevel(logging.INFO)
+
+
+@dataclass(frozen=True)
+class ModalityPreprocessing:
+    """
+    Per-modality intensity-domain constants and preprocessing chain for the
+    2.5D FID pipeline.
+
+    CT has an absolute physical scale (HU), so both datasets share a fixed
+    [-1000, 1000] clip window. MR intensity is scanner/sequence dependent —
+    real volumes can far exceed 1000 — so both datasets are instead mapped
+    with the dynamic percentile window the training pipeline uses
+    (scripts/transforms.py: ScaleIntensityRangePercentilesd(0, 99.5), clip
+    off) into the generator-side (0, 1000) output domain
+    (scripts/utils_infer.py). The same single Compose instance built by
+    :meth:`compose` must serve both the real and the synth loader so FID
+    stays comparable.
+    """
+
+    name: str
+    padding_value: float
+    # Destination intensity domain of the windowing step. For CT it doubles
+    # as the fixed clip window (input window == output domain, a_min/b_min
+    # and a_max/b_max identical).
+    output_range: tuple[float, float]
+    percentile_range: tuple[float, float] | None = None
+
+    def feature_cache_dir(self, output_root: str, features_dir: str) -> str:
+        """
+        Directory under ``output_root`` where this modality's .pt feature
+        cache lives. Namespacing by modality keeps the default
+        ``ignore_existing=False`` reuse safe: a run must never serve .pt
+        features that were extracted from volumes preprocessed for a
+        different modality's intensity domain.
+        """
+        return os.path.join(output_root, self.name, features_dir)
+
+    def compose(
+        self,
+        target_shape: tuple[int, ...],
+        resample_spacing: tuple[float, ...] | None = None,
+        center_crop: bool = True,
+        pad: bool = True,
+    ) -> Compose:
+        """
+        Build the full per-volume preprocessing chain both loaders share.
+
+        Intensity windowing runs BEFORE padding: CT's fixed clip is
+        order-invariant (padding sits inside the window), but MR's percentile
+        statistics must be computed on the actual content — padding voxels can
+        outnumber the content and would dilute the percentiles by a
+        volume-size dependent share, making real/synth normalization
+        inconsistent.
+        """
+        transform_list = [
+            monai.transforms.LoadImaged(keys=["image"]),
+            monai.transforms.EnsureChannelFirstd(keys=["image"]),
+            monai.transforms.Orientationd(keys=["image"], axcodes="RAS"),
+        ]
+
+        if resample_spacing is not None:
+            transform_list.append(monai.transforms.Spacingd(keys=["image"], pixdim=resample_spacing, mode=["bilinear"]))
+
+        if center_crop:
+            transform_list.append(monai.transforms.CenterSpatialCropd(keys=["image"], roi_size=target_shape))
+
+        if self.percentile_range is not None:
+            lower, upper = self.percentile_range
+            b_min, b_max = self.output_range
+            transform_list.append(
+                monai.transforms.ScaleIntensityRangePercentilesd(keys=["image"], lower=lower, upper=upper, b_min=b_min, b_max=b_max, clip=False)
+            )
+        else:
+            a_min, a_max = self.output_range
+            transform_list.append(
+                monai.transforms.ScaleIntensityRanged(keys=["image"], a_min=a_min, a_max=a_max, b_min=a_min, b_max=a_max, clip=True)
+            )
+
+        if pad:
+            transform_list.append(monai.transforms.SpatialPadd(keys=["image"], spatial_size=target_shape, mode="constant", value=self.padding_value))
+        return Compose(transform_list)
+
+
+MODALITY_PREPROCESSING = {
+    "ct": ModalityPreprocessing(name="ct", padding_value=-1000, output_range=(-1000, 1000)),
+    "mr": ModalityPreprocessing(name="mr", padding_value=0, output_range=(0, 1000), percentile_range=(0.0, 99.5)),
+}
 
 
 def drop_empty_slice(slices, empty_threshold: float):
@@ -378,6 +477,7 @@ def main(
     enable_resampling_spacing: str = None,
     ignore_existing: bool = False,
     model_name: str = "radimagenet_resnet50",
+    modality: str = "ct",
     num_images: int = 100,
     output_root: str = "./features/features-512x512x512",
     target_shape: str = "512x512x512",
@@ -403,7 +503,7 @@ def main(
                 ...
             These entries will be appended to `real_dataset_root`.
         real_features_dir (str):
-            Name of the directory under `output_root` in which to store
+            Name of the directory under `output_root/<modality>/` in which to store
             extracted features for the real dataset.
 
         synth_dataset_root (str):
@@ -417,7 +517,7 @@ def main(
                 ...
             These entries will be appended to `synth_dataset_root`.
         synth_features_dir (str):
-            Name of the directory under `output_root` in which to store
+            Name of the directory under `output_root/<modality>/` in which to store
             extracted features for the synthetic dataset.
 
         enable_center_slices_ratio (float or None):
@@ -442,6 +542,14 @@ def main(
 
         model_name (str):
             Model identifier. Typically "radimagenet_resnet50" or "squeezenet1_1".
+
+        modality (str):
+            Which intensity-domain preprocessing to apply to BOTH datasets:
+            "ct" — fixed HU window (padding -1000, clip [-1000, 1000]); "mr" —
+            dynamic percentile mapping (padding 0, same (0, 99.5) percentile
+            window as the training pipeline, into the generator-side (0, 1000)
+            output domain). MR intensity is scanner/sequence dependent, so no
+            fixed clip is applied.
 
         num_images (int):
             Maximum number of images to load from each dataset (truncate if more are present).
@@ -474,6 +582,10 @@ def main(
     if not isinstance(ignore_existing, bool):
         ignore_existing = ignore_existing.lower() == "true"
 
+    if modality not in MODALITY_PREPROCESSING:
+        raise ValueError(f"Unsupported modality: {modality!r}. Choose from {sorted(MODALITY_PREPROCESSING)}.")
+    preprocessing = MODALITY_PREPROCESSING[modality]
+
     # Merge logic for center slices
     enable_center_slices = enable_center_slices_ratio is not None
 
@@ -491,6 +603,7 @@ def main(
         logger.info(f"enable_resampling_spacing: {enable_resampling_spacing}")
         logger.info(f"enable_resampling: {enable_resampling}")
         logger.info(f"ignore_existing: {ignore_existing}")
+        logger.info(f"modality: {modality}")
 
     # -------------------------------------------------------------------------
     # Load feature extraction model
@@ -528,7 +641,7 @@ def main(
     # -------------------------------------------------------------------------
     # Prepare Real Dataset
     # -------------------------------------------------------------------------
-    output_root_real = os.path.join(output_root, real_features_dir)
+    output_root_real = preprocessing.feature_cache_dir(output_root, real_features_dir)
     with open(real_filelist) as rf:
         real_lines = [line.strip() for line in rf.readlines()]
     real_lines.sort()
@@ -540,7 +653,7 @@ def main(
     # -------------------------------------------------------------------------
     # Prepare Synthetic Dataset
     # -------------------------------------------------------------------------
-    output_root_synth = os.path.join(output_root, synth_features_dir)
+    output_root_synth = preprocessing.feature_cache_dir(output_root, synth_features_dir)
     with open(synth_filelist) as sf:
         synth_lines = [line.strip() for line in sf.readlines()]
     synth_lines.sort()
@@ -552,23 +665,14 @@ def main(
     # -------------------------------------------------------------------------
     # Build MONAI transforms
     # -------------------------------------------------------------------------
-    transform_list = [
-        monai.transforms.LoadImaged(keys=["image"]),
-        monai.transforms.EnsureChannelFirstd(keys=["image"]),
-        monai.transforms.Orientationd(keys=["image"], axcodes="RAS"),
-    ]
-
-    if enable_resampling:
-        transform_list.append(monai.transforms.Spacingd(keys=["image"], pixdim=rs_spacing_tuple, mode=["bilinear"]))
-
-    if enable_padding:
-        transform_list.append(monai.transforms.SpatialPadd(keys=["image"], spatial_size=target_shape_tuple, mode="constant", value=-1000))
-
-    if enable_center_cropping:
-        transform_list.append(monai.transforms.CenterSpatialCropd(keys=["image"], roi_size=target_shape_tuple))
-
-    transform_list.append(monai.transforms.ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=1000, b_min=-1000, b_max=1000, clip=True))
-    transforms = Compose(transform_list)
+    # One instance serves both loaders so real and synth share the exact same
+    # preprocessing — the FID-comparability requirement.
+    transforms = preprocessing.compose(
+        target_shape=target_shape_tuple,
+        resample_spacing=rs_spacing_tuple if enable_resampling else None,
+        center_crop=enable_center_cropping,
+        pad=enable_padding,
+    )
 
     # -------------------------------------------------------------------------
     # Create DataLoaders
