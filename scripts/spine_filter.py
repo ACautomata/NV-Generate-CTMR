@@ -40,15 +40,27 @@ constructor/CLI parameter, and the defaults live in one place:
   a *weak* spine discriminator (only 0.05 % of likely-spine series exceed it, because
   the dataset admission criteria already capped every axis at 350 mm); the mask-volume
   ratio below does the actual spine rejection.
-- **Mask-volume ratio [2 %, 35 %] — first-principles initial value, not yet data
-  calibrated** (no HD-BET masks on disk until the replay zips land).  Calibration
-  protocol for the download ticket: once the first study zips are extracted, run this
-  filter over them and check (a) atlas-referenced SWI/MRA series pass at ~100 % — if
-  not, the ratio band is miscalibrated; (b) the T2w pass rate lands near v1's brain-T2w
-  anchor (669 usable source volumes across all splits — data/README.md section 3.4);
-  (c) whole-brain sagittal 1 mm iso acquisitions sit well inside the band.  Tight-FOV
-  thick-slice brain acquisitions can approach the 35 % ceiling by construction
-  (brain volume / small FOV box), so expect the upper bound to be the sensitive one.
+- **Mask-volume ratio [2 %, 35 %] — calibrated 2026-09-10 against the first real
+  HD-BET masks on disk**, two directions:
+  (a) *False rejects* — 1,494 paired brain series from atlas-registered studies (the
+  ``MR-RATE-atlas`` release, whose volumes are registered to a common brain template)
+  were pushed through this filter unchanged: measured ratio p0 = 0.121, p50 = 0.162,
+  p99 = 0.206, max = 0.228; **0 of 1,494 rejected**.  The whole brain population sits
+  comfortably inside the band, so the filter does not eat brain volumes.
+  (b) *False accepts* — the replay sweep itself (Train split, all five modalities as the
+  download proceeds) has so far seen nothing below the floor either; the measured
+  population is p0 ≈ 0.075 and 0.29 at the top, still entirely inside the band.  The
+  floor is therefore doing its job by construction rather than by lucky calibration: a
+  spine FOV has almost no brain tissue for HD-BET to find, so its ratio collapses toward
+  zero rather than edging under the threshold.
+  Consequence for the top-up loop: **the replay sweep has rejected 0 series so far**, so
+  the refill path is implemented and tested but has not yet had to fire.  The ceiling
+  (35 %) remains untested by real data — every measured volume, brain or spine, is far
+  below it — so expect the floor, not the ceiling, to be the operative bound.
+
+Verified on real data during the T6 run: the derived twins are voxel-exact
+(``image x mask``, geometry preserved), both for replay volumes and for the forgetting
+reference set.
 
 The module is deliberately dependency-light (nibabel + numpy only) and callable without
 the sampling script, so the forgetting gen-real reference-set sampling (spec section
