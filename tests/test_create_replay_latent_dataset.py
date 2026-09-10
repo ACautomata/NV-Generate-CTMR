@@ -313,7 +313,28 @@ class TestEncodeStage:
 
         # Every fixture entry already has a latent: there is no outstanding work.
         assert summary["source_entries"] == 0
+        assert summary["not_yet_downloaded"] == 0
         assert summary["output"] is None
+
+    def test_caught_up_reports_what_is_still_downloading(
+        self, data_base_dir: Path, embedding_base_dir: Path, accepted_manifest: Path, tmp_path: Path
+    ) -> None:
+        """Caught up and finished look identical to the file system; a driver loop must tell them apart."""
+        for suffix in ("", "_skull_stripped"):
+            (data_base_dir / f"mri/batch00/STUDYC/img/STUDYC_mra-raw-cor{suffix}.nii.gz").unlink()
+            (embedding_base_dir / f"mri/batch00/STUDYC/img/STUDYC_mra-raw-cor{suffix}_emb.nii.gz").unlink()
+        dataset = ReplayLatentDataset(
+            tier=ReplayTier("N300", accepted_manifest),
+            data_base_dir=data_base_dir,
+            sidecar_writer=LatentSidecarWriter(embedding_base_dir),
+        )
+        summary = dataset.write_source_list(tmp_path)
+
+        # STUDYC is absent from both trees, so nothing is outstanding -- but two volumes are
+        # still on their way, and a driver that stopped here would idle the GPUs until the
+        # download finished.
+        assert summary["source_entries"] == 0
+        assert summary["not_yet_downloaded"] == 2
 
     def test_only_the_outstanding_half_is_listed(
         self, data_base_dir: Path, embedding_base_dir: Path, accepted_manifest: Path, tmp_path: Path

@@ -176,6 +176,7 @@ class ReplayLatentDataset:
         ``--stage finalize`` still refuses to finish until every latent is on disk.
         """
         entries = self.training_entries()
+        pending = sum(1 for record in entries if not (self._data_base_dir / record["image"]).is_file())
         outstanding = [
             record
             for record in entries
@@ -183,10 +184,14 @@ class ReplayLatentDataset:
             and not (self._sidecar_writer.base_dir / LatentEntry(record["image"], record["modality"]).embedding_relative_path).is_file()
         ]
         if not outstanding:
-            print(f"{self._tier.name}: nothing outstanding (all {len(entries)} entries encoded)")
-            return {"tier": self._tier.name, "stage": "encode", "source_entries": 0, "not_yet_downloaded": 0, "output": None}
+            # Distinguish "the tier is finished" from "everything that has arrived is encoded but
+            # the download is still running".  The second looks identical from the file system and
+            # is why the counts are reported either way: a caller driving the encoder in a loop
+            # must not stop just because it caught up with a download that is still going.
+            state = "complete" if pending == 0 else f"caught up, {pending} still downloading"
+            print(f"{self._tier.name}: nothing outstanding ({state}); entries={len(entries)}")
+            return {"tier": self._tier.name, "stage": "encode", "source_entries": 0, "not_yet_downloaded": pending, "output": None}
         output_path = self._write_json(output_dir / self._tier.source_filename, outstanding)
-        pending = sum(1 for record in entries if not (self._data_base_dir / record["image"]).is_file())
         print(f"{self._tier.name}: source_entries={len(outstanding)} not_yet_downloaded={pending} -> {output_path}")
         return {
             "tier": self._tier.name,
