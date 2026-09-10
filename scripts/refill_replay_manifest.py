@@ -71,7 +71,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from .create_replay_manifest import MANIFEST_COLUMNS, T2W_CAP
+from .create_replay_manifest import MANIFEST_COLUMNS, CapPolicy
 from .download_replay_subset import VerdictLog
 
 TIER_PATTERN = re.compile(r"(?P<name>[A-Za-z0-9_-]+)=(?P<n>\d+)")
@@ -89,15 +89,14 @@ class TierTarget:
     def output_filename(self) -> str:
         return OUTPUT_TEMPLATE.format(tier=self.name)
 
-    def cap_for(self, modality: str) -> int | None:
-        """Layered cap (section 3.3): head labels N, T2w ``min(N, 669)``, MRA uncapped (``None``).
+    @property
+    def policy(self) -> CapPolicy:
+        """The layered-cap rule (section 3.3), owned by the generator so the two cannot drift."""
+        return CapPolicy(n_per_label=self.n_per_label)
 
-        Mirrors ``create_replay_manifest.CapPolicy``: MRA is small enough (141 Train subjects)
-        that v1's relative share is already exceeded by taking every one, so its N is moot.
-        """
-        if modality == "mra":
-            return None
-        return min(self.n_per_label, T2W_CAP) if modality == "t2w" else self.n_per_label
+    def cap_for(self, modality: str) -> int | None:
+        """Layered cap: head labels N, T2w ``min(N, 669)``, MRA uncapped (``None``)."""
+        return self.policy.cap_for(modality)
 
     @classmethod
     def parse(cls, specification: str) -> "TierTarget":
