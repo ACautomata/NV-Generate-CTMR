@@ -40,6 +40,16 @@ constructor/CLI parameter, and the defaults live in one place:
   a *weak* spine discriminator (only 0.05 % of likely-spine series exceed it, because
   the dataset admission criteria already capped every axis at 350 mm); the mask-volume
   ratio below does the actual spine rejection.
+
+  The sharp edge is real and was observed: the first rejection of the whole T6 run was a
+  T2w series whose mask ratio was a healthy 0.128 -- i.e. brain -- rejected solely because
+  one axis measured 300.0002 mm, overshooting the ceiling by 0.00024 mm of floating-point
+  noise (spacing x shape, not anatomy).  The comparison is deliberately exact: the 300 mm
+  value is the dataset's own nominal axis bound, so a volume sitting exactly on it is at
+  the boundary the calibration chose, and holding the line costs one top-up rather than
+  letting a class of borderline volumes through.  Raising the ceiling to swallow
+  float noise would be the change to make if false rejects ever became expensive; today
+  they are not (1 in 1,791 processed series).
 - **Mask-volume ratio [2 %, 35 %] — calibrated 2026-09-10 against the first real
   HD-BET masks on disk**, two directions:
   (a) *False rejects* — 1,494 paired brain series from atlas-registered studies (the

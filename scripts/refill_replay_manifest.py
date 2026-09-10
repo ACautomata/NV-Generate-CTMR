@@ -42,8 +42,15 @@ N=1000 tier::
         --output .../manifests/replay_ordering_N1100.csv
 
 Head-label availability in the Train split is 48k-75k subjects, so the extra rows cost
-nothing but a longer CSV.  T2w (capped at 669) and MRA (141-subject pool) cannot be given
-headroom, so a reject in either is a genuine shortfall.
+nothing but a longer CSV.
+
+**T2w and MRA cannot be refilled at all, whatever N.**  Raising ``--n-per-label`` does not
+help them: T2w is capped at ``min(N, 669)`` by the layered-cap rule, so the ordering stops at
+669 no matter how large N is, and MRA is uncapped -- it takes the whole 141-subject Train
+pool, so there is nothing beyond it.  A rejected T2w or MRA series therefore leaves its tier
+genuinely one short, and the roster is written short with a warning rather than padded.  This
+is the "prefer false rejects over false accepts" bias (spec section 3.3) resolving in the
+direction it was told to.
 
 Usage::
 

@@ -178,6 +178,28 @@ class TestRefilledReplayManifests:
         assert refilled.rejected.isdisjoint(union)
 
 
+class TestUnrefillableModalities:
+    """T2w and MRA cannot be refilled from a bigger N, so their shortfalls are permanent."""
+
+    def test_t2w_is_capped_so_raising_n_adds_no_candidates(self) -> None:
+        assert TierTarget("N1000", 1000).cap_for("t2w") == 669
+        assert TierTarget("N5000", 5000).cap_for("t2w") == 669
+
+    def test_a_rejected_t2w_leaves_its_tier_one_short(self, tmp_path: Path) -> None:
+        rows = [manifest_row(index, "t2w") for index in range(4)]
+        ordering = write_manifest(tmp_path / "ordering.csv", rows)
+        rejected_path = tmp_path / "rejected.csv"
+        with rejected_path.open("w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=[*MANIFEST_COLUMNS, "verdict"])
+            writer.writeheader()
+            writer.writerow({**rows[0], "verdict": "reject"})
+
+        roster = TierRoster(TierTarget("N4", 4), ReplayOrderingIndex(ordering, rejected_path))
+
+        assert len(roster.rows()) == 3  # one short, never padded from outside the ordering
+        assert roster.shortages() == {"t2w": 1}
+
+
 class TestCommandLine:
     def test_end_to_end_writes_each_tier(self, tmp_path: Path, ordering: Path, rejected: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
