@@ -258,7 +258,7 @@ class ReplayManifest:
         self._selected = sorted(selected, key=lambda item: (MODALITIES.index(item.modality), item.patient_uid, item.study_uid, item.series_id))
 
     def save(self, output_path: Path) -> dict:
-        """Write the manifest CSV and return a summary (per-label counts + shortages)."""
+        """Write the manifest CSV; return a summary dict with "rows" and per-label "counts"."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w", newline="") as file:
             writer = csv.writer(file)

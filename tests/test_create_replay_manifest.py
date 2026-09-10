@@ -45,7 +45,7 @@ METADATA_COLUMNS = [
 
 
 @pytest.fixture
-def series_row() -> Callable[..., dict]:
+def series_row() -> Callable[..., dict[str, str]]:
     """Builder for one metadata CSV row (defaults: clean, raw, axial, unflagged series)."""
 
     def build(
@@ -57,7 +57,7 @@ def series_row() -> Callable[..., dict]:
         is_derived: str = "False",
         is_localizer: str = "False",
         is_subtraction: str = "False",
-    ) -> dict:
+    ) -> dict[str, str]:
         return {
             "patient_uid": patient,
             "study_uid": study,
@@ -74,20 +74,20 @@ def series_row() -> Callable[..., dict]:
 
 
 @pytest.fixture
-def splits_row() -> Callable[..., dict]:
+def splits_row() -> Callable[..., dict[str, str]]:
     """Builder for one splits.csv row."""
 
-    def build(patient: str, study: str, split: str, batch: str = "batch00") -> dict:
+    def build(patient: str, study: str, split: str, batch: str = "batch00") -> dict[str, str]:
         return {"batch_id": batch, "patient_uid": patient, "study_uid": study, "split": split}
 
     return build
 
 
 @pytest.fixture
-def write_csv() -> Callable[[Path, list, list], Path]:
+def write_csv() -> Callable[[Path, list[str], list[dict[str, str]]], Path]:
     """Builder writing one CSV file from columns + rows."""
 
-    def build(path: Path, columns: list, rows: list) -> Path:
+    def build(path: Path, columns: list[str], rows: list[dict[str, str]]) -> Path:
         with path.open("w", newline="") as file:
             writer = csv.DictWriter(file, fieldnames=columns)
             writer.writeheader()
@@ -98,11 +98,25 @@ def write_csv() -> Callable[[Path, list, list], Path]:
 
 
 @pytest.fixture
+def single_train_splits(
+    tmp_path: Path,
+    splits_row: Callable[..., dict[str, str]],
+    write_csv: Callable[[Path, list[str], list[dict[str, str]]], Path],
+) -> Path:
+    """A splits.csv naming one train patient — the minimal catalog prerequisite."""
+    return write_csv(
+        tmp_path / "splits.csv",
+        ["batch_id", "patient_uid", "study_uid", "split"],
+        [splits_row("1", "AAA111AAA", "train")],
+    )
+
+
+@pytest.fixture
 def metadata_dir(
     tmp_path: Path,
-    series_row: Callable[..., dict],
-    splits_row: Callable[..., dict],
-    write_csv: Callable[[Path, list, list], Path],
+    series_row: Callable[..., dict[str, str]],
+    splits_row: Callable[..., dict[str, str]],
+    write_csv: Callable[[Path, list[str], list[dict[str, str]]], Path],
 ) -> Path:
     """Fixture metadata: multi-series subjects, flag-excluded rows, non-train patients, two batches."""
     write_csv(
@@ -185,75 +199,50 @@ class TestMrRateCatalog:
     def test_duplicate_study_series_raises(
         self,
         tmp_path: Path,
-        series_row: Callable[..., dict],
-        splits_row: Callable[..., dict],
-        write_csv: Callable[[Path, list, list], Path],
+        single_train_splits: Path,
+        series_row: Callable[..., dict[str, str]],
+        write_csv: Callable[[Path, list[str], list[dict[str, str]]], Path],
     ) -> None:
-        splits = write_csv(
-            tmp_path / "splits.csv",
-            ["batch_id", "patient_uid", "study_uid", "split"],
-            [splits_row("1", "AAA111AAA", "train")],
-        )
         rows = [series_row("1", "AAA111AAA", "t1w-raw-axi", "T1w", "1.0")]
         first = write_csv(tmp_path / "batch00_metadata.csv", METADATA_COLUMNS, rows)
         second = write_csv(tmp_path / "batch01_metadata.csv", METADATA_COLUMNS, rows)
         with pytest.raises(ValueError, match="duplicate"):
-            MrRateCatalog(splits_csv=splits, metadata_paths=[first, second]).train_brain_series()
+            MrRateCatalog(splits_csv=single_train_splits, metadata_paths=[first, second]).train_brain_series()
 
-    def test_empty_metadata_paths_raise(
-        self,
-        tmp_path: Path,
-        splits_row: Callable[..., dict],
-        write_csv: Callable[[Path, list, list], Path],
-    ) -> None:
-        splits = write_csv(
-            tmp_path / "splits.csv",
-            ["batch_id", "patient_uid", "study_uid", "split"],
-            [splits_row("1", "AAA111AAA", "train")],
-        )
+    def test_empty_metadata_paths_raise(self, single_train_splits: Path) -> None:
         with pytest.raises(FileNotFoundError, match="no metadata CSVs"):
-            MrRateCatalog(splits_csv=splits, metadata_paths=[])
+            MrRateCatalog(splits_csv=single_train_splits, metadata_paths=[])
 
     def test_unexpected_boolean_encoding_raises(
         self,
         tmp_path: Path,
-        series_row: Callable[..., dict],
-        splits_row: Callable[..., dict],
-        write_csv: Callable[[Path, list, list], Path],
+        single_train_splits: Path,
+        series_row: Callable[..., dict[str, str]],
+        write_csv: Callable[[Path, list[str], list[dict[str, str]]], Path],
     ) -> None:
         """A future pull writing 'true'/'1' must fail loudly instead of silently keeping flagged rows."""
-        splits = write_csv(
-            tmp_path / "splits.csv",
-            ["batch_id", "patient_uid", "study_uid", "split"],
-            [splits_row("1", "AAA111AAA", "train")],
-        )
         metadata = write_csv(
             tmp_path / "batch00_metadata.csv",
             METADATA_COLUMNS,
             [series_row("1", "AAA111AAA", "t1w-raw-axi", "T1w", "1.0", is_derived="true")],
         )
-        catalog = MrRateCatalog(splits_csv=splits, metadata_paths=[metadata])
+        catalog = MrRateCatalog(splits_csv=single_train_splits, metadata_paths=[metadata])
         with pytest.raises(ValueError, match="unexpected is_derived"):
             catalog.train_brain_series()
 
     def test_missing_required_columns_raise(
         self,
         tmp_path: Path,
-        series_row: Callable[..., dict],
-        splits_row: Callable[..., dict],
-        write_csv: Callable[[Path, list, list], Path],
+        single_train_splits: Path,
+        series_row: Callable[..., dict[str, str]],
+        write_csv: Callable[[Path, list[str], list[dict[str, str]]], Path],
     ) -> None:
         """A metadata CSV lacking a required column fails with the columns listed, not a bare lookup error."""
-        splits = write_csv(
-            tmp_path / "splits.csv",
-            ["batch_id", "patient_uid", "study_uid", "split"],
-            [splits_row("1", "AAA111AAA", "train")],
-        )
         columns = [name for name in METADATA_COLUMNS if name != "SeriesNumber"]
         row = series_row("1", "AAA111AAA", "t1w-raw-axi", "T1w", "1.0")
         row.pop("SeriesNumber")
         metadata = write_csv(tmp_path / "batch00_metadata.csv", columns, [row])
-        catalog = MrRateCatalog(splits_csv=splits, metadata_paths=[metadata])
+        catalog = MrRateCatalog(splits_csv=single_train_splits, metadata_paths=[metadata])
         with pytest.raises(ValueError, match="missing columns"):
             catalog.train_brain_series()
 
