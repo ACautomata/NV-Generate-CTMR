@@ -1,7 +1,0 @@
-{
-    "data_base_dir": "/data72/junran/nv-ctmr/runs/replay-latent-20260910/data",
-    "embedding_base_dir": "/data72/junran/nv-ctmr/runs/replay-latent-20260910/data",
-    "json_data_list": "/data72/junran/nv-ctmr/runs/replay-latent-20260910/replay_source_N1000.json",
-    "trained_autoencoder_path": "/data72/junran/nv-ctmr/models/autoencoder_v1.pt",
-    "modality_mapping_path": "/data72/junran/nv-ctmr/code/NV-Generate-CTMR/configs/modality_mapping.json"
-}
