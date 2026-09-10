@@ -80,8 +80,22 @@ class ManifestCandidate:
 
     @classmethod
     def from_row(cls, row: dict[str, str]) -> "ManifestCandidate":
-        """Build from a manifest CSV row."""
-        return cls(**{name: row[name] for name in MANIFEST_COLUMNS})
+        """Build from a manifest CSV row, refusing a row whose label column lies about its series id.
+
+        The manifest's ``label`` drives the training condition, while the dual twin's label is
+        derived from the series-id prefix -- a disagreement would land as a wrong label in the
+        training set, or as a ``KeyError`` hours into the run for an unknown modality.  Checking
+        in the factory rather than at each call site is what makes the ticket's "与 manifest 一致"
+        hold for *every* consumer: the download, the encoder input list and the sidecar finalize
+        all go through here, so none of them can silently skip the check.
+        """
+        candidate = cls(**{name: row[name] for name in MANIFEST_COLUMNS})
+        if candidate.label != candidate.variant.label:
+            raise ValueError(
+                f"{candidate.study_uid}/{candidate.series_id}: manifest label {candidate.label!r} "
+                f"contradicts the series id (implies {candidate.variant.label!r})"
+            )
+        return candidate
 
     @property
     def batch(self) -> str:
@@ -129,6 +143,17 @@ class SeriesVerdict:
             fov_mm=result.fov_mm,
             reasons=result.reasons,
         )
+
+    @classmethod
+    def unusable(cls, reason: str) -> "SeriesVerdict":
+        """A series whose image and mask cannot be combined at all, so nothing could be measured.
+
+        The measurements are left empty rather than zeroed: a row reading ``0.0 %`` and a
+        0 mm FOV looks like a measurement, and this series was never measured.  Recording it as
+        a *reject* is what keeps the top-up loop closed -- a series with no verdict stays in the
+        todo list, so every rerun stops on the same row and the roster never advances.
+        """
+        return cls(status=VERDICT_REJECT, mask_voxel_ratio=float("nan"), fov_mm=(), reasons=(reason,))
 
     def to_row(self, candidate: ManifestCandidate) -> dict[str, str]:
         """The verdict CSV line for this candidate: manifest columns + measurements + verdict.
@@ -360,25 +385,7 @@ class ReplayDownloader:
     def candidates(self) -> list[ManifestCandidate]:
         """The manifest rows in manifest order, each checked against the path convention it implies."""
         with self._manifest_path.open(newline="") as file:
-            candidates = [ManifestCandidate.from_row(row) for row in csv.DictReader(file)]
-        self._require_label_agreement(candidates)
-        return candidates
-
-    @staticmethod
-    def _require_label_agreement(candidates: list[ManifestCandidate]) -> None:
-        """Fail before the download starts if a row's label column contradicts its series id.
-
-        The manifest's ``label`` drives the condition and the dual twin's label is derived from
-        the series-id prefix, so a disagreement would surface as a wrong label in the training
-        set -- or, for an unknown modality, as a ``KeyError`` hours into the run.  Cheap to
-        check up front, and it makes the ticket's "与 manifest 一致" a checked property.
-        """
-        for candidate in candidates:
-            if candidate.variant.label != candidate.label:
-                raise ValueError(
-                    f"{candidate.study_uid}/{candidate.series_id}: manifest label {candidate.label!r} "
-                    f"contradicts the series id (implies {candidate.variant.label!r})"
-                )
+            return [ManifestCandidate.from_row(row) for row in csv.DictReader(file)]
 
     def run(self, accepted_csv: Path, rejected_csv: Path) -> dict:
         """Process every not-yet-recorded candidate, then write the accepted/rejected manifests."""
@@ -422,10 +429,16 @@ class ReplayDownloader:
         if image not in placed or mask not in placed:
             # Partial extraction: raise so the study is reported failed and retried on the next run.
             raise FileNotFoundError(f"{candidate.study_uid}/{candidate.series_id}: image or mask missing after extraction")
-        verdict = SeriesVerdict.from_filter_result(self._filter.check(image, mask))
-        if verdict.is_accepted:
-            self._stripper.create(image, mask, self._download_dir / variant.skull_stripped_path)
-        else:
+        try:
+            verdict = SeriesVerdict.from_filter_result(self._filter.check(image, mask))
+            if verdict.is_accepted:
+                self._stripper.create(image, mask, self._download_dir / variant.skull_stripped_path)
+        except ValueError as error:
+            # An off-grid pair can be neither judged nor multiplied. Letting this escape would
+            # kill an hours-long run on one bad series; leaving it unrecorded would wedge the
+            # refill loop on it forever. Rejecting it is the closed-loop answer.
+            verdict = SeriesVerdict.unusable(str(error))
+        if not verdict.is_accepted:
             image.unlink()
             mask.unlink()
         self._log.append(verdict.to_row(candidate))

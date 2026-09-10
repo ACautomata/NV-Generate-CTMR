@@ -214,6 +214,18 @@ class TestReplayLatentDataset:
         assert entry.embedding_relative_path.endswith("_emb.nii.gz")
         assert entry.sidecar_relative_path.endswith("_emb.nii.gz.json")
 
+    def test_a_manifest_label_that_contradicts_the_series_id_is_refused(self, dataset: ReplayLatentDataset, accepted_manifest: Path) -> None:
+        """The sidecar's modality must equal the manifest's label, so the mismatch is refused here too.
+
+        The downloader checks this before it starts, but the roster it accepts is not the file
+        this stage reads -- finalize re-reads a refilled roster, so the guarantee has to hold
+        at the point the artifact is actually written.
+        """
+        accepted_manifest.write_text(accepted_manifest.read_text().replace(",t1w-raw-axi,t1w,mri_t1,", ",t1w-raw-axi,t1w,mri_flair,"))
+
+        with pytest.raises(ValueError, match="contradicts the series id"):
+            dataset.candidates()
+
 
 class TestReplayLatentDatasetSet:
     def test_nested_tiers_share_one_latent_tree(self, data_base_dir: Path, embedding_base_dir: Path, tmp_path: Path) -> None:

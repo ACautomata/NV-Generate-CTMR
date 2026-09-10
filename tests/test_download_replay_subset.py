@@ -193,6 +193,21 @@ class TestManifestCandidate:
         )
         assert candidate.zip_member(candidate.image_path) == "STUDYB01/img/STUDYB01_t1w-raw-axi.nii.gz"
 
+    def test_a_label_that_contradicts_the_series_id_is_refused_at_construction(self) -> None:
+        """The contract lives in the factory, so no consumer can forget to check it."""
+        with pytest.raises(ValueError, match="contradicts the series id"):
+            ManifestCandidate.from_row(
+                {
+                    "patient_uid": "1",
+                    "study_uid": "STUDYB01",
+                    "series_id": "t1w-raw-axi",
+                    "modality": "t1w",
+                    "label": "mri_flair",
+                    "split": "Train",
+                    "image_path": "mri/batch00/STUDYB01/img/STUDYB01_t1w-raw-axi.nii.gz",
+                }
+            )
+
 
 class TestSeriesVerdict:
     def test_accept_row_carries_the_manifest_columns_and_measurements(self) -> None:
@@ -233,6 +248,25 @@ class TestSeriesVerdict:
         row = verdict.to_row(candidate)
         assert row["verdict"] == "reject"
         assert row["reasons"] == "too small; too long"
+
+    def test_unusable_leaves_the_measurements_empty_rather_than_zeroed(self) -> None:
+        """An off-grid pair was never measured; 0.0 % and 0 mm would read as measurements."""
+        candidate = ManifestCandidate.from_row(
+            {
+                "patient_uid": "1",
+                "study_uid": "STUDYB01",
+                "series_id": "t1w-raw-axi",
+                "modality": "t1w",
+                "label": "mri_t1",
+                "split": "Train",
+                "image_path": "mri/batch00/STUDYB01/img/STUDYB01_t1w-raw-axi.nii.gz",
+            }
+        )
+        row = SeriesVerdict.unusable("differ in voxel grid").to_row(candidate)
+        assert row["verdict"] == "reject"
+        assert row["fov_mm"] == ""
+        assert row["mask_voxel_ratio"] != "0.000000"
+        assert row["reasons"] == "differ in voxel grid"
 
 
 class TestReplayDownloader:
@@ -377,6 +411,74 @@ class TestReplayDownloader:
         assert summary["failed"] == 1
         assert summary["accepted"] == 2
         assert len(log.read_rows()) == 3
+
+
+class TestOffGridPair:
+    """An image/mask pair that cannot be combined must be rejected, not left to wedge the run."""
+
+    @pytest.fixture
+    def off_grid_downloader(self, tmp_path: Path) -> tuple[ReplayDownloader, VerdictLog]:
+        """One study whose mask sits on a different voxel grid than its image."""
+        image = tmp_path / "OFFGRID_t1w-raw-axi.nii.gz"
+        mask = tmp_path / "OFFGRID_t1w-raw-axi_brain-mask.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((64, 64, 64), dtype=np.uint8), AFFINE), image)
+        nib.save(nib.Nifti1Image(np.zeros((32, 32, 32), dtype=np.uint8), AFFINE), mask)
+
+        archive = tmp_path / "store" / "OFFGRID.zip"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.write(image, "OFFGRID/img/OFFGRID_t1w-raw-axi.nii.gz")
+            zipped.write(mask, "OFFGRID/seg/OFFGRID_t1w-raw-axi_brain-mask.nii.gz")
+
+        manifest = tmp_path / "offgrid_manifest.csv"
+        with manifest.open("w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(MANIFEST_COLUMNS)
+            writer.writerow(["1", "OFFGRID", "t1w-raw-axi", "t1w", "mri_t1", "Train", "mri/batch00/OFFGRID/img/OFFGRID_t1w-raw-axi.nii.gz"])
+
+        log = VerdictLog(tmp_path / "offgrid_verdicts.csv")
+        downloader = ReplayDownloader(
+            manifest_path=manifest,
+            download_dir=tmp_path / "data",
+            source=RecordingZipSource({"mri/batch00/OFFGRID.zip": archive}, tmp_path / "downloads"),
+            verdict_log=log,
+        )
+        return downloader, log
+
+    @staticmethod
+    def run(downloader: ReplayDownloader) -> dict:
+        return downloader.run(
+            accepted_csv=downloader._download_dir / "accepted.csv", rejected_csv=downloader._download_dir / "rejected.csv"
+        )
+
+    def test_the_pair_is_recorded_as_a_reject_rather_than_escaping(self, off_grid_downloader) -> None:
+        """Letting the ValueError out would kill an hours-long run on one unusable series."""
+        downloader, log = off_grid_downloader
+        summary = self.run(downloader)
+
+        assert summary["failed"] == 0
+        assert summary["accepted"] == 0
+        assert summary["rejected"] == 1
+        row = log.read_rows()[0]
+        assert row["verdict"] == "reject"
+        assert "differ in voxel grid" in row["reasons"]
+
+    def test_a_rerun_does_not_pick_the_series_up_again(self, off_grid_downloader) -> None:
+        """The whole point of recording it: an unrecorded series would be retried forever."""
+        downloader, log = off_grid_downloader
+        self.run(downloader)
+        assert log.completed() == {("OFFGRID", "t1w-raw-axi")}
+
+        self.run(downloader)
+        assert len(log.read_rows()) == 1
+
+    def test_the_unusable_pair_is_dropped_from_the_data_tree(self, off_grid_downloader) -> None:
+        """Nothing downstream should be able to pick up a volume that was rejected."""
+        downloader, _ = off_grid_downloader
+        self.run(downloader)
+
+        assert not (downloader._download_dir / "mri/batch00/OFFGRID/img/OFFGRID_t1w-raw-axi.nii.gz").exists()
+        assert not (downloader._download_dir / "mri/batch00/OFFGRID/seg/OFFGRID_t1w-raw-axi_brain-mask.nii.gz").exists()
 
 
 class TestThresholdOverridesReachTheFilter:

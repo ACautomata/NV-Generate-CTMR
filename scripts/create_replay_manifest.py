@@ -46,8 +46,10 @@ Selection rules (spec #13 section 3.3, decisions D1/D3 of issue #7):
 Manifest columns (spec section 3.4): ``patient_uid, study_uid, series_id, modality,
 label, split, image_path``.  ``modality`` is the lowercase MR-RATE modality string,
 ``label`` the whole-brain v1 label (``mri_t1`` ...); the skull-stripped twin of every
-row (``mri_*_skull_stripped``, dual derivation) is derived downstream by the merge
-generator.  ``image_path`` is relative to the MR-RATE data root and follows the
+row (``mri_*_skull_stripped``, dual derivation) is derived from the same downloaded
+volume during the replay pipeline (``scripts.create_skull_stripped``), not by this
+generator -- the manifest only names the whole-brain series it samples.  ``image_path``
+is relative to the MR-RATE data root and follows the
 official unzip layout (zip root == study directory):
 ``mri/<batch>/<study_uid>/img/<study_uid>_<series_id>.nii.gz``; the HD-BET brain mask
 sits at the mirrored ``seg/`` path (``MrRateSeries.mask_path``).  Consumers rebase the
