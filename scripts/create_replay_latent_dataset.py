@@ -133,26 +133,22 @@ class ReplayLatentDataset:
 
     def latent_entries(self) -> list[LatentEntry]:
         """Every entry the tier needs: both halves of the dual derivation, per accepted series."""
-        return self._entries_for(self.candidates())
-
-    @classmethod
-    def _entries_for(cls, candidates: list[ManifestCandidate]) -> list[LatentEntry]:
-        """The dual derivation applied to an already-read roster (section 3.3 "双产")."""
-        return [entry for candidate in candidates for entry in cls._dual_derivation(candidate)]
+        return self._dual_derivation(self.candidates())
 
     @staticmethod
-    def _dual_derivation(candidate: ManifestCandidate) -> list[LatentEntry]:
-        """The two training entries one accepted series becomes (section 3.3 "双产"), whole-brain first.
+    def _dual_derivation(candidates: list[ManifestCandidate]) -> list[LatentEntry]:
+        """The training entries an accepted roster becomes (section 3.3 "双产"), whole-brain first.
 
         One downloaded volume is encoded once and yields both conditions the v1 model was trained
         on: the source image under its v1 label (``mri_t1`` ...), and the skull-stripped twin
         derived from it under the matching ``_skull_stripped`` label (29-33).
         """
-        variant = candidate.variant
-        return [
-            LatentEntry(image=variant.whole_brain_path, modality=variant.label),
-            LatentEntry(image=variant.skull_stripped_path, modality=variant.skull_stripped_label),
-        ]
+        entries = []
+        for candidate in candidates:
+            variant = candidate.variant
+            entries.append(LatentEntry(image=variant.whole_brain_path, modality=variant.label))
+            entries.append(LatentEntry(image=variant.skull_stripped_path, modality=variant.skull_stripped_label))
+        return entries
 
     def _is_downloaded(self, entry: LatentEntry) -> bool:
         """Whether this entry's source volume is on disk under the data root."""
@@ -204,7 +200,7 @@ class ReplayLatentDataset:
         """``--stage finalize``: write the sidecars, then the training dataset.json; return a summary."""
         candidates = self.candidates()
         self._require_training_split(candidates)
-        entries = self._entries_for(candidates)
+        entries = self._dual_derivation(candidates)
         self._require_source_volumes(entries)
         self._sidecar_writer.require_all(entries, f"{self._tier.name} latents")
         sidecars = self._sidecar_writer.write(entries)
