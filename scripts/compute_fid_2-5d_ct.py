@@ -137,7 +137,8 @@ logger.setLevel(logging.INFO)
 @dataclass(frozen=True)
 class ModalityPreprocessing:
     """
-    Per-modality intensity-domain constants for the 2.5D FID preprocessing.
+    Per-modality intensity-domain constants and preprocessing chain for the
+    2.5D FID pipeline.
 
     CT has an absolute physical scale (HU), so both datasets share a fixed
     [-1000, 1000] clip window. MR intensity is scanner/sequence dependent —
@@ -145,18 +146,65 @@ class ModalityPreprocessing:
     with the dynamic percentile window the training pipeline uses
     (scripts/transforms.py: ScaleIntensityRangePercentilesd(0, 99.5), clip
     off) into the generator-side (0, 1000) output domain
-    (scripts/utils_infer.py). The same single Compose instance must serve
-    both the real and the synth loader so FID stays comparable.
+    (scripts/utils_infer.py). The same single Compose instance built by
+    :meth:`compose` must serve both the real and the synth loader so FID
+    stays comparable.
     """
 
     padding_value: float
-    intensity_range: tuple[float, float]
+    # Destination intensity domain of the windowing step. For CT it doubles
+    # as the fixed clip window (input window == output domain, a_min/b_min
+    # and a_max/b_max identical).
+    output_range: tuple[float, float]
     percentile_range: tuple[float, float] | None = None
+
+    def compose(
+        self,
+        target_shape: tuple[int, ...],
+        resample_spacing: tuple[float, ...] | None = None,
+        center_crop: bool = True,
+        pad: bool = True,
+    ) -> Compose:
+        """
+        Build the full per-volume preprocessing chain both loaders share.
+
+        Intensity windowing runs BEFORE padding: CT's fixed clip is
+        order-invariant (padding sits inside the window), but MR's percentile
+        statistics must be computed on the actual content — padding voxels can
+        outnumber the content and would dilute the percentiles by a
+        volume-size dependent share, making real/synth normalization
+        inconsistent.
+        """
+        transform_list = [
+            monai.transforms.LoadImaged(keys=["image"]),
+            monai.transforms.EnsureChannelFirstd(keys=["image"]),
+            monai.transforms.Orientationd(keys=["image"], axcodes="RAS"),
+        ]
+
+        if resample_spacing is not None:
+            transform_list.append(monai.transforms.Spacingd(keys=["image"], pixdim=resample_spacing, mode=["bilinear"]))
+
+        if center_crop:
+            transform_list.append(monai.transforms.CenterSpatialCropd(keys=["image"], roi_size=target_shape))
+
+        if self.percentile_range is not None:
+            lower, upper = self.percentile_range
+            b_min, b_max = self.output_range
+            transform_list.append(
+                monai.transforms.ScaleIntensityRangePercentilesd(keys=["image"], lower=lower, upper=upper, b_min=b_min, b_max=b_max, clip=False)
+            )
+        else:
+            a_min, a_max = self.output_range
+            transform_list.append(monai.transforms.ScaleIntensityRanged(keys=["image"], a_min=a_min, a_max=a_max, b_min=a_min, b_max=a_max, clip=True))
+
+        if pad:
+            transform_list.append(monai.transforms.SpatialPadd(keys=["image"], spatial_size=target_shape, mode="constant", value=self.padding_value))
+        return Compose(transform_list)
 
 
 MODALITY_PREPROCESSING = {
-    "ct": ModalityPreprocessing(padding_value=-1000, intensity_range=(-1000, 1000)),
-    "mr": ModalityPreprocessing(padding_value=0, intensity_range=(0, 1000), percentile_range=(0.0, 99.5)),
+    "ct": ModalityPreprocessing(padding_value=-1000, output_range=(-1000, 1000)),
+    "mr": ModalityPreprocessing(padding_value=0, output_range=(0, 1000), percentile_range=(0.0, 99.5)),
 }
 
 
@@ -601,36 +649,14 @@ def main(
     # -------------------------------------------------------------------------
     # Build MONAI transforms
     # -------------------------------------------------------------------------
-    transform_list = [
-        monai.transforms.LoadImaged(keys=["image"]),
-        monai.transforms.EnsureChannelFirstd(keys=["image"]),
-        monai.transforms.Orientationd(keys=["image"], axcodes="RAS"),
-    ]
-
-    if enable_resampling:
-        transform_list.append(monai.transforms.Spacingd(keys=["image"], pixdim=rs_spacing_tuple, mode=["bilinear"]))
-
-    if enable_center_cropping:
-        transform_list.append(monai.transforms.CenterSpatialCropd(keys=["image"], roi_size=target_shape_tuple))
-
-    # Intensity windowing runs BEFORE padding: CT's fixed clip is
-    # order-invariant (padding sits inside the window), but MR's percentile
-    # statistics must be computed on the actual content — padding voxels can
-    # outnumber the content and would dilute the percentiles by a volume-size
-    # dependent share, making real/synth normalization inconsistent.
-    if preprocessing.percentile_range is not None:
-        lower, upper = preprocessing.percentile_range
-        b_min, b_max = preprocessing.intensity_range
-        transform_list.append(
-            monai.transforms.ScaleIntensityRangePercentilesd(keys=["image"], lower=lower, upper=upper, b_min=b_min, b_max=b_max, clip=False)
-        )
-    else:
-        a_min, a_max = preprocessing.intensity_range
-        transform_list.append(monai.transforms.ScaleIntensityRanged(keys=["image"], a_min=a_min, a_max=a_max, b_min=a_min, b_max=a_max, clip=True))
-
-    if enable_padding:
-        transform_list.append(monai.transforms.SpatialPadd(keys=["image"], spatial_size=target_shape_tuple, mode="constant", value=preprocessing.padding_value))
-    transforms = Compose(transform_list)
+    # One instance serves both loaders so real and synth share the exact same
+    # preprocessing — the FID-comparability requirement.
+    transforms = preprocessing.compose(
+        target_shape=target_shape_tuple,
+        resample_spacing=rs_spacing_tuple if enable_resampling else None,
+        center_crop=enable_center_cropping,
+        pad=enable_padding,
+    )
 
     # -------------------------------------------------------------------------
     # Create DataLoaders
