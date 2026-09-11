@@ -101,6 +101,15 @@ class TestMrRateVariantLabels:
             "mra": "mri_mra_skull_stripped",
         }
 
+    def test_training_entries_are_the_dual_derivation_whole_brain_first(self) -> None:
+        """The two records every consumer (T6 finalize, T7 merge) states once via this factory."""
+        variant = MrRateVariant.for_series("batch00", "STUDY123", "t1w-raw-axi")
+        entries = variant.training_entries()
+        assert [(entry.image, entry.modality) for entry in entries] == [
+            ("mri/batch00/STUDY123/img/STUDY123_t1w-raw-axi.nii.gz", "mri_t1"),
+            ("mri/batch00/STUDY123/img/STUDY123_t1w-raw-axi_skull_stripped.nii.gz", "mri_t1_skull_stripped"),
+        ]
+
 
 class TestManifestPathAgreement:
     """The manifest generator and the download stage must name the same files."""
