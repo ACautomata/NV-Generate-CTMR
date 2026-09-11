@@ -99,6 +99,10 @@ def prepare_tensors(args: argparse.Namespace, device: torch.device) -> tuple:
     return top_region_index_tensor, bottom_region_index_tensor, spacing_tensor, modality_tensor
 
 
+# Pure inference: guard the UNet sampling + VAE decode against autograd-graph
+# retention. Historically provided by @torch.inference_mode() on diff_model_infer();
+# stated here so direct callers (scripts.diff_model_infer_batch) get it too.
+@torch.inference_mode()
 def run_inference(
     args: argparse.Namespace,
     device: torch.device,
