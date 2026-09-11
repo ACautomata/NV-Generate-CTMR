@@ -119,12 +119,12 @@ class ConditioningPlan:
     """
 
     def __init__(self, inference_config: dict, device: torch.device) -> None:
+        self._device = device
         self.output_size = tuple(inference_config["dim"])
         self.out_spacing = tuple(inference_config["spacing"])
         self._top_region_index = self._conditioning_tensor(inference_config["top_region_index"])
         self._bottom_region_index = self._conditioning_tensor(inference_config["bottom_region_index"])
         self._spacing = self._conditioning_tensor(inference_config["spacing"])
-        self._device = device
 
     def _conditioning_tensor(self, values: list[float]) -> torch.Tensor:
         array = torch.asarray(values, dtype=torch.float32) * 1e2

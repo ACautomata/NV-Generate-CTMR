@@ -94,3 +94,30 @@ class TestSampleNamer:
         namer.path_for(9, 42, 1).touch()
 
         assert namer.pending_indices(task) == [0, 2]
+
+
+class TestConditioningPlan:
+    """CPU-constructible: the x1e2/half-precision contract of the conditioning tensors."""
+
+    def test_tensors_scale_by_1e2_and_match_config(self) -> None:
+        import torch
+
+        from scripts.diff_model_infer_batch import ConditioningPlan
+
+        config = {
+            "dim": [256, 256, 128],
+            "spacing": [0.94, 0.94, 1.36],
+            "top_region_index": [0, 1, 0, 0],
+            "bottom_region_index": [0, 0, 1, 0],
+        }
+        plan = ConditioningPlan(config, torch.device("cpu"))
+
+        assert plan.output_size == (256, 256, 128)
+        assert plan.out_spacing == (0.94, 0.94, 1.36)
+
+        top, bottom, spacing, modality = plan.tensors(9)
+
+        assert top.dtype == torch.float16
+        assert torch.allclose(top.float(), torch.tensor([[0.0, 100.0, 0.0, 0.0]]))
+        assert torch.allclose(spacing.float(), torch.tensor([[94.0, 94.0, 136.0]]))
+        assert modality.tolist() == [9]
