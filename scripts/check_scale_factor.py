@@ -29,8 +29,10 @@ number comes from elsewhere.
 Estimator: the training code computes ``1 / torch.std(first batch)`` with ``batch_size=1``,
 i.e. one volume's whole-tensor std; this check draws a stratified sample (seeded shuffle per
 label, one of each label per round -- every old label is represented whatever N), takes the
-mean per-volume std, and reports ``1 / mean_std``.  ``float32``/``ddof=0`` match the training
-estimator.
+mean per-volume std, and reports ``1 / mean_std``.  ``float32`` and the Bessel-corrected
+``ddof=1`` match the training estimator, whose ``torch.std`` is unbiased by default.  The
+gate decides in the scale_factor domain (what v1 declares): the report also records the
+latent-std-domain deviation, which reads slightly larger for the same shift.
 
 Threshold (the spec's "实现期定" decision, default ``0.2``): replay latents share v1's
 training distribution *and* its unmodified preprocessing pipeline, so gross preprocessing OOD
@@ -168,7 +170,8 @@ class StratifiedLatentSample:
     def _latent_std(self, entry: LatentEntry) -> float:
         latent_path = self._embedding_base_dir / entry.embedding_relative_path
         values = np.asarray(nib.load(str(latent_path)).dataobj, dtype=LATENT_DTYPE)
-        return float(np.std(values))
+        # Bessel-corrected: the training estimator's torch.std is unbiased by default.
+        return float(np.std(values, ddof=1))
 
 
 class ScaleFactorSanityCheck:
@@ -188,7 +191,7 @@ class ScaleFactorSanityCheck:
     ) -> None:
         self._reference = reference
         self._sample = StratifiedLatentSample(
-            entries=self._read_entries(dataset_json),
+            entries=LatentEntry.from_dataset_json(dataset_json),
             embedding_base_dir=embedding_base_dir,
             n_samples=n_samples,
             seed=seed,
@@ -204,11 +207,16 @@ class ScaleFactorSanityCheck:
         }
 
     def run(self) -> dict:
-        """Estimate, compare, write the report, print the verdict; exit 1 on BLOCK."""
+        """Estimate, compare, write the report, print the verdict; return the report.
+
+        The verdict alone decides nothing here -- blocking is the caller's contract, and
+        ``main`` turns a BLOCK into exit code 1.
+        """
         drawn = self._sample.draw()
         mean_std = sum(std for _entry, std in drawn) / len(drawn)
         estimate = 1.0 / mean_std
         deviation = abs(estimate - self._reference.value) / self._reference.value
+        std_deviation = abs(mean_std - self._reference.implied_training_std) / self._reference.implied_training_std
         verdict = "BLOCK" if deviation > self._threshold else "PASS"
 
         report = {
@@ -228,7 +236,14 @@ class ScaleFactorSanityCheck:
                     {"image": entry.image, "modality": entry.modality, "latent": entry.embedding_relative_path, "std": std} for entry, std in drawn
                 ],
             },
-            "comparison": {"deviation_relative": deviation, "threshold_relative": self._threshold},
+            "comparison": {
+                # The gate decides in the scale_factor domain (what v1 declares); the same shift
+                # reads larger in the latent-std domain, so both are recorded.
+                "domain": "scale_factor",
+                "deviation_relative": deviation,
+                "std_domain_deviation_relative": std_deviation,
+                "threshold_relative": self._threshold,
+            },
             "inputs": self._inputs,
         }
         self._report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -240,7 +255,9 @@ class ScaleFactorSanityCheck:
             f"reference scale_factor {self._reference.value:.6f} (from {self._reference.source}, implies training std {self._reference.implied_training_std:.6f})"
         )
         print(f"replay estimate: latent std {mean_std:.6f} over {len(drawn)} latents -> scale_factor {estimate:.6f}")
-        print(f"relative deviation {deviation:.4f} vs threshold {self._threshold}")
+        print(
+            f"relative deviation {deviation:.4f} in the scale_factor domain ({std_deviation:.4f} in the latent-std domain) vs threshold {self._threshold}"
+        )
         per_label_text = ", ".join(f"{label}={stats['std_mean']:.6f}" for label, stats in report["estimate"]["per_label"].items())
         print(f"per-label std: {per_label_text}")
         print(f"verdict {verdict}; report -> {self._report_path}")
@@ -248,7 +265,6 @@ class ScaleFactorSanityCheck:
             print("BLOCKED: deviation exceeds the threshold -- preprocessing OOD suspected. Investigate the replay")
             print("preprocessing (intensity normalization, orientation/resize, dual derivation) before training;")
             print("training must not start on this data.")
-            raise SystemExit(1)
         return report
 
     @staticmethod
@@ -260,12 +276,6 @@ class ScaleFactorSanityCheck:
             label: {"n": len(stdevs), "std_mean": sum(stdevs) / len(stdevs), "std_min": min(stdevs), "std_max": max(stdevs)}
             for label, stdevs in sorted(by_label.items())
         }
-
-    @staticmethod
-    def _read_entries(dataset_json: Path) -> list[LatentEntry]:
-        with dataset_json.open() as file:
-            payload = json.load(file)
-        return [LatentEntry(image=item["image"], modality=item["modality"]) for item in payload["training"]]
 
 
 def main() -> None:
@@ -297,7 +307,7 @@ def main() -> None:
     args = parser.parse_args()
 
     reference = ScaleFactorReference.from_checkpoint(args.v1_ckpt) if args.v1_ckpt else ScaleFactorReference.from_value(args.reference_scale_factor)
-    ScaleFactorSanityCheck(
+    report = ScaleFactorSanityCheck(
         reference=reference,
         dataset_json=args.dataset_json,
         embedding_base_dir=args.embedding_base_dir,
@@ -307,6 +317,8 @@ def main() -> None:
         seed=args.seed,
         labels=tuple(args.labels) if args.labels else None,
     ).run()
+    if report["verdict"] == "BLOCK":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

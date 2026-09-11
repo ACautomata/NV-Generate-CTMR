@@ -68,6 +68,18 @@ class LatentEntry:
         """
         return {"image": self.image, "modality": self.modality}
 
+    @classmethod
+    def from_dataset_json(cls, path: Path) -> "list[LatentEntry]":
+        """Every ``training`` record of a dataset.json, in file order.
+
+        BRATS stage 2, the replay finalize and the merge generator all read their entries the
+        same way (the sidecar writer's own ``main`` included), so the parse lives on the entry
+        itself.
+        """
+        with path.open() as file:
+            payload = json.load(file)
+        return [cls(image=item["image"], modality=item["modality"]) for item in payload["training"]]
+
 
 class LatentSidecarWriter:
     """Writes one spacing/modality sidecar per latent, reading the spacing from the latent header."""
@@ -112,9 +124,7 @@ def main() -> None:
     parser.add_argument("--embedding-base-dir", type=Path, required=True, help="root directory the latents live under")
     args = parser.parse_args()
 
-    with args.dataset_json.open() as file:
-        payload = json.load(file)
-    entries = [LatentEntry(image=item["image"], modality=item["modality"]) for item in payload["training"]]
+    entries = LatentEntry.from_dataset_json(args.dataset_json)
     writer = LatentSidecarWriter(args.embedding_base_dir)
     writer.require_all(entries, str(args.dataset_json))
     print(f"sidecars={writer.write(entries)}")

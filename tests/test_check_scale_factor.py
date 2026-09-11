@@ -34,9 +34,16 @@ LATENT_SHAPE = (2, 4, 4, 4)
 
 
 def constant_std_latent(path: Path, scale: float) -> None:
-    """A latent whose whole-volume std is exactly ``scale`` (half -scale, half +scale, mean zero)."""
-    values = np.full(LATENT_SHAPE, -scale, dtype=np.float32)
-    values.reshape(-1)[: LATENT_SHAPE[0] * LATENT_SHAPE[1] * LATENT_SHAPE[2] * LATENT_SHAPE[3] // 2] = scale
+    """A latent whose Bessel-corrected (ddof=1) whole-volume std is exactly ``scale``.
+
+    Half the voxels sit at -a, half at +a, so the population std is ``a``; writing at
+    ``a = scale x sqrt((N-1)/N)`` makes the sample std (what the check measures, and what
+    ``torch.std`` measures in training) come out at exactly ``scale``.
+    """
+    total = int(np.prod(LATENT_SHAPE))
+    amplitude = scale * math.sqrt((total - 1) / total)
+    values = np.full(LATENT_SHAPE, -amplitude, dtype=np.float32)
+    values.reshape(-1)[: total // 2] = amplitude
     path.parent.mkdir(parents=True, exist_ok=True)
     nib.save(nib.Nifti1Image(values, np.eye(4)), path)
 
@@ -146,12 +153,16 @@ class TestScaleFactorSanityCheck:
         assert report["verdict"] == "PASS"
         assert report["reference"]["scale_factor"] == pytest.approx(V1_SCALE_FACTOR)
         assert report["estimate"]["scale_factor_estimate"] == pytest.approx(V1_SCALE_FACTOR, rel=1e-5)
+        assert report["comparison"]["domain"] == "scale_factor"
         assert report["comparison"]["deviation_relative"] == pytest.approx(0.0, abs=1e-5)
+        assert report["comparison"]["std_domain_deviation_relative"] == pytest.approx(0.0, abs=1e-5)
         assert len(report["estimate"]["samples"]) == 10
 
-    def test_off_distribution_data_blocks_training(self, v1_ckpt: Path, replay_dataset_off_distribution: Path, tmp_path: Path) -> None:
+    def test_off_distribution_data_verdicts_block_and_records_both_domains(
+        self, v1_ckpt: Path, replay_dataset_off_distribution: Path, tmp_path: Path
+    ) -> None:
         report_path = tmp_path / "scale_factor_report.json"
-        check = ScaleFactorSanityCheck(
+        report = ScaleFactorSanityCheck(
             reference=ScaleFactorReference.from_checkpoint(v1_ckpt),
             dataset_json=replay_dataset_off_distribution,
             embedding_base_dir=tmp_path / "embeddings",
@@ -159,13 +170,13 @@ class TestScaleFactorSanityCheck:
             seed=42,
             threshold=0.2,
             report_path=report_path,
-        )
-        with pytest.raises(SystemExit) as exit_info:
-            check.run()
-        assert exit_info.value.code == 1
-        report = json.loads(report_path.read_text())
+        ).run()
         assert report["verdict"] == "BLOCK"
+        # Latents at twice the reference std: the std-domain deviation is exactly +100%, the
+        # reciprocal scale_factor-domain deviation 50% -- both recorded, the gate decides on
+        # the scale_factor domain.
         assert report["comparison"]["deviation_relative"] == pytest.approx(0.5, rel=1e-3)
+        assert report["comparison"]["std_domain_deviation_relative"] == pytest.approx(1.0, rel=1e-3)
 
     def test_per_label_table_lands_in_the_report(self, v1_ckpt: Path, replay_dataset_on_distribution: Path, tmp_path: Path) -> None:
         report_path = tmp_path / "scale_factor_report.json"
