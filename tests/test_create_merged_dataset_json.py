@@ -177,6 +177,17 @@ class TestAcceptedReplayRoster:
         with pytest.raises(ValueError, match="cap"):
             AcceptedReplayRoster(manifest, n_per_label=2)
 
+    def test_a_row_marked_as_another_modality_cannot_bypass_the_cap(self, tmp_path: Path) -> None:
+        """A t1w row whose modality column says mra would be charged to the uncapped MRA group
+        while its training entries still come out as mri_t1 -- the t1w cap quietly bypassed.
+        The row is refused at construction instead."""
+        rows = [manifest_row("STUDYA", "t1w-raw-axi", "mri_t1"), manifest_row("STUDYB", "t1w-raw-sag", "mri_t1")]
+        rows[1]["modality"] = "mra"
+        rows += [manifest_row(study, series_id, label) for study, series_id, label in REPLAY_SERIES[1:]]
+        manifest = write_manifest(tmp_path / "manifests" / "lied.csv", rows)
+        with pytest.raises(ValueError, match="modality"):
+            AcceptedReplayRoster(manifest, n_per_label=1)
+
     def test_a_shortfall_below_the_cap_is_kept_and_reported(self, tmp_path: Path) -> None:
         rows = [manifest_row(f"STUDY{i}", "t1w-raw-axi", "mri_t1") for i in range(2)]
         rows += [manifest_row(study, series_id, label) for study, series_id, label in REPLAY_SERIES[1:]]

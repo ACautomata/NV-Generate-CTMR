@@ -26,13 +26,23 @@ checkpoint -- exactly the number v1 inference uses (``diff_model_infer.py`` read
 key), i.e. v1's declared operating point.  ``--reference-scale-factor`` overrides when the
 number comes from elsewhere.
 
-Estimator: the training code computes ``1 / torch.std(first batch)`` with ``batch_size=1``,
-i.e. one volume's whole-tensor std; this check draws a stratified sample (seeded shuffle per
-label, one of each label per round -- every old label is represented whatever N), takes the
-mean per-volume std, and reports ``1 / mean_std``.  ``float32`` and the Bessel-corrected
+Estimator: training computes ``1 / torch.std(first batch)`` per rank with ``batch_size=1``
+and averages those scale factors across ranks (``dist.all_reduce ... AVG``), i.e. the mean of
+per-volume reciprocals; this check mirrors that -- one stratified sample (seeded shuffle per
+label, one of each label per round -- every old label is represented whatever N), each
+volume's reciprocal ``1/std``, and the mean of those.  (The reciprocal of the mean std reads
+lower once the volumes' stds are heterogeneous -- Jensen's inequality -- which on real data
+is wide enough to matter against the threshold.)  ``float32`` and the Bessel-corrected
 ``ddof=1`` match the training estimator, whose ``torch.std`` is unbiased by default.  The
 gate decides in the scale_factor domain (what v1 declares): the report also records the
-latent-std-domain deviation, which reads slightly larger for the same shift.
+latent-std-domain deviation (mean of reciprocals inverted, the harmonic mean of the stds),
+which reads slightly larger for the same shift.
+
+A sampled latent holding NaN/inf poisons ``np.std`` and, in the scale_factor domain, every
+comparison after it (``NaN > threshold`` is False) -- so non-finite samples never enter the
+statistics: they are named in the report and block the run outright, exactly the corrupt
+encoder output the gate exists to catch.  The reference and the threshold are validated
+finite and positive at construction.
 
 Threshold (the spec's "实现期定" decision, default ``0.2``): replay latents share v1's
 training distribution *and* its unmodified preprocessing pipeline, so gross preprocessing OOD
@@ -58,6 +68,7 @@ Usage (on gauss, after the replay latents and sidecars are in place)::
 import argparse
 import hashlib
 import json
+import math
 import random
 from datetime import UTC, datetime
 from pathlib import Path
@@ -78,8 +89,8 @@ class ScaleFactorReference:
     """The v1 scale_factor the finetune run is sanity-checked against, and where it came from."""
 
     def __init__(self, value: float, source: str) -> None:
-        if value <= 0:
-            raise ValueError(f"scale_factor must be positive, got {value}")
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"scale_factor must be finite and positive, got {value}")
         self.value = value
         self.source = source
 
@@ -123,6 +134,11 @@ class StratifiedLatentSample:
         self._n_samples = n_samples
         self._seed = seed
         self._pools = self._label_pools(entries, labels)
+        if n_samples < len(self._pools):
+            raise ValueError(
+                f"n_samples {n_samples} cannot cover the {len(self._pools)} label pools the stratified draw must visit; "
+                f"every label needs at least one sample or the gate PASSes with whole modalities uninspected"
+            )
 
     def draw(self) -> list[tuple[LatentEntry, float]]:
         """The drawn latents with their whole-tensor std, round-robin across labels."""
@@ -198,6 +214,8 @@ class ScaleFactorSanityCheck:
             labels=labels,
         )
         self._threshold = threshold
+        if not math.isfinite(threshold) or threshold <= 0:
+            raise ValueError(f"threshold must be finite and positive, got {threshold}")
         self._report_path = report_path
         self._inputs = {
             "dataset_json": str(dataset_json),
@@ -213,11 +231,30 @@ class ScaleFactorSanityCheck:
         ``main`` turns a BLOCK into exit code 1.
         """
         drawn = self._sample.draw()
-        mean_std = sum(std for _entry, std in drawn) / len(drawn)
-        estimate = 1.0 / mean_std
-        deviation = abs(estimate - self._reference.value) / self._reference.value
-        std_deviation = abs(mean_std - self._reference.implied_training_std) / self._reference.implied_training_std
-        verdict = "BLOCK" if deviation > self._threshold else "PASS"
+        finite = [(entry, std) for entry, std in drawn if math.isfinite(std)]
+        non_finite = [
+            {"image": entry.image, "modality": entry.modality, "latent": entry.embedding_relative_path}
+            for entry, std in drawn
+            if not math.isfinite(std)
+        ]
+
+        # Training averages the per-rank 1/std across ranks (all_reduce AVG), so the estimate is
+        # the mean of the per-volume reciprocals; the harmonic mean of the stds is its exact
+        # std-domain twin.  A NaN/inf latent would poison both into a comparison that can never
+        # exceed the threshold, so non-finite samples block outright instead of entering these.
+        estimate = sum(1.0 / std for _entry, std in finite) / len(finite) if finite else None
+        latent_std_mean = sum(std for _entry, std in finite) / len(finite) if finite else None
+        latent_std_harmonic_mean = 1.0 / estimate if estimate is not None else None
+        deviation = abs(estimate - self._reference.value) / self._reference.value if estimate is not None else None
+        std_deviation = (
+            abs(latent_std_harmonic_mean - self._reference.implied_training_std) / self._reference.implied_training_std
+            if estimate is not None
+            else None
+        )
+        if non_finite or (deviation is not None and deviation > self._threshold):
+            verdict = "BLOCK"
+        else:
+            verdict = "PASS"
 
         report = {
             "verdict": verdict,
@@ -228,12 +265,22 @@ class ScaleFactorSanityCheck:
                 "implied_training_std": self._reference.implied_training_std,
             },
             "estimate": {
-                "latent_std_mean": mean_std,
+                "estimate_method": "mean of per-volume 1/std (matches training: per-rank 1/torch.std averaged across ranks via all_reduce AVG)",
                 "scale_factor_estimate": estimate,
+                "latent_std_mean": latent_std_mean,
+                "latent_std_harmonic_mean": latent_std_harmonic_mean,
                 "n_samples": len(drawn),
-                "per_label": self._per_label(drawn),
+                "n_finite": len(finite),
+                "non_finite_samples": non_finite,
+                "per_label": self._per_label(finite),
                 "samples": [
-                    {"image": entry.image, "modality": entry.modality, "latent": entry.embedding_relative_path, "std": std} for entry, std in drawn
+                    {
+                        "image": entry.image,
+                        "modality": entry.modality,
+                        "latent": entry.embedding_relative_path,
+                        "std": std if math.isfinite(std) else None,
+                    }
+                    for entry, std in drawn
                 ],
             },
             "comparison": {
@@ -254,23 +301,36 @@ class ScaleFactorSanityCheck:
         print(
             f"reference scale_factor {self._reference.value:.6f} (from {self._reference.source}, implies training std {self._reference.implied_training_std:.6f})"
         )
-        print(f"replay estimate: latent std {mean_std:.6f} over {len(drawn)} latents -> scale_factor {estimate:.6f}")
-        print(
-            f"relative deviation {deviation:.4f} in the scale_factor domain ({std_deviation:.4f} in the latent-std domain) vs threshold {self._threshold}"
+        if estimate is None:
+            print(f"replay estimate: all {len(drawn)} sampled latents hold non-finite values -- no std, no estimate")
+        else:
+            print(
+                f"replay estimate: latent std {latent_std_mean:.6f} (harmonic mean {latent_std_harmonic_mean:.6f}) over "
+                f"{len(finite)} finite latents -> scale_factor {estimate:.6f}"
+            )
+            print(
+                f"relative deviation {deviation:.4f} in the scale_factor domain ({std_deviation:.4f} in the latent-std domain) vs threshold {self._threshold}"
+            )
+        per_label_text = (
+            ", ".join(f"{label}={stats['std_mean']:.6f}" for label, stats in report["estimate"]["per_label"].items()) or "(no finite samples)"
         )
-        per_label_text = ", ".join(f"{label}={stats['std_mean']:.6f}" for label, stats in report["estimate"]["per_label"].items())
         print(f"per-label std: {per_label_text}")
         print(f"verdict {verdict}; report -> {self._report_path}")
-        if verdict == "BLOCK":
+        if non_finite:
+            print(
+                f"BLOCKED: {len(non_finite)} of {len(drawn)} sampled latents hold NaN/inf values, e.g. {non_finite[0]['latent']} -- corrupt encoder"
+            )
+            print("output. Re-encode these volumes before training; training must not start on this data.")
+        if verdict == "BLOCK" and not non_finite:
             print("BLOCKED: deviation exceeds the threshold -- preprocessing OOD suspected. Investigate the replay")
             print("preprocessing (intensity normalization, orientation/resize, dual derivation) before training;")
             print("training must not start on this data.")
         return report
 
     @staticmethod
-    def _per_label(drawn: list[tuple[LatentEntry, float]]) -> dict[str, dict]:
+    def _per_label(finite: list[tuple[LatentEntry, float]]) -> dict[str, dict]:
         by_label: dict[str, list[float]] = {}
-        for entry, std in drawn:
+        for entry, std in finite:
             by_label.setdefault(entry.modality, []).append(std)
         return {
             label: {"n": len(stdevs), "std_mean": sum(stdevs) / len(stdevs), "std_min": min(stdevs), "std_max": max(stdevs)}

@@ -92,6 +92,13 @@ class TestScaleFactorReference:
         assert reference.value == pytest.approx(V1_SCALE_FACTOR)
         assert reference.source == str(v1_ckpt)
 
+    def test_a_non_finite_reference_is_refused(self) -> None:
+        """A NaN passes the positivity check and would poison every deviation into a silent PASS."""
+        with pytest.raises(ValueError, match="finite"):
+            ScaleFactorReference(value=float("nan"), source="ckpt")
+        with pytest.raises(ValueError, match="finite"):
+            ScaleFactorReference(value=float("inf"), source="ckpt")
+
     def test_implied_training_std_is_the_reciprocal(self, v1_ckpt: Path) -> None:
         assert ScaleFactorReference.from_checkpoint(v1_ckpt).implied_training_std == pytest.approx(1.0 / V1_SCALE_FACTOR)
 
@@ -134,6 +141,19 @@ class TestStratifiedLatentSample:
         entries, _ = dataset_entries({label: 1.0 for label in LABELS}, tmp_path)
         with pytest.raises(ValueError, match="mri_ct"):
             StratifiedLatentSample(entries=entries, embedding_base_dir=tmp_path / "embeddings", n_samples=10, seed=42, labels=("mri_ct",))
+
+    def test_a_sample_count_below_the_label_count_is_refused(self, tmp_path: Path) -> None:
+        """Round-robin stops once the requested count is drawn -- with fewer samples than labels
+        several modalities would go uninspected while the gate still printed its stratified PASS."""
+        entries, _ = dataset_entries({label: 1.0 for label in LABELS}, tmp_path)
+        with pytest.raises(ValueError, match="n_samples"):
+            StratifiedLatentSample(entries=entries, embedding_base_dir=tmp_path / "embeddings", n_samples=len(LABELS) - 1, seed=42)
+
+    def test_a_zero_sample_count_is_refused(self, tmp_path: Path) -> None:
+        """Zero would leave the mean over an empty draw -- a crash instead of the required report."""
+        entries, _ = dataset_entries({label: 1.0 for label in LABELS}, tmp_path)
+        with pytest.raises(ValueError, match="n_samples"):
+            StratifiedLatentSample(entries=entries, embedding_base_dir=tmp_path / "embeddings", n_samples=0, seed=42)
 
 
 class TestScaleFactorSanityCheck:
@@ -178,6 +198,70 @@ class TestScaleFactorSanityCheck:
         assert report["comparison"]["deviation_relative"] == pytest.approx(0.5, rel=1e-3)
         assert report["comparison"]["std_domain_deviation_relative"] == pytest.approx(1.0, rel=1e-3)
 
+    @pytest.mark.parametrize("poison", [np.nan, np.inf])
+    def test_a_non_finite_latent_blocks_the_gate_and_keeps_the_report_json_clean(
+        self, v1_ckpt: Path, replay_dataset_on_distribution: Path, tmp_path: Path, poison: float
+    ) -> None:
+        """A NaN rides np.std into mean_std and deviation, and ``NaN > threshold`` is False --
+        corrupt encoder output would PASS straight into training.  The gate must split the
+        non-finite samples out, keep the finite statistics usable, and BLOCK.  The report must
+        also stay valid JSON: json.dump would otherwise write a bare NaN literal that
+        downstream parsers refuse."""
+        victim = LatentEntry.from_dataset_json(replay_dataset_on_distribution)[0]
+        latent_path = tmp_path / "embeddings" / victim.embedding_relative_path
+        values = np.asarray(nib.load(str(latent_path)).dataobj, dtype=np.float32).copy()
+        values[0, 0, 0, 0] = poison
+        nib.save(nib.Nifti1Image(values, np.eye(4)), latent_path)
+
+        report_path = tmp_path / "report.json"
+        report = ScaleFactorSanityCheck(
+            reference=ScaleFactorReference.from_checkpoint(v1_ckpt),
+            dataset_json=replay_dataset_on_distribution,
+            embedding_base_dir=tmp_path / "embeddings",
+            n_samples=10,
+            seed=42,
+            threshold=0.2,
+            report_path=report_path,
+        ).run()
+        assert report["verdict"] == "BLOCK"
+        assert [sample["latent"] for sample in report["estimate"]["non_finite_samples"]] == [victim.embedding_relative_path]
+        assert report["estimate"]["n_samples"] == 10
+        assert report["estimate"]["n_finite"] == 9
+        text = report_path.read_text()
+        assert "NaN" not in text and "Infinity" not in text
+        assert json.loads(text)["verdict"] == "BLOCK"
+
+    def test_a_non_finite_threshold_is_refused(self, v1_ckpt: Path, replay_dataset_on_distribution: Path, tmp_path: Path) -> None:
+        """``NaN > threshold`` is False, so a NaN threshold would PASS everything."""
+        with pytest.raises(ValueError, match="finite"):
+            ScaleFactorSanityCheck(
+                reference=ScaleFactorReference.from_checkpoint(v1_ckpt),
+                dataset_json=replay_dataset_on_distribution,
+                embedding_base_dir=tmp_path / "embeddings",
+                n_samples=10,
+                threshold=float("nan"),
+                report_path=tmp_path / "report.json",
+            )
+
+    def test_the_estimate_averages_per_volume_reciprocals_like_training(self, tmp_path: Path) -> None:
+        """Training computes ``1 / torch.std`` per rank (batch_size=1) and averages those scale
+        factors across ranks via all_reduce AVG -- mean(1/std), here (1/1.0 + 1/2.0)/2 = 0.75.
+        The reciprocal of the mean std would read 0.667: a 12% gap on this little pair, wide
+        enough to matter against a 20% threshold on real heterogeneous data."""
+        _entries, dataset_json = dataset_entries({"mri_t1": 1.0, "mri_t2": 2.0, "mri_flair": 1.0, "mri_swi": 1.0, "mri_mra": 1.0}, tmp_path)
+        report = ScaleFactorSanityCheck(
+            reference=ScaleFactorReference.from_value(0.75),
+            dataset_json=dataset_json,
+            embedding_base_dir=tmp_path / "embeddings",
+            n_samples=2,
+            seed=42,
+            labels=("mri_t1", "mri_t2"),
+            threshold=0.2,
+            report_path=tmp_path / "report.json",
+        ).run()
+        assert report["estimate"]["scale_factor_estimate"] == pytest.approx(0.75, rel=1e-6)
+        assert report["verdict"] == "PASS"
+
     def test_per_label_table_lands_in_the_report(self, v1_ckpt: Path, replay_dataset_on_distribution: Path, tmp_path: Path) -> None:
         report_path = tmp_path / "scale_factor_report.json"
         ScaleFactorSanityCheck(
@@ -193,14 +277,16 @@ class TestScaleFactorSanityCheck:
         assert set(per_label) == set(LABELS)
         assert all(per_label[label]["std_mean"] == pytest.approx(1.0 / V1_SCALE_FACTOR, rel=1e-5) for label in LABELS)
 
-    def test_estimated_scale_factor_is_the_reciprocal_mean_std(self, tmp_path: Path) -> None:
-        """The estimator mirrors training's 1/torch.std(first batch): batch_size=1 -> one volume's std."""
+    def test_estimated_scale_factor_is_the_mean_of_per_volume_reciprocals(self, tmp_path: Path) -> None:
+        """The estimator mirrors training's per-rank ``1 / torch.std(first batch)`` averaged via
+        all_reduce AVG: batch_size=1 -> one volume's std per sample, and with every volume at
+        1.25 the mean of reciprocals is 0.8 (identical to 1/mean_std only because the stds tie)."""
         entries, _ = dataset_entries({label: 1.25 for label in LABELS}, tmp_path)
         sample = StratifiedLatentSample(entries=entries, embedding_base_dir=tmp_path / "embeddings", n_samples=10, seed=42)
         drawn = sample.draw()
-        mean_std = sum(std for _entry, std in drawn) / len(drawn)
-        assert 1.0 / mean_std == pytest.approx(0.8, rel=1e-6)
-        assert math.isclose(1.0 / 1.25, 0.8)
+        mean_reciprocal = sum(1.0 / std for _entry, std in drawn) / len(drawn)
+        assert 1.0 / 1.25 == pytest.approx(0.8, rel=1e-6)
+        assert mean_reciprocal == pytest.approx(0.8, rel=1e-6)
 
 
 class TestMain:
