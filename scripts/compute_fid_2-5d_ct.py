@@ -108,14 +108,24 @@ Function Arguments (main):
 
     target_shape (str):
         Target shape as "XxYxZ" for padding, cropping, or resampling operations.
+
+    comparison_tag (str):
+        Free-form identifier written into the result json (e.g. "label9_seed42"
+        or "floor_half_a_vs_half_b") so frozen records stay self-describing.
+
+    result_json (str or None):
+        If not None, path where rank 0 writes the FID numbers + provenance as
+        json (the frozen-artifact input for the summarizer). None keeps the
+        historical log-only behavior.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -222,6 +232,47 @@ MODALITY_PREPROCESSING = {
     "ct": ModalityPreprocessing(name="ct", padding_value=-1000, output_range=(-1000, 1000)),
     "mr": ModalityPreprocessing(name="mr", padding_value=0, output_range=(0, 1000), percentile_range=(0.0, 99.5)),
 }
+
+
+@dataclass(frozen=True)
+class FidResult:
+    """One FID invocation's numbers plus the provenance needed to freeze it (ticket T8, issue #24).
+
+    The acceptance protocol freezes FID values once into json/csv and reuses them for
+    every later comparison, so each record carries what identified the run: the two
+    filelists, the modality preprocessing, and the sampling/geometry flags.
+
+    The three ``enable_*`` fields were added after the first 24 records were frozen;
+    they default to None, which reads as "not recorded" rather than as a guess at
+    what those runs did.
+    """
+
+    comparison_tag: str
+    fid_xy: float
+    fid_yz: float
+    fid_zx: float
+    fid_avg: float
+    modality: str
+    model_name: str
+    num_images: int
+    real_filelist: str
+    synth_filelist: str
+    target_shape: str
+    center_slices_ratio: float | None
+    enable_padding: bool | None = None
+    enable_center_cropping: bool | None = None
+    enable_resampling_spacing: str | None = None
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w") as file:
+            json.dump(asdict(self), file, indent=2)
+
+    @classmethod
+    def load(cls, path: Path) -> FidResult:
+        with path.open() as file:
+            payload = json.load(file)
+        return cls(**payload)
 
 
 def drop_empty_slice(slices, empty_threshold: float):
@@ -481,6 +532,8 @@ def main(
     num_images: int = 100,
     output_root: str = "./features/features-512x512x512",
     target_shape: str = "512x512x512",
+    comparison_tag: str = "",
+    result_json: str | None = None,
 ):
     """
     Compute 2.5D FID using distributed GPU processing.
@@ -822,6 +875,27 @@ def main(
         logger.info(f"FID ZX: {fid_res_zx}")
         fid_avg = (fid_res_xy + fid_res_yz + fid_res_zx) / 3.0
         logger.info(f"FID Avg: {fid_avg}")
+
+        if result_json is not None:
+            result = FidResult(
+                comparison_tag=comparison_tag,
+                fid_xy=float(fid_res_xy),
+                fid_yz=float(fid_res_yz),
+                fid_zx=float(fid_res_zx),
+                fid_avg=float(fid_avg),
+                modality=modality,
+                model_name=model_name,
+                num_images=num_images,
+                real_filelist=real_filelist,
+                synth_filelist=synth_filelist,
+                target_shape=target_shape,
+                center_slices_ratio=enable_center_slices_ratio,
+                enable_padding=enable_padding,
+                enable_center_cropping=enable_center_cropping,
+                enable_resampling_spacing=enable_resampling_spacing,
+            )
+            result.save(Path(result_json))
+            logger.info(f"FID result written to {result_json}")
 
     dist.destroy_process_group()
 

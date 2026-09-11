@@ -24,6 +24,7 @@ keeps FID comparable.
 """
 
 import importlib
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -216,3 +217,99 @@ class TestComposeChainOrdering:
         assert out[0, 4, 4, 5] == 1000  # over-range clipped to HU max
         assert out[0, 0, 0, 0] == -1000  # padding region uses CT air
         assert out[0, 15, 15, 15] == -1000
+
+
+# One of the 24 baseline records published in the t8-baseline-freeze-20260911
+# release: the exact key set (12) this dataclass has to keep loading.
+PUBLISHED_RECORD = {
+    "comparison_tag": "label9_seed42",
+    "fid_xy": 4.099713194645936,
+    "fid_yz": 6.09807093899615,
+    "fid_zx": 6.0591007263717085,
+    "fid_avg": 5.418961620004598,
+    "modality": "mr",
+    "model_name": "radimagenet_resnet50",
+    "num_images": 50,
+    "real_filelist": "runs/t8-baseline-gen-20260911/fid_filelists/ref/mri_t1.txt",
+    "synth_filelist": "runs/t8-baseline-gen-20260911/fid_filelists/synth/label9_seed42.txt",
+    "target_shape": "256x256x128",
+    "center_slices_ratio": 0.4,
+}
+
+
+class TestFidResult:
+    """The result record added by T8 (#24): one FID invocation -> one frozen json artifact."""
+
+    def make_result(self) -> "compute_fid.FidResult":
+        return compute_fid.FidResult(
+            comparison_tag="label9_seed42",
+            fid_xy=10.1,
+            fid_yz=11.2,
+            fid_zx=12.3,
+            fid_avg=11.2,
+            modality="mr",
+            model_name="radimagenet_resnet50",
+            num_images=50,
+            real_filelist="ref/mri_t1.txt",
+            synth_filelist="synth/label9_seed42.txt",
+            target_shape="256x256x128",
+            center_slices_ratio=0.4,
+            enable_padding=True,
+            enable_center_cropping=True,
+            enable_resampling_spacing="1.0x1.0x1.0",
+        )
+
+    def test_round_trips_through_json(self, tmp_path) -> None:
+        result = self.make_result()
+        path = tmp_path / "fid_label9_seed42.json"
+
+        result.save(path)
+        restored = compute_fid.FidResult.load(path)
+
+        assert restored == result
+
+    def test_json_carries_the_provenance_needed_for_the_freeze(self, tmp_path) -> None:
+        path = tmp_path / "fid.json"
+
+        self.make_result().save(path)
+
+        payload = json.loads(path.read_text())
+        assert payload["comparison_tag"] == "label9_seed42"
+        assert payload["fid_avg"] == 11.2
+        assert payload["modality"] == "mr"
+        assert payload["real_filelist"] == "ref/mri_t1.txt"
+        assert payload["synth_filelist"] == "synth/label9_seed42.txt"
+
+    def test_json_carries_the_transform_flags_that_shape_the_features(self, tmp_path) -> None:
+        """Padding, cropping and resampling decide what the feature network is handed.
+
+        Unlike ``target_shape``, which only names the box, these decide whether a
+        volume is resampled into it and which side gets cropped or padded -- so two
+        records differing in them describe different inputs and cannot be compared
+        from their numbers alone.
+        """
+        path = tmp_path / "fid.json"
+
+        self.make_result().save(path)
+
+        payload = json.loads(path.read_text())
+        assert payload["enable_padding"] is True
+        assert payload["enable_center_cropping"] is True
+        assert payload["enable_resampling_spacing"] == "1.0x1.0x1.0"
+
+    def test_a_record_published_before_the_flags_still_loads(self, tmp_path) -> None:
+        """The 24 frozen records already published carry this exact key set and must keep loading.
+
+        Their three flags read back as unknown rather than guessed: an assumption of
+        ``True`` is what this record exists to stop anyone having to make.
+        """
+        path = tmp_path / "legacy.json"
+        path.write_text(json.dumps(PUBLISHED_RECORD))
+
+        restored = compute_fid.FidResult.load(path)
+
+        assert restored.comparison_tag == "label9_seed42"
+        assert restored.fid_avg == 5.418961620004598
+        assert restored.enable_padding is None
+        assert restored.enable_center_cropping is None
+        assert restored.enable_resampling_spacing is None
