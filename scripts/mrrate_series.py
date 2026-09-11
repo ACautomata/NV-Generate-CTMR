@@ -34,6 +34,8 @@ generator (ticket T7 #23) rebases these relative paths onto the training env's r
 
 from pathlib import Path
 
+from scripts.latent_sidecars import LatentEntry
+
 WHOLE_BRAIN_LABEL = {
     "t1w": "mri_t1",
     "t2w": "mri_t2",
@@ -96,6 +98,20 @@ class MrRateVariant:
         """The derived skull-stripped twin (``image * brain-mask``); same directory as the image."""
         sibling = Path(self._image_path).parent / f"{self._stem}{SKULL_STRIPPED_SUFFIX}{NIFTI_EXTENSION}"
         return sibling.as_posix()
+
+    def training_entries(self) -> list[LatentEntry]:
+        """The two training entries this acquisition becomes (the dual derivation of spec #13 section 3.3), whole-brain first.
+
+        One downloaded volume is encoded once and yields both conditions the v1 model was trained
+        on: the source image under its v1 label (``mri_t1`` ...), and the skull-stripped twin
+        derived from it under the matching ``_skull_stripped`` label (29-33).  The dataset.json
+        records and the sidecar labels both come from here, so every consumer states the pairing
+        once.
+        """
+        return [
+            LatentEntry(image=self.whole_brain_path, modality=self.label),
+            LatentEntry(image=self.skull_stripped_path, modality=self.skull_stripped_label),
+        ]
 
     @property
     def label(self) -> str:

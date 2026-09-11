@@ -43,10 +43,9 @@ Usage (on gauss, after ``diff_model_create_training_data`` has encoded every ent
 """
 
 import argparse
-import json
 from pathlib import Path
 
-from .latent_sidecars import LatentEntry, LatentSidecarWriter
+from scripts.latent_sidecars import LatentEntry, LatentSidecarWriter
 
 
 class BratsSidecarGenerator:
@@ -62,9 +61,7 @@ class BratsSidecarGenerator:
 
     def entries(self) -> list[LatentEntry]:
         """The dataset.json training records, in file order."""
-        with self._dataset_json_path.open() as file:
-            payload = json.load(file)
-        return [LatentEntry(image=item["image"], modality=item["modality"]) for item in payload["training"]]
+        return LatentEntry.from_dataset_json(self._dataset_json_path)
 
 
 def main() -> None:

@@ -82,20 +82,30 @@ class ManifestCandidate:
 
     @classmethod
     def from_row(cls, row: dict[str, str]) -> "ManifestCandidate":
-        """Build from a manifest CSV row, refusing a row whose label column lies about its series id.
+        """Build from a manifest CSV row, refusing a row whose ``label`` or ``modality`` column
+        lies about its series id.
 
         The manifest's ``label`` drives the training condition, while the dual twin's label is
         derived from the series-id prefix -- a disagreement would land as a wrong label in the
-        training set, or as a ``KeyError`` hours into the run for an unknown modality.  Checking
-        in the factory rather than at each call site is what makes the ticket's "与 manifest 一致"
-        hold for *every* consumer: the download, the encoder input list and the sidecar finalize
-        all go through here, so none of them can silently skip the check.
+        training set, or as a ``KeyError`` hours into the run for an unknown modality.  The
+        ``modality`` column is what cap accounting groups on (ticket T7 #23), while the training
+        entries come from the series id -- a row marked with another modality would be charged
+        to the wrong cap (an extra t1w row marked ``mra`` rides the uncapped MRA group past the
+        t1w cap).  Checking both in the factory rather than at each call site is what makes the
+        ticket's "与 manifest 一致" hold for *every* consumer: the download, the encoder input
+        list, the merge generator's cap re-check and the sidecar finalize all go through here,
+        so none of them can silently skip the check.
         """
         candidate = cls(**{name: row[name] for name in MANIFEST_COLUMNS})
         if candidate.label != candidate.variant.label:
             raise ValueError(
                 f"{candidate.study_uid}/{candidate.series_id}: manifest label {candidate.label!r} "
                 f"contradicts the series id (implies {candidate.variant.label!r})"
+            )
+        if candidate.modality != candidate.variant.modality:
+            raise ValueError(
+                f"{candidate.study_uid}/{candidate.series_id}: manifest modality {candidate.modality!r} "
+                f"contradicts the series id (implies {candidate.variant.modality!r})"
             )
         return candidate
 

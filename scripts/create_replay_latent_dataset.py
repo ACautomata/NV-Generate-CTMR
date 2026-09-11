@@ -139,16 +139,11 @@ class ReplayLatentDataset:
     def _dual_derivation(candidates: list[ManifestCandidate]) -> list[LatentEntry]:
         """The training entries an accepted roster becomes (section 3.3 "双产"), whole-brain first.
 
-        One downloaded volume is encoded once and yields both conditions the v1 model was trained
-        on: the source image under its v1 label (``mri_t1`` ...), and the skull-stripped twin
-        derived from it under the matching ``_skull_stripped`` label (29-33).
+        The pairing of an acquisition to its two conditions lives on
+        ``MrRateVariant.training_entries`` -- the merge generator (ticket T7 #23) states the
+        same fact.
         """
-        entries = []
-        for candidate in candidates:
-            variant = candidate.variant
-            entries.append(LatentEntry(image=variant.whole_brain_path, modality=variant.label))
-            entries.append(LatentEntry(image=variant.skull_stripped_path, modality=variant.skull_stripped_label))
-        return entries
+        return [entry for candidate in candidates for entry in candidate.variant.training_entries()]
 
     def _is_downloaded(self, entry: LatentEntry) -> bool:
         """Whether this entry's source volume is on disk under the data root."""

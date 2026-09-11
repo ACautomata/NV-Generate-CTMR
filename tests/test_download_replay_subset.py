@@ -208,6 +208,23 @@ class TestManifestCandidate:
                 }
             )
 
+    def test_a_modality_that_contradicts_the_series_id_is_refused_at_construction(self) -> None:
+        """The modality column is what the cap accounting groups on, while the training entries
+        come from the series id -- a lying modality column would charge the row to the wrong cap
+        (an extra t1w row marked mra would ride the uncapped MRA group past the t1w cap)."""
+        with pytest.raises(ValueError, match="contradicts the series id"):
+            ManifestCandidate.from_row(
+                {
+                    "patient_uid": "1",
+                    "study_uid": "STUDYB01",
+                    "series_id": "t1w-raw-axi",
+                    "modality": "mra",
+                    "label": "mri_t1",
+                    "split": "Train",
+                    "image_path": "mri/batch00/STUDYB01/img/STUDYB01_t1w-raw-axi.nii.gz",
+                }
+            )
+
 
 class TestSeriesVerdict:
     def test_accept_row_carries_the_manifest_columns_and_measurements(self) -> None:
