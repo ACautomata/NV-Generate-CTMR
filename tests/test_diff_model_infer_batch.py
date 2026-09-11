@@ -19,12 +19,26 @@ different number of free GPUs), and the deterministic naming/resume contract the
 FID stage's filelists are built from. The GPU loop itself is not unit-tested.
 """
 
+import logging
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
+from monai.utils import set_determinism
 
-from scripts.diff_model_infer_batch import ConditioningPlan, GenerationTask, SampleNamer, TaskTable
+from scripts.diff_model_infer_batch import BaselineVolumeGenerator, ConditioningPlan, GenerationTask, SampleNamer, TaskTable
+
+LATENT_CHANNELS = 4
+INFERENCE_CONFIG = {
+    "dim": [256, 256, 128],
+    "spacing": [0.94, 0.94, 1.36],
+    "top_region_index": [0, 1, 0, 0],
+    "bottom_region_index": [0, 0, 1, 0],
+}
+# 8 downsample levels -> divisor 2 ** 6 -> the latent of a 256x256x128 volume.
+LATENT_SHAPE = (1, LATENT_CHANNELS, 4, 4, 2)
 
 
 class TestTaskTable:
@@ -66,6 +80,15 @@ class TestTaskTable:
         with pytest.raises(ValueError, match="duplicate labels"):
             TaskTable.from_args(labels=[9, 9], seeds=[42], count=50)
 
+    def test_duplicate_seeds_are_refused(self) -> None:
+        """A repeated seed expands to repeated tasks, and stride sharding hands them to different ranks.
+
+        Both ranks then find the same volumes missing and write the same filenames at
+        once -- the output names do not carry a rank, so nothing arbitrates between them.
+        """
+        with pytest.raises(ValueError, match="duplicate seeds"):
+            TaskTable.from_args(labels=[9], seeds=[42, 42], count=50)
+
     def test_empty_labels_are_refused(self) -> None:
         with pytest.raises(ValueError, match="no labels"):
             TaskTable.from_args(labels=[], seeds=[42], count=50)
@@ -101,13 +124,7 @@ class TestConditioningPlan:
     """CPU-constructible: the x1e2/half-precision contract of the conditioning tensors."""
 
     def test_tensors_scale_by_1e2_and_match_config(self) -> None:
-        config = {
-            "dim": [256, 256, 128],
-            "spacing": [0.94, 0.94, 1.36],
-            "top_region_index": [0, 1, 0, 0],
-            "bottom_region_index": [0, 0, 1, 0],
-        }
-        plan = ConditioningPlan(config, torch.device("cpu"))
+        plan = ConditioningPlan(INFERENCE_CONFIG, torch.device("cpu"))
 
         assert plan.output_size == (256, 256, 128)
         assert plan.out_spacing == (0.94, 0.94, 1.36)
@@ -118,3 +135,123 @@ class TestConditioningPlan:
         assert torch.allclose(top.float(), torch.tensor([[0.0, 100.0, 0.0, 0.0]]))
         assert torch.allclose(spacing.float(), torch.tensor([[94.0, 94.0, 136.0]]))
         assert modality.tolist() == [9]
+
+
+class RecordingInference:
+    """Stands in for ``diff_model_infer.run_inference``: the initial noise of each call, recorded in order.
+
+    The signature is the real one, noise included -- so a ``run_task`` that stopped
+    handing the noise over would fail here rather than quietly fall back to a noise
+    of the double's own choosing.
+    """
+
+    def __init__(self) -> None:
+        self.noises: list[torch.Tensor] = []
+
+    def __call__(
+        self,
+        args,
+        device,
+        autoencoder,
+        unet,
+        scale_factor,
+        top_region_index,
+        bottom_region_index,
+        spacing,
+        modality,
+        output_size,
+        noise,
+        logger,
+        decoder_roi_size=None,
+    ) -> np.ndarray:
+        self.noises.append(noise.clone())
+        return noise.detach().cpu().numpy()
+
+
+class RawValueWriter:
+    """Stands in for ``diff_model_infer.save_image``: the returned tensor's raw values, byte for byte."""
+
+    def __call__(self, data, output_size, out_spacing, path, logger) -> None:
+        Path(path).write_bytes(np.asarray(data, dtype=np.float32).tobytes())
+
+
+def seeded_noise_stream(seed: int, count: int) -> list[torch.Tensor]:
+    """The determinism contract's definition: index i carries the (i+1)-th draw of the task-seeded stream."""
+    set_determinism(seed)
+    return [torch.randn(LATENT_SHAPE) for _ in range(count)]
+
+
+@pytest.fixture
+def volume_generator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Builds a CPU ``BaselineVolumeGenerator`` (networks and inference doubled) per output directory."""
+    monkeypatch.setattr("scripts.diff_model_infer_batch.load_models", lambda *args, **kwargs: (None, None, 1.0))
+    monkeypatch.setattr("scripts.diff_model_infer_batch.save_image", RawValueWriter())
+
+    def build(output_dir: Path) -> tuple[BaselineVolumeGenerator, RecordingInference]:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        recorder = RecordingInference()
+        monkeypatch.setattr("scripts.diff_model_infer_batch.run_inference", recorder)
+        args = SimpleNamespace(latent_channels=LATENT_CHANNELS, diffusion_unet_def={"num_channels": [1] * 8})
+        return BaselineVolumeGenerator(args, torch.device("cpu"), logging.getLogger("test"), SampleNamer(output_dir, "gen")), recorder
+
+    return build
+
+
+class TestResumeDeterminism:
+    """The volume under an index must depend on the index alone, never on where a previous run stopped.
+
+    The frozen baseline is a 1000-volume run that is relaunched the same way it
+    started, and the FID stage's gen-gen pairing (spec #13 section 5.1) reads the
+    volumes of two models index by index -- so a resume that shifts the noise breaks
+    the pairing rather than merely losing work.
+    """
+
+    def test_resumed_run_reproduces_the_uninterrupted_volumes(self, volume_generator, tmp_path: Path) -> None:
+        task = GenerationTask(label=9, seed=42, count=4)
+        plan = ConditioningPlan(INFERENCE_CONFIG, torch.device("cpu"))
+
+        complete, _ = volume_generator(tmp_path / "complete")
+        complete.run_task(task, plan)
+
+        resumed_dir = tmp_path / "resumed"
+        resumed, _ = volume_generator(resumed_dir)
+        SampleNamer(resumed_dir, "gen").path_for(9, 42, 0).touch()
+        SampleNamer(resumed_dir, "gen").path_for(9, 42, 1).touch()
+        resumed.run_task(task, plan)
+
+        for index in (2, 3):
+            name = f"gen_label9_seed42_{index:03d}.nii.gz"
+            assert (resumed_dir / name).read_bytes() == (tmp_path / "complete" / name).read_bytes()
+
+    def test_the_noise_under_an_index_does_not_move_with_the_resume_point(self, volume_generator, tmp_path: Path) -> None:
+        task = GenerationTask(label=9, seed=42, count=4)
+        plan = ConditioningPlan(INFERENCE_CONFIG, torch.device("cpu"))
+        resumed_dir = tmp_path / "resumed"
+        resumed, recorder = volume_generator(resumed_dir)
+        SampleNamer(resumed_dir, "gen").path_for(9, 42, 0).touch()
+        SampleNamer(resumed_dir, "gen").path_for(9, 42, 1).touch()
+
+        resumed.run_task(task, plan)
+
+        expected = seeded_noise_stream(task.seed, task.count)
+        assert len(recorder.noises) == 2
+        assert torch.equal(recorder.noises[0], expected[2])
+        assert torch.equal(recorder.noises[1], expected[3])
+
+    def test_an_uninterrupted_run_keeps_the_frozen_index_to_noise_mapping(self, volume_generator, tmp_path: Path) -> None:
+        """The frozen baseline's unconsumed cells were generated by this mapping -- moving it invalidates them.
+
+        Characterisation, not aspiration: every uncontaminated (label, seed) task of
+        the T8 baseline was a fresh run over all 50 indices, so its index i sits on
+        the (i+1)-th draw of the task-seeded stream. A change that reseeds per index
+        would be a tidier design and a broken freeze at the same time.
+        """
+        task = GenerationTask(label=9, seed=42, count=4)
+        plan = ConditioningPlan(INFERENCE_CONFIG, torch.device("cpu"))
+        generator, recorder = volume_generator(tmp_path / "outputs")
+
+        generator.run_task(task, plan)
+
+        expected = seeded_noise_stream(task.seed, task.count)
+        assert len(recorder.noises) == task.count
+        assert all(torch.equal(drawn, want) for drawn, want in zip(recorder.noises, expected))

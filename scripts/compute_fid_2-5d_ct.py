@@ -241,6 +241,10 @@ class FidResult:
     The acceptance protocol freezes FID values once into json/csv and reuses them for
     every later comparison, so each record carries what identified the run: the two
     filelists, the modality preprocessing, and the sampling/geometry flags.
+
+    The three ``enable_*`` fields were added after the first 24 records were frozen;
+    they default to None, which reads as "not recorded" rather than as a guess at
+    what those runs did.
     """
 
     comparison_tag: str
@@ -255,6 +259,9 @@ class FidResult:
     synth_filelist: str
     target_shape: str
     center_slices_ratio: float | None
+    enable_padding: bool | None = None
+    enable_center_cropping: bool | None = None
+    enable_resampling_spacing: str | None = None
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -883,6 +890,9 @@ def main(
                 synth_filelist=synth_filelist,
                 target_shape=target_shape,
                 center_slices_ratio=enable_center_slices_ratio,
+                enable_padding=enable_padding,
+                enable_center_cropping=enable_center_cropping,
+                enable_resampling_spacing=enable_resampling_spacing,
             )
             result.save(Path(result_json))
             logger.info(f"FID result written to {result_json}")

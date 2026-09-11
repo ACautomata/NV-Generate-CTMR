@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.summarize_fid_results import FidSummary
+from scripts.summarize_fid_results import FidSummary, TagVocabulary
 
 # Module name carries a hyphen, so import it programmatically.
 compute_fid = importlib.import_module("scripts.compute_fid_2-5d_ct")
@@ -97,6 +97,35 @@ class TestFidSummary:
 
         with pytest.raises(ValueError, match="unrecognized comparison tag"):
             FidSummary([stray], sources=[]).summarize()
+
+    def test_a_label_outside_the_protocol_is_refused(self, tmp_path: Path) -> None:
+        """``label40_seed42`` parses cleanly, but 40 is a BRATS label -- the finetuned points' table, not this one."""
+        stray = FidResult.load(write_result(tmp_path / "brats.json", "label40_seed42", 1.0))
+
+        with pytest.raises(ValueError, match="baseline label 40"):
+            FidSummary([stray], sources=[]).summarize()
+
+    def test_a_seed_outside_the_protocol_is_refused(self, tmp_path: Path) -> None:
+        stray = FidResult.load(write_result(tmp_path / "seed.json", "label9_seed7", 1.0))
+
+        with pytest.raises(ValueError, match="seed 7"):
+            FidSummary([stray], sources=[]).summarize()
+
+    def test_a_floor_label_outside_the_protocol_is_refused(self, tmp_path: Path) -> None:
+        """The typo'd tag passes the regex; only the vocabulary knows mri_t1n is the name."""
+        stray = FidResult.load(write_result(tmp_path / "typo.json", "floor_mri_t1nn", 1.0))
+
+        with pytest.raises(ValueError, match="floor_mri_t1nn"):
+            FidSummary([stray], sources=[]).summarize()
+
+    def test_a_later_experiment_point_can_widen_the_vocabulary(self, tmp_path: Path) -> None:
+        """F1 freezes BRATS gen-real into its own table, so it hands over the tag space that says so."""
+        record = FidResult.load(write_result(tmp_path / "brats.json", "label40_seed42", 1.0))
+        vocabulary = TagVocabulary(baseline_labels=frozenset({"40"}), seeds=frozenset({"42"}), floor_labels=frozenset())
+
+        summary = FidSummary([record], sources=[], vocabulary=vocabulary).summarize()
+
+        assert summary["baseline_gen_real"]["40"]["42"]["fid_avg"] == 1.0
 
     def test_an_empty_record_set_is_refused(self) -> None:
         with pytest.raises(ValueError, match="no records"):

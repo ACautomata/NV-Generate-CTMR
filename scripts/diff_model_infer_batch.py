@@ -20,9 +20,12 @@ across ranks, and writes deterministically named volumes so the FID stage can bu
 its filelists and an interrupted run can resume by file existence.
 
 Determinism contract (the gen-gen paired-FID requirement, spec section 5.1): every
-task seeds the RNG with its own seed, so two models run over the same task table
-with the same sharding produce identical noise per (label, seed, index) -- output
-differences then come from the weights alone.
+task seeds the RNG with its own seed and draws one latent noise per index in index
+order, so the noise of (label, seed, index) is the same for two models run over the
+same task table with the same sharding -- output differences then come from the
+weights alone. Drawing for every index rather than only the missing ones is what
+extends that to a resumed run: an interrupted run relaunched into a populated output
+directory reproduces an uninterrupted one volume for volume.
 
 Usage (single GPU)::
 
@@ -45,7 +48,7 @@ import torch
 import torch.distributed as dist
 from monai.utils import set_determinism
 
-from .diff_model_infer import load_models, run_inference, save_image
+from .diff_model_infer import LatentNoise, load_models, run_inference, save_image
 from .diff_model_setting import initialize_distributed, load_config, setup_logging
 from .sample import check_input_ct
 
@@ -86,6 +89,8 @@ class TaskTable:
             raise ValueError(f"count must be >= 1, got {count}")
         if len(set(labels)) != len(labels):
             raise ValueError(f"duplicate labels in the task table: {sorted(labels)}")
+        if len(set(seeds)) != len(seeds):
+            raise ValueError(f"duplicate seeds in the task table: {sorted(seeds)}")
         tasks = [GenerationTask(label=label, seed=seed, count=count) for label in labels for seed in seeds]
         return cls(tasks)
 
@@ -160,15 +165,24 @@ class BaselineVolumeGenerator:
                 else len(args.diffusion_unet_def["attention_levels"])
             ),
         )
-        self._divisor = 2 ** (num_downsample_level - 2)
+        self._latent_noise = LatentNoise(args.latent_channels, 2 ** (num_downsample_level - 2), device)
 
     def run_task(self, task: GenerationTask, plan: ConditioningPlan) -> int:
         """Generate the task's still-missing volumes; returns how many were written."""
         set_determinism(task.seed)
         if task.label in CT_LABEL_RANGE:
             check_input_ct(None, None, None, plan.output_size, plan.out_spacing, None)
+        pending = set(self._namer.pending_indices(task))
         written = 0
-        for index in self._namer.pending_indices(task):
+        for index in range(task.count):
+            # Drawn for every index, in order, the ones already on disk included: the
+            # noise of index i has to stay the (i+1)-th draw of the task-seeded stream
+            # wherever a previous run stopped. Drawing only for the pending indices
+            # would re-emit an earlier index's volume under the resumed index and shift
+            # every later one, breaking the gen-gen pairing of spec section 5.1.
+            noise = self._latent_noise.draw(plan.output_size)
+            if index not in pending:
+                continue
             data = run_inference(
                 self._args,
                 self._device,
@@ -177,7 +191,7 @@ class BaselineVolumeGenerator:
                 self._scale_factor,
                 *plan.tensors(task.label),
                 plan.output_size,
-                self._divisor,
+                noise,
                 self._logger,
                 self._decoder_roi_size,
             )

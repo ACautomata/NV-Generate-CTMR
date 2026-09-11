@@ -98,6 +98,20 @@ class TestSmokeSubsetBuilder:
         with pytest.raises(FileNotFoundError, match="_emb.nii.gz"):
             SmokeSubsetBuilder(entries, SmokeQuota(per_label=6, labels=("mri_t1n", "mri_t1")), latent_dir, seed=42).build()
 
+    def test_a_label_with_too_few_candidates_is_refused(self, latent_dir: Path) -> None:
+        """A label the dataset cannot fill to quota must fail the build, not quietly take what it can find.
+
+        The subset exists to prove the real training mix is consumable; a label that
+        silently contributes one entry instead of two narrows that proof without
+        saying so -- and the mixed-shape audit still passes off the other labels.
+        """
+        entries = make_entries(brats=1, replay=6)
+        for e in entries:
+            write_latent(latent_dir, e["image"], shape=(64, 64, 32) if "brats" in e["image"] else (48, 48, 32))
+
+        with pytest.raises(ValueError, match="fewer than the per-label quota"):
+            SmokeSubsetBuilder(entries, SmokeQuota(per_label=2, labels=("mri_t1n", "mri_t1")), latent_dir, seed=42).build()
+
     def test_a_requested_label_missing_from_the_dataset_is_refused(self, latent_dir: Path) -> None:
         entries = make_entries(brats=6, replay=0)
         for e in entries:

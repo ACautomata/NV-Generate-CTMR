@@ -19,7 +19,9 @@ volumes) flowing through batch_size=1.
 
 The training loop silently skips entries whose latent is missing, so this builder
 audits every sampled entry before writing -- a smoke subset whose latents or
-sidecars are absent is refused rather than silently shrunk. Sampling is seeded per
+sidecars are absent is refused rather than silently shrunk. The same goes for a
+label the dataset cannot fill to quota: a subset quietly narrower than the one
+requested would prove less than the smoke run claims. Sampling is seeded per
 label, so the same arguments reproduce the subset line for line.
 
 Usage::
@@ -104,6 +106,11 @@ class SmokeSubsetBuilder:
             candidates = sorted(entry["image"] for entry in self._entries if entry["modality"] == label)
             if not candidates:
                 raise ValueError(f"requested smoke label {label!r} has no entries in the dataset")
+            if len(candidates) < self._quota.per_label:
+                raise ValueError(
+                    f"requested smoke label {label!r} has only {len(candidates)} entries, "
+                    f"fewer than the per-label quota {self._quota.per_label}: the subset would silently shrink"
+                )
             shuffled = list(candidates)
             random.Random(self._modality_seed(label)).shuffle(shuffled)
             chosen = shuffled[: self._quota.per_label]

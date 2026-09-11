@@ -99,6 +99,34 @@ def prepare_tensors(args: argparse.Namespace, device: torch.device) -> tuple:
     return top_region_index_tensor, bottom_region_index_tensor, spacing_tensor, modality_tensor
 
 
+class LatentNoise:
+    """The initial noise of one generation: the latent's shape on `device`, drawn from that device's stream.
+
+    The noise is the only randomness a rectified-flow generation has -- weights and
+    schedule are fixed -- which is why the acceptance protocol's gen-gen pairing
+    (spec #13 section 5.1) pins it: two models have to start from the same
+    (label, seed, index) noise for the difference between their outputs to mean a
+    difference in weights. Callers that need that guarantee draw the noise here and
+    hand it to ``run_inference`` rather than let the draw happen out of sight.
+
+    Draws on ``device`` deliberately: CUDA keeps a separate default generator per
+    device, so a CPU draw would not reproduce the same noise.
+    """
+
+    def __init__(self, latent_channels: int, divisor: int, device: torch.device) -> None:
+        self.latent_channels = latent_channels
+        self.divisor = divisor
+        self.device = device
+
+    def shape(self, output_size: tuple[int, int, int]) -> tuple[int, ...]:
+        """The latent shape a generated ``output_size`` volume starts from."""
+        return (1, self.latent_channels, *(size // self.divisor for size in output_size))
+
+    def draw(self, output_size: tuple[int, int, int]) -> torch.Tensor:
+        """One draw from the ambient stream (seeded by ``monai.utils.set_determinism``)."""
+        return torch.randn(self.shape(output_size), device=self.device)
+
+
 # Pure inference: guard the UNet sampling + VAE decode against autograd-graph
 # retention. Historically provided by @torch.inference_mode() on diff_model_infer();
 # stated here so direct callers (scripts.diff_model_infer_batch) get it too.
@@ -114,7 +142,7 @@ def run_inference(
     spacing_tensor: torch.Tensor,
     modality_tensor: torch.Tensor,
     output_size: tuple,
-    divisor: int,
+    noise: torch.Tensor,
     logger: logging.Logger,
     decoder_roi_size: list | None = None,
 ) -> np.ndarray:
@@ -131,7 +159,11 @@ def run_inference(
         bottom_region_index_tensor (torch.Tensor): Bottom region index tensor.
         spacing_tensor (torch.Tensor): Spacing tensor.
         modality_tensor (torch.Tensor): Modality tensor.
-        divisor (int): Divisor for downsample level.
+        output_size (tuple): Output size of the image.
+        noise (torch.Tensor): The initial noise, drawn by the caller from a
+            ``LatentNoise``. Passed in rather than drawn here so the only randomness
+            in a generation belongs to whoever has to reason about it -- the batch
+            generator pins it per (label, seed, index) for the gen-gen pairing.
         logger (logging.Logger): Logger for logging information.
         decoder_roi_size (list or None): Sliding-window roi for the VAE decode step.
             None keeps the historical [80, 80, 80]. A roi at or above the latent
@@ -146,16 +178,6 @@ def run_inference(
     include_body_region = unet.include_top_region_index_input
     include_modality = unet.num_class_embeds is not None
 
-    noise = torch.randn(
-        (
-            1,
-            args.latent_channels,
-            output_size[0] // divisor,
-            output_size[1] // divisor,
-            output_size[2] // divisor,
-        ),
-        device=device,
-    )
     logger.info(f"noise: {noise.device}, {noise.dtype}, {type(noise)}")
 
     image = noise
@@ -318,6 +340,7 @@ def diff_model_infer(env_config_path: str, model_config_path: str, model_def_pat
     divisor = 2 ** (num_downsample_level - 2)
     logger.info(f"num_downsample_level -> {num_downsample_level}, divisor -> {divisor}.")
 
+    latent_noise = LatentNoise(args.latent_channels, divisor, device)
     top_region_index_tensor, bottom_region_index_tensor, spacing_tensor, modality_tensor = prepare_tensors(args, device)
     data = run_inference(
         args,
@@ -330,7 +353,7 @@ def diff_model_infer(env_config_path: str, model_config_path: str, model_def_pat
         spacing_tensor,
         modality_tensor,
         output_size,
-        divisor,
+        latent_noise.draw(output_size),
         logger,
     )
 

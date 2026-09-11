@@ -21,8 +21,9 @@ record; this script aggregates those records into the frozen artifacts:
 - ``real_real_floor``: the BRATS real-real halves comparison, tags ``floor_<label>``
   -- the sanity magnitude anchor (section 5.3).
 
-Tag conventions are strict: anything that matches neither pattern is refused, so a
-mis-tagged run cannot silently land in the wrong table.
+Tag conventions are strict: a tag has to match one of the two patterns *and* name a
+label, seed and floor the frozen vocabulary carries, so a mis-tagged run cannot
+silently land in the wrong table. Later experiment points pass their own vocabulary.
 
 Usage::
 
@@ -48,18 +49,51 @@ FLOOR_PATTERN = re.compile(r"^floor_(?P<label>.+)$")
 CSV_FIELDS = ("kind", "tag", "fid_xy", "fid_yz", "fid_zx", "fid_avg")
 
 
+@dataclass(frozen=True)
+class TagVocabulary:
+    """The tag space one freeze covers: which baseline labels, seeds and floor labels may appear.
+
+    A tag's shape alone cannot say whether it belongs in a table -- ``label40_seed42``
+    (a BRATS label, frozen by the finetuned experiment points, not by this baseline)
+    and ``floor_mri_t1nn`` (a typo) both parse -- so membership is what a record is
+    checked against. Keys are strings because that is what the tag carries.
+    """
+
+    baseline_labels: frozenset[str]
+    seeds: frozenset[str]
+    floor_labels: frozenset[str]
+
+
+# The pretrained baseline (spec #13 section 5.1): the ten old MR labels of
+# configs/modality_mapping.json x the paired seeds, plus the four BRATS real-real
+# floors of section 5.3. Later experiment points pass their own vocabulary.
+FROZEN_BASELINE_VOCABULARY = TagVocabulary(
+    baseline_labels=frozenset({"9", "10", "11", "16", "20", "29", "30", "31", "32", "33"}),
+    seeds=frozenset({"42", "1337"}),
+    floor_labels=frozenset({"mri_t1n", "mri_t1ce", "mri_t2w", "mri_t2f"}),
+)
+
+
 class ComparisonTag:
     """The strict tag vocabulary separating baseline gen-real records from floor records."""
 
     @staticmethod
-    def classify(tag: str) -> tuple[str, str, str]:
+    def classify(tag: str, vocabulary: TagVocabulary) -> tuple[str, str, str]:
         """(kind, primary key, secondary key) for one tag; refuses anything outside the vocabulary."""
         baseline = BASELINE_PATTERN.match(tag)
         if baseline:
-            return "baseline_gen_real", baseline.group("label"), baseline.group("seed")
+            label, seed = baseline.group("label"), baseline.group("seed")
+            if label not in vocabulary.baseline_labels:
+                raise ValueError(f"comparison tag {tag!r} names baseline label {label}, outside {sorted(vocabulary.baseline_labels)}")
+            if seed not in vocabulary.seeds:
+                raise ValueError(f"comparison tag {tag!r} names seed {seed}, outside {sorted(vocabulary.seeds)}")
+            return "baseline_gen_real", label, seed
         floor = FLOOR_PATTERN.match(tag)
         if floor:
-            return "real_real_floor", floor.group("label"), ""
+            label = floor.group("label")
+            if label not in vocabulary.floor_labels:
+                raise ValueError(f"comparison tag {tag!r} names floor label {label!r}, outside {sorted(vocabulary.floor_labels)}")
+            return "real_real_floor", label, ""
         raise ValueError(f"unrecognized comparison tag {tag!r} (expected 'label<L>_seed<S>' or 'floor_<label>')")
 
 
@@ -69,6 +103,7 @@ class FidSummary:
 
     records: list[FidResult]
     sources: list[str]
+    vocabulary: TagVocabulary = FROZEN_BASELINE_VOCABULARY
 
     def summarize(self) -> dict:
         """Nest records by their tag classification; duplicate tags are refused."""
@@ -104,7 +139,7 @@ class FidSummary:
             if record.comparison_tag in seen:
                 raise ValueError(f"duplicate comparison tag across result files: {record.comparison_tag}")
             seen.add(record.comparison_tag)
-            kind, primary, secondary = ComparisonTag.classify(record.comparison_tag)
+            kind, primary, secondary = ComparisonTag.classify(record.comparison_tag, self.vocabulary)
             values = {"fid_xy": record.fid_xy, "fid_yz": record.fid_yz, "fid_zx": record.fid_zx, "fid_avg": record.fid_avg}
             rows.append((kind, record.comparison_tag, primary, secondary, values))
         return rows
