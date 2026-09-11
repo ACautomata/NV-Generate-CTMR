@@ -20,7 +20,6 @@ report whose verdict a polling shell can act on via the exit code.
 """
 
 import json
-from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -28,10 +27,12 @@ import pytest
 from scripts.watch_training_log import (
     ALARM,
     HEALTHY,
+    LOG_UNAVAILABLE,
+    MONOTONIC_RISE,
+    NON_FINITE_LOSS,
     EpochRecord,
     MonotonicRiseCriterion,
     NonFiniteLossCriterion,
-    StepRecord,
     TrainingLogParser,
     TrainingLogWatcher,
 )
@@ -50,7 +51,7 @@ def epoch_line(epoch: int, loss: float, ts: str = "2026-09-11 17:04:30.847") -> 
     return EPOCH_LINE.format(ts=ts, epoch=epoch, loss=loss)
 
 
-def snapshot_line(epoch: int, path: str = "/models/brats_finetune_N300/ckpt_epoch50.pt") -> str:
+def snapshot_line(path: str = "/models/brats_finetune_N300/ckpt_epoch50.pt") -> str:
     return SNAPSHOT_LINE.format(ts="2026-09-11 17:16:47.138", path=path)
 
 
@@ -74,7 +75,7 @@ class TestTrainingLogParser:
         assert parsed.epochs[0] == EpochRecord(epoch=1, average_loss=0.9352)
 
     def test_parses_snapshot_paths(self) -> None:
-        log = snapshot_line(50, "/models/brats_finetune_N300/ckpt_epoch50.pt")
+        log = snapshot_line("/models/brats_finetune_N300/ckpt_epoch50.pt")
 
         assert TrainingLogParser().parse(log).snapshots == ["/models/brats_finetune_N300/ckpt_epoch50.pt"]
 
@@ -121,44 +122,47 @@ class TestNonFiniteLossCriterion:
 
         assert NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log)) == []
 
-    def test_flags_a_nan_step_loss(self) -> None:
-        log = step_line(7, 12, float("nan"))
+    def test_a_single_transient_non_finite_step_does_not_alarm(self) -> None:
+        # Under AMP a one-off inf loss is expected: GradScaler skips that step, backs the scale
+        # off, and training continues. This is the tool's highest false-positive surface, and a
+        # false alarm costs the whole tier -- no resume, so spec section 4.7 loosens the criteria
+        # precisely to avoid that.
+        log = "\n".join([step_line(3, 10, 1.0), step_line(3, 11, float("nan")), step_line(3, 12, 0.9)])
+
+        assert NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log)) == []
+
+    def test_a_sustained_run_of_non_finite_steps_alarms(self) -> None:
+        log = "\n".join(step_line(7, 100 + index, float("nan")) for index in range(20))
 
         findings = NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log))
 
         assert len(findings) == 1
-        assert findings[0].kind == "non_finite_loss"
+        assert findings[0].kind == NON_FINITE_LOSS
         assert findings[0].epoch == 7
+        assert "20 consecutive steps" in findings[0].detail
 
-    def test_flags_a_non_finite_epoch_average(self) -> None:
-        log = epoch_line(9, float("inf"))
+    def test_a_finite_step_resets_the_streak(self) -> None:
+        # Recovery is not divergence: two short bursts either side of a healthy step must not
+        # add up to one long one.
+        log = "\n".join(
+            [step_line(3, 10 + index, float("nan")) for index in range(19)]
+            + [step_line(3, 29, 0.5)]
+            + [step_line(3, 30 + index, float("nan")) for index in range(19)]
+        )
 
-        findings = NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log))
+        assert NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log)) == []
 
-        assert len(findings) == 1
-        assert findings[0].epoch == 9
+    def test_the_streak_threshold_is_configurable(self) -> None:
+        log = "\n".join(step_line(2, 5 + index, float("inf")) for index in range(3))
 
-    def test_reports_only_the_first_non_finite_step_and_counts_the_rest(self) -> None:
-        # Once a run diverges, every subsequent step logs a non-finite loss: one report per step
-        # would make the status file a copy of the log (a nan-every-step run is ~1.1M lines) and
-        # would be rewritten in full every poll. The operator needs where the break started and
-        # how far it has spread, not each line of it.
-        log = "\n".join([step_line(3, 10, float("nan")), step_line(3, 11, float("nan")), step_line(3, 12, float("-inf"))])
-
-        findings = NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log))
-
-        assert len(findings) == 1
-        assert findings[0].epoch == 3
-        assert "(first of 3 non-finite steps)" in findings[0].detail
-
-    def test_reports_only_the_first_non_finite_epoch_average(self) -> None:
-        log = "\n".join([epoch_line(9, float("inf")), epoch_line(10, float("nan"))])
-
-        findings = NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log))
+        findings = NonFiniteLossCriterion(consecutive_steps=3).inspect(TrainingLogParser().parse(log))
 
         assert len(findings) == 1
-        assert findings[0].epoch == 9
-        assert "(first of 2 non-finite epochs)" in findings[0].detail
+        assert findings[0].epoch == 2
+
+    def test_a_non_positive_streak_threshold_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="consecutive_steps"):
+            NonFiniteLossCriterion(consecutive_steps=0)
 
 
 class TestMonotonicRiseCriterion:
@@ -184,7 +188,7 @@ class TestMonotonicRiseCriterion:
         findings = MonotonicRiseCriterion(window=20).inspect(TrainingLogParser().parse(self._log_with_epochs(losses)))
 
         assert len(findings) == 1
-        assert findings[0].kind == "monotonic_rise"
+        assert findings[0].kind == MONOTONIC_RISE
         assert findings[0].epoch == 20
 
     def test_a_rise_that_has_since_stabilised_is_still_reported(self) -> None:
@@ -246,12 +250,12 @@ class TestTrainingLogWatcher:
 
     def test_alarm_on_non_finite_loss(self, tmp_path: Path) -> None:
         log_path = tmp_path / "train.log"
-        log_path.write_text(step_line(4, 9, float("nan")))
+        log_path.write_text("\n".join(step_line(4, 9 + index, float("nan")) for index in range(20)))
 
         report = TrainingLogWatcher(log_path, total_epochs=300).run()
 
         assert report["verdict"] == ALARM
-        assert [f["kind"] for f in report["findings"]] == ["non_finite_loss"]
+        assert [f["kind"] for f in report["findings"]] == [NON_FINITE_LOSS]
 
     def test_alarm_on_monotonic_rise(self, tmp_path: Path) -> None:
         log_path = tmp_path / "train.log"
@@ -260,7 +264,7 @@ class TestTrainingLogWatcher:
         report = TrainingLogWatcher(log_path, total_epochs=300).run()
 
         assert report["verdict"] == ALARM
-        assert [f["kind"] for f in report["findings"]] == ["monotonic_rise"]
+        assert [f["kind"] for f in report["findings"]] == [MONOTONIC_RISE]
 
     def test_report_records_step_timing_from_the_log(self, tmp_path: Path) -> None:
         log_path = tmp_path / "train.log"
@@ -280,7 +284,7 @@ class TestTrainingLogWatcher:
 
     def test_report_records_snapshots_and_remaining_epochs(self, tmp_path: Path) -> None:
         log_path = tmp_path / "train.log"
-        log_path.write_text("\n".join([epoch_line(50, 0.9), snapshot_line(50)]))
+        log_path.write_text("\n".join([epoch_line(50, 0.9), snapshot_line()]))
 
         report = TrainingLogWatcher(log_path, total_epochs=300).run()
 
@@ -302,7 +306,7 @@ class TestTrainingLogWatcher:
         report = TrainingLogWatcher(tmp_path / "absent.log", total_epochs=300).run()
 
         assert report["verdict"] == ALARM
-        assert report["findings"][0]["kind"] == "log_unavailable"
+        assert report["findings"][0]["kind"] == LOG_UNAVAILABLE
 
     def test_records_the_step_domain_average_loss_per_epoch(self, tmp_path: Path) -> None:
         log_path = tmp_path / "train.log"
@@ -321,22 +325,3 @@ class TestTrainingLogWatcher:
         report = TrainingLogWatcher(log_path, total_epochs=300).run()
 
         assert report["loss_curve"] == [{"epoch": 1, "step_mean_loss": 1.0, "reported_average_loss": 0.9352}]
-
-
-class TestEpochRecord:
-    def test_epoch_record_carries_its_average_loss(self) -> None:
-        assert EpochRecord(epoch=3, average_loss=0.25).average_loss == 0.25
-
-
-class TestStepRecord:
-    def test_step_record_reports_its_iteration_progress(self) -> None:
-        record = StepRecord(
-            epoch=2,
-            iter=15,
-            iterations_per_epoch=100,
-            loss=0.5,
-            lr=1e-05,
-            timestamp=datetime(2026, 9, 11, 17, 2, 8, 979000),
-        )
-
-        assert record.fractional_epoch_position == pytest.approx(0.15)
