@@ -21,24 +21,23 @@ report whose verdict a polling shell can act on via the exit code.
 
 import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
 from scripts.watch_training_log import (
-    ALARM,
+    DEFAULT_STALE_AFTER_EPOCHS,
     DEFAULT_STARTUP_GRACE_SECONDS,
-    HEALTHY,
-    LOG_UNAVAILABLE,
-    MONOTONIC_RISE,
-    NO_TRAINING_STATE,
-    NON_FINITE_LOSS,
     EpochRecord,
+    FindingKind,
     MonotonicRiseCriterion,
     NonFiniteLossCriterion,
     TrainingLogParser,
     TrainingLogWatcher,
+    Verdict,
 )
 
 STEP_LINE = "[{ts}][ INFO](training) - [{day} {clock}] epoch {epoch}, iter {iter}/{total}, loss: {loss}, lr: {lr}."
@@ -60,7 +59,7 @@ def snapshot_line(path: str = "/models/brats_finetune_N300/ckpt_epoch50.pt") -> 
 
 
 class TestTrainingLogParser:
-    def test_parses_step_records_with_epoch_iter_loss_and_lr(self) -> None:
+    def test_parses_step_records_with_epoch_iter_loss_and_iterations_per_epoch(self) -> None:
         log = "\n".join([step_line(1, 1, 1.0373), step_line(2, 7, 0.8992, ts="2026-09-11 17:02:25.793")])
 
         steps = TrainingLogParser().parse(log).steps
@@ -141,9 +140,9 @@ class TestNonFiniteLossCriterion:
         findings = NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log))
 
         assert len(findings) == 1
-        assert findings[0].kind == NON_FINITE_LOSS
+        assert findings[0].kind == FindingKind.NON_FINITE_LOSS
         assert findings[0].epoch == 7
-        assert "20 consecutive steps" in findings[0].detail
+        assert "the latest 20 steps" in findings[0].detail
 
     def test_a_finite_step_resets_the_streak(self) -> None:
         # Recovery is not divergence: two short bursts either side of a healthy step must not
@@ -178,9 +177,25 @@ class TestNonFiniteLossCriterion:
         findings = NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log))
 
         assert len(findings) == 1
-        assert findings[0].kind == NON_FINITE_LOSS
-        assert "3 consecutive epochs" in findings[0].detail
+        assert findings[0].kind == FindingKind.NON_FINITE_LOSS
+        assert "the latest 3 epoch averages" in findings[0].detail
         assert findings[0].epoch == 7
+
+    def test_a_non_finite_step_run_that_has_since_recovered_is_not_re_alarmed(self) -> None:
+        # A burst the scaler recovered from stays in the log forever -- a 300-epoch run never
+        # forgets a line -- and re-reporting it on every poll would leave the verdict permanently
+        # red, the one state in which the next real alarm goes unread.
+        log = "\n".join(
+            [step_line(5, 1 + index, float("nan")) for index in range(20)]
+            + [step_line(6 + index // 3714, 1 + index % 3714, 0.9) for index in range(500)]
+        )
+
+        assert NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log)) == []
+
+    def test_a_non_finite_epoch_run_that_has_since_recovered_is_not_re_alarmed(self) -> None:
+        log = "\n".join([epoch_line(epoch, float("inf")) for epoch in range(5, 8)] + [epoch_line(epoch, 0.9) for epoch in range(8, 10)])
+
+        assert NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log)) == []
 
     def test_a_lone_non_finite_epoch_average_does_not_alarm(self) -> None:
         # The tolerance is the step criterion's, for the same reason: one bad step on any rank
@@ -214,12 +229,12 @@ class TestMonotonicRiseCriterion:
         findings = MonotonicRiseCriterion(window=20).inspect(TrainingLogParser().parse(self._log_with_epochs(losses)))
 
         assert len(findings) == 1
-        assert findings[0].kind == MONOTONIC_RISE
+        assert findings[0].kind == FindingKind.MONOTONIC_RISE
         assert findings[0].epoch == 20
 
-    def test_a_rise_that_has_since_stabilised_is_still_reported(self) -> None:
-        # Every window is examined, not just the trailing one: a run that climbed for 20 epochs
-        # and then sat at the higher loss is exactly the diverged-then-stuck shape the operator
+    def test_a_climb_the_loss_has_stayed_above_is_still_reported(self) -> None:
+        # Historical windows are examined, not just the trailing one: a run that climbed for 20
+        # epochs and then sat at the higher loss is the diverged-and-stuck shape the operator
         # needs to see, even once the climb itself is long past.
         losses = [1.0 + 0.01 * index for index in range(20)] + [5.0] * 40
 
@@ -227,6 +242,13 @@ class TestMonotonicRiseCriterion:
 
         assert len(findings) == 1
         assert findings[0].epoch == 20
+
+    def test_a_climb_the_loss_has_given_back_is_no_longer_reported(self) -> None:
+        # Otherwise the verdict stays ALARM for the rest of the run after a climb that has since
+        # recovered, and a poller that is permanently red is one whose next real alarm goes unread.
+        losses = [1.0 + 0.01 * index for index in range(20)] + [0.5] * 40
+
+        assert MonotonicRiseCriterion(window=20).inspect(TrainingLogParser().parse(self._log_with_epochs(losses))) == []
 
     def test_recovers_after_a_fall_breaks_the_rise(self) -> None:
         losses = [1.0 + 0.01 * index for index in range(19)] + [0.2]
@@ -259,7 +281,7 @@ class TestTrainingLogWatcher:
 
         report = TrainingLogWatcher(log_path, total_epochs=300).run()
 
-        assert report["verdict"] == HEALTHY
+        assert report["verdict"] == Verdict.HEALTHY
         assert report["progress"]["epochs_completed"] == 1
         assert report["progress"]["total_epochs"] == 300
         assert report["findings"] == []
@@ -280,8 +302,8 @@ class TestTrainingLogWatcher:
 
         report = TrainingLogWatcher(log_path, total_epochs=300).run()
 
-        assert report["verdict"] == ALARM
-        assert [f["kind"] for f in report["findings"]] == [NON_FINITE_LOSS]
+        assert report["verdict"] == Verdict.ALARM
+        assert [f["kind"] for f in report["findings"]] == [FindingKind.NON_FINITE_LOSS]
 
     def test_alarm_on_monotonic_rise(self, tmp_path: Path) -> None:
         log_path = tmp_path / "train.log"
@@ -289,8 +311,8 @@ class TestTrainingLogWatcher:
 
         report = TrainingLogWatcher(log_path, total_epochs=300).run()
 
-        assert report["verdict"] == ALARM
-        assert [f["kind"] for f in report["findings"]] == [MONOTONIC_RISE]
+        assert report["verdict"] == Verdict.ALARM
+        assert [f["kind"] for f in report["findings"]] == [FindingKind.MONOTONIC_RISE]
 
     def test_report_records_step_timing_from_the_log(self, tmp_path: Path) -> None:
         log_path = tmp_path / "train.log"
@@ -324,15 +346,15 @@ class TestTrainingLogWatcher:
 
         TrainingLogWatcher(log_path, total_epochs=300, report_path=report_path).run()
 
-        assert json.loads(report_path.read_text())["verdict"] == HEALTHY
+        assert json.loads(report_path.read_text())["verdict"] == Verdict.HEALTHY
 
     def test_missing_log_file_reports_alarm_rather_than_raising(self, tmp_path: Path) -> None:
         # A poller that crashes on a rotated/absent log stops watching entirely; an ALARM
         # report is the honest signal -- the run's health is unknown.
         report = TrainingLogWatcher(tmp_path / "absent.log", total_epochs=300).run()
 
-        assert report["verdict"] == ALARM
-        assert report["findings"][0]["kind"] == LOG_UNAVAILABLE
+        assert report["verdict"] == Verdict.ALARM
+        assert report["findings"][0]["kind"] == FindingKind.LOG_UNAVAILABLE
 
     def test_records_the_step_domain_average_loss_per_epoch(self, tmp_path: Path) -> None:
         log_path = tmp_path / "train.log"
@@ -363,7 +385,7 @@ class TestTrainingLogWatcher:
         TrainingLogWatcher(log_path, total_epochs=300, report_path=report_path).run()
 
         report = json.loads(report_path.read_text(), parse_constant=lambda constant: pytest.fail(f"bare {constant} token"))
-        assert report["verdict"] == HEALTHY
+        assert report["verdict"] == Verdict.HEALTHY
         assert report["loss_curve"][0]["step_mean_loss"] is None
 
     def test_eta_credits_the_part_of_the_current_epoch_already_done(self, tmp_path: Path) -> None:
@@ -429,8 +451,8 @@ class TestTrainingLogWatcher:
 
         report = TrainingLogWatcher(log_path, total_epochs=300).run()
 
-        assert report["verdict"] == ALARM
-        assert [finding["kind"] for finding in report["findings"]] == [NO_TRAINING_STATE]
+        assert report["verdict"] == Verdict.ALARM
+        assert [finding["kind"] for finding in report["findings"]] == [FindingKind.NO_TRAINING_STATE]
 
     def test_a_log_that_has_just_started_is_not_alarmed_on(self, tmp_path: Path) -> None:
         log_path = tmp_path / "train.log"
@@ -438,4 +460,64 @@ class TestTrainingLogWatcher:
 
         report = TrainingLogWatcher(log_path, total_epochs=300).run()
 
-        assert report["verdict"] == HEALTHY
+        assert report["verdict"] == Verdict.HEALTHY
+
+    def test_a_run_that_stopped_mid_training_alarms(self, tmp_path: Path) -> None:
+        # An OOM, a node reboot, a killed session: the trainer stops and writes nothing more, and
+        # every record it already wrote still looks healthy. Nothing in the text distinguishes a
+        # stopped trainer from a running one, so the log going quiet is the whole signal.
+        log_path = tmp_path / "train.log"
+        log_path.write_text(
+            "\n".join(
+                [
+                    epoch_line(120, 0.9),
+                    step_line(121, 1, 1.0, ts="2026-09-11 17:00:00.000"),
+                    step_line(121, 100, 1.0, ts="2026-09-11 17:00:33.000"),
+                ]
+            )
+        )
+        seconds_per_epoch = (33 / 99) * 3714
+        silent = time.time() - DEFAULT_STALE_AFTER_EPOCHS * seconds_per_epoch - 60
+        os.utime(log_path, (silent, silent))
+
+        report = TrainingLogWatcher(log_path, total_epochs=300).run()
+
+        assert report["verdict"] == Verdict.ALARM
+        assert [finding["kind"] for finding in report["findings"]] == [FindingKind.LOG_STALLED]
+        assert report["findings"][0]["epoch"] == 120
+
+    def test_a_finished_run_is_not_reported_as_stalled(self, tmp_path: Path) -> None:
+        # The log stops growing when the run is done too, and that is the one silence that means
+        # success rather than a dead trainer.
+        log_path = tmp_path / "train.log"
+        log_path.write_text(epoch_line(300, 0.9))
+        silent = time.time() - 6 * 3600
+        os.utime(log_path, (silent, silent))
+
+        report = TrainingLogWatcher(log_path, total_epochs=300).run()
+
+        assert report["verdict"] == Verdict.HEALTHY
+
+
+class TestMainCli:
+    def test_the_command_line_sees_the_missing_log_alarm(self, tmp_path: Path) -> None:
+        # The watcher assembles its criteria internally from scalar knobs, so a wiring mistake in
+        # main() cannot drop one -- this locks that in. A previous wiring passed a hand-built
+        # criteria tuple that left out the stalled-log check, and the missing-log case read
+        # HEALTHY from the command line while every watcher-level test stayed green.
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "scripts" / "watch_training_log.py"),
+                "--log",
+                str(tmp_path / "absent.log"),
+                "--total-epochs",
+                "300",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert "verdict ALARM" in result.stdout
+        assert result.returncode == 1

@@ -21,6 +21,11 @@ killed tier restarts from epoch 1, so the only decision an agent may take is to 
   sees (a one-off inf is GradScaler's normal business under AMP), and
 - a loss that rises monotonically for ~20 consecutive epochs.
 
+A third failure is the absence of any of those.  A trainer that died -- an OOM, a node reboot, a
+killed session -- writes nothing, and nothing it already wrote contradicts any criterion, so a log
+that stops growing while epochs remain is its own alarm, judged against a tolerance scaled to the
+epoch length the log itself measured.
+
 Both alarm criteria are loose on purpose -- a false alarm here costs a whole tier, since the
 only available response is to kill the run and retrain it from epoch 1.
 
@@ -47,27 +52,45 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-HEALTHY = "HEALTHY"
-ALARM = "ALARM"
-NON_FINITE_LOSS = "non_finite_loss"
-MONOTONIC_RISE = "monotonic_rise"
-LOG_UNAVAILABLE = "log_unavailable"
-NO_TRAINING_STATE = "no_training_state"
+
+class Verdict(StrEnum):
+    """The report's headline: whether anything about the run needs a human."""
+
+    HEALTHY = "HEALTHY"
+    ALARM = "ALARM"
+
+
+class FindingKind(StrEnum):
+    """Why a report says ALARM.
+
+    A closed set, so a kind that is not in the vocabulary cannot reach the report by typo, and
+    so an operator reading ``ALARM.txt`` learns from one word which failure to go and look at.
+    """
+
+    NON_FINITE_LOSS = "non_finite_loss"
+    MONOTONIC_RISE = "monotonic_rise"
+    LOG_STALLED = "log_stalled"
+    LOG_UNAVAILABLE = "log_unavailable"
+    NO_TRAINING_STATE = "no_training_state"
+
 
 DEFAULT_RISE_WINDOW = 20
 DEFAULT_NON_FINITE_STREAK = 20
 DEFAULT_NON_FINITE_EPOCH_STREAK = 3
 DEFAULT_STARTUP_GRACE_SECONDS = 1800
+DEFAULT_STALE_AFTER_EPOCHS = 3.0
+MIN_SILENCE_SECONDS = 300
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 # `[2026-09-11 17:02:08.979][ INFO](training) - [2026-09-11 17:02:08] epoch 1, iter 1/3714, loss: 1.0373, lr: 0.000010000000.`
 _PREFIX = r"^\[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]\[ INFO\]\(training\) - "
 _STEP_PATTERN = re.compile(
     _PREFIX + r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] epoch (?P<epoch>\d+), iter (?P<iteration>\d+)/(?P<total>\d+), "
-    r"loss: (?P<loss>[^,]+), lr: (?P<lr>\S+)\.$"
+    r"loss: (?P<loss>[^,]+), lr: \S+\.$"
 )
 _EPOCH_PATTERN = re.compile(_PREFIX + r"epoch (?P<epoch>\d+) average loss: (?P<loss>\S+)\.$")
 _SNAPSHOT_PATTERN = re.compile(_PREFIX + r"Snapshot saved to (?P<path>.+)\.$")
@@ -81,7 +104,6 @@ class StepRecord:
     iter: int
     iterations_per_epoch: int
     loss: float
-    lr: float
     timestamp: datetime
 
     @property
@@ -95,6 +117,21 @@ class EpochRecord:
 
     epoch: int
     average_loss: float
+
+
+@dataclass(frozen=True)
+class LossCurvePoint:
+    """One epoch of the loss curve.
+
+    Either half can be absent, and which one is which says something about the log: a rotated log
+    may keep the step lines without the epoch's average line, or the other way round.  The report
+    spells this type out as JSON keys in one place, so the records stay a reading of the log
+    rather than a knowledge of the wire format.
+    """
+
+    epoch: int
+    step_mean_loss: float | None
+    reported_average_loss: float | None
 
 
 @dataclass(frozen=True)
@@ -162,14 +199,14 @@ class TrainingLog:
         return (last.timestamp - first.timestamp).total_seconds() / elapsed_steps
 
     @property
-    def loss_curve(self) -> list[dict]:
+    def loss_curve(self) -> list[LossCurvePoint]:
         """Per-epoch loss, from the step lines and from the script's own average-loss lines.
 
         The two agree only approximately: the reported average is the all-reduced number across
         ranks, while ``step_mean_loss`` is recomputed here from this rank's log.  Both are kept,
         and an epoch appears if either record type mentions it: a rotated log can retain one
         without the other, and an epoch missing from the curve is an epoch missing from the
-        acceptance record this report feeds.  Either half is None when its record is absent.
+        acceptance record this report feeds.
         """
         reported = {epoch.epoch: epoch.average_loss for epoch in self.epochs}
         per_epoch_steps: dict[int, list[float]] = {}
@@ -177,7 +214,7 @@ class TrainingLog:
             per_epoch_steps.setdefault(step.epoch, []).append(step.loss)
         means = {epoch: sum(losses) / len(losses) for epoch, losses in per_epoch_steps.items()}
         return [
-            {"epoch": epoch, "step_mean_loss": means.get(epoch), "reported_average_loss": reported.get(epoch)}
+            LossCurvePoint(epoch=epoch, step_mean_loss=means.get(epoch), reported_average_loss=reported.get(epoch))
             for epoch in sorted(means.keys() | reported.keys())
         ]
 
@@ -186,7 +223,7 @@ class TrainingLog:
 class HealthFinding:
     """One reason the run needs a human look."""
 
-    kind: str
+    kind: FindingKind
     epoch: int
     detail: str
 
@@ -218,7 +255,6 @@ class TrainingLogParser:
                         iter=int(step["iteration"]),
                         iterations_per_epoch=int(step["total"]),
                         loss=float(step["loss"]),
-                        lr=float(step["lr"]),
                         timestamp=datetime.strptime(step["timestamp"], TIMESTAMP_FORMAT),
                     )
                 )
@@ -241,7 +277,11 @@ class NonFiniteLossCriterion:
     false-positive surface, and a false alarm here costs the whole tier -- there is no resume,
     so spec section 4.7 loosens the criteria precisely to keep the operator from killing a run
     that is fine.  A run that has actually diverged stops producing finite losses altogether, so
-    a streak is what this criterion counts, at both resolutions the log offers.
+    a streak is what this criterion counts, at both resolutions the log offers.  Only a streak
+    still standing at the newest record is reported: a burst the scaler recovered from stays in
+    the log forever, and re-reporting it on every poll would leave the verdict permanently red,
+    and a permanently red poller's next real alarm goes unread -- the argument
+    ``MonotonicRiseCriterion`` makes for a climb the loss has given back.
 
     Two resolutions, because each is blind where the other sees.  The step records come from
     rank 0 alone -- ``diff_model_train.py`` logs the per-iter line under ``local_rank == 0`` --
@@ -271,9 +311,9 @@ class NonFiniteLossCriterion:
             first, last = steps[0], steps[-1]
             findings.append(
                 HealthFinding(
-                    NON_FINITE_LOSS,
+                    FindingKind.NON_FINITE_LOSS,
                     last.epoch,
-                    f"{len(steps)} consecutive steps are non-finite, from epoch {first.epoch} step "
+                    f"the latest {len(steps)} steps are non-finite, from epoch {first.epoch} step "
                     f"{first.iter} through epoch {last.epoch} step {last.iter} (latest {last.loss})",
                 )
             )
@@ -282,9 +322,9 @@ class NonFiniteLossCriterion:
             first, last = epochs[0], epochs[-1]
             findings.append(
                 HealthFinding(
-                    NON_FINITE_LOSS,
+                    FindingKind.NON_FINITE_LOSS,
                     last.epoch,
-                    f"{len(epochs)} consecutive epochs are non-finite after the all-reduce, epochs "
+                    f"the latest {len(epochs)} epoch averages are non-finite after the all-reduce, epochs "
                     f"{first.epoch}-{last.epoch} (latest {last.average_loss}); step records come from "
                     f"rank 0 alone, so a nonzero rank is where to look",
                 )
@@ -292,28 +332,24 @@ class NonFiniteLossCriterion:
         return findings
 
     def _sustained_step_run(self, log: TrainingLog) -> list[StepRecord] | None:
-        """The first run of non-finite step losses reaching the threshold, if the log holds one."""
+        """The run of non-finite step losses still standing at the newest record, if long enough."""
         streak: list[StepRecord] = []
-        for step in log.steps:
+        for step in reversed(log.steps):
             if math.isfinite(step.loss):
-                streak = []
-                continue
+                break
             streak.append(step)
-            if len(streak) >= self._consecutive_steps:
-                return streak
-        return None
+        streak.reverse()
+        return streak if len(streak) >= self._consecutive_steps else None
 
     def _sustained_epoch_run(self, log: TrainingLog) -> list[EpochRecord] | None:
-        """The first run of non-finite epoch averages reaching the threshold, if any."""
+        """The run of non-finite epoch averages still standing at the newest record, if long enough."""
         streak: list[EpochRecord] = []
-        for epoch in log.epochs:
+        for epoch in reversed(log.epochs):
             if math.isfinite(epoch.average_loss):
-                streak = []
-                continue
+                break
             streak.append(epoch)
-            if len(streak) >= self._consecutive_epochs:
-                return streak
-        return None
+        streak.reverse()
+        return streak if len(streak) >= self._consecutive_epochs else None
 
 
 class MonotonicRiseCriterion:
@@ -321,9 +357,15 @@ class MonotonicRiseCriterion:
 
     Strict monotonicity over ~20 epochs is the spec's tripwire for divergence: per-epoch
     averages over thousands of steps are smooth enough that 20 rises in a row is a trend, not
-    noise, while a run that merely plateaus or oscillates stays silent.  Only the first such
-    window is reported -- 30 rising epochs contain 11 windows of 20, and the operator needs one
-    alarm naming where the trend was established, not eleven restatements of it.
+    noise, while a run that merely plateaus or oscillates stays silent.
+
+    A rise is reported only while the run has not given it back.  Reporting every historical
+    window would leave the verdict stuck at ALARM for the rest of the run after a climb the loss
+    has since recovered from, and a poller that is permanently red is one whose next real alarm
+    goes unread.  A climb the loss has stayed above is still reported -- that is the
+    diverged-and-stuck shape.  Only the first window that both rises and still stands is
+    reported: 30 rising epochs contain 11 windows of 20, and the operator needs one alarm naming
+    where the trend was established, not eleven restatements of it.
     """
 
     def __init__(self, window: int = DEFAULT_RISE_WINDOW) -> None:
@@ -331,22 +373,22 @@ class MonotonicRiseCriterion:
             raise ValueError(f"window must span at least two epochs to express a rise, got {window}")
         self._window = window
 
-    @property
-    def window(self) -> int:
-        return self._window
-
     def inspect(self, log: TrainingLog) -> list[HealthFinding]:
         epochs = [epoch for epoch in log.epochs if math.isfinite(epoch.average_loss)]
+        if not epochs:
+            return []
+        latest = epochs[-1].average_loss
         for start in range(len(epochs) - self._window + 1):
             candidate = epochs[start : start + self._window]
-            if self._is_consecutive_rise(candidate):
+            if self._is_consecutive_rise(candidate) and latest >= candidate[-1].average_loss:
                 first, last = candidate[0], candidate[-1]
                 return [
                     HealthFinding(
-                        MONOTONIC_RISE,
+                        FindingKind.MONOTONIC_RISE,
                         last.epoch,
                         f"epochs {first.epoch}-{last.epoch} rose monotonically "
-                        f"({first.average_loss:.4f} -> {last.average_loss:.4f}) over {self._window} consecutive epochs",
+                        f"({first.average_loss:.4f} -> {last.average_loss:.4f}) over {self._window} consecutive epochs, "
+                        f"and the loss is still at or above that level (latest {latest:.4f})",
                     )
                 ]
         return []
@@ -354,6 +396,80 @@ class MonotonicRiseCriterion:
     @staticmethod
     def _is_consecutive_rise(candidate: list[EpochRecord]) -> bool:
         return all(earlier.epoch + 1 == later.epoch and earlier.average_loss < later.average_loss for earlier, later in zip(candidate, candidate[1:]))
+
+
+class StalledLogCriterion:
+    """Alarms when the log itself goes quiet while the run still has epochs to go.
+
+    Two shapes, one symptom, and neither is visible in the text: a stopped trainer writes
+    exactly as much as a healthy one.  The launcher creates the log through ``tee`` before the
+    trainer writes a line, so no records at all is normal for the first minutes -- the grace
+    period is that window.  A log that logged thousands of steps and then went silent is a
+    trainer that died: an OOM, a node reboot, a killed session.  Every other criterion reads
+    records, and records that stop arriving cannot contradict any of them, so without this the
+    report reads HEALTHY for a run that is no longer doing anything.
+
+    Unlike the loss criteria this one reads the log file, not just its parsed records -- the
+    file's mtime is the only witness that growth has stopped.  A missing file is the same
+    failure taken to its limit and reported as ``LOG_UNAVAILABLE``.
+    """
+
+    def __init__(
+        self,
+        log_path: Path,
+        total_epochs: int,
+        startup_grace_seconds: float = DEFAULT_STARTUP_GRACE_SECONDS,
+    ) -> None:
+        if total_epochs < 1:
+            raise ValueError(f"total_epochs must be positive, got {total_epochs}")
+        self._log_path = log_path
+        self._total_epochs = total_epochs
+        self._startup_grace_seconds = startup_grace_seconds
+
+    def inspect(self, log: TrainingLog) -> list[HealthFinding]:
+        if not self._log_path.exists():
+            return [HealthFinding(FindingKind.LOG_UNAVAILABLE, 0, f"{self._log_path} does not exist")]
+        return self._stalled_log_findings(log)
+
+    def _stalled_log_findings(self, log: TrainingLog) -> list[HealthFinding]:
+        if log.epochs_completed >= self._total_epochs:
+            return []
+        silent_seconds = datetime.now(UTC).timestamp() - self._log_path.stat().st_mtime
+        if silent_seconds < self._silence_tolerance(log):
+            return []
+        minutes = silent_seconds / 60
+        if log.steps or log.epochs:
+            return [
+                HealthFinding(
+                    FindingKind.LOG_STALLED,
+                    log.epochs_completed,
+                    f"no new line for {minutes:.0f} minutes, with epoch {log.epochs_completed}/{self._total_epochs} the last one finished: "
+                    f"{self._log_path} has stopped growing, so the trainer is gone or hung",
+                )
+            ]
+        return [
+            HealthFinding(
+                FindingKind.NO_TRAINING_STATE,
+                0,
+                f"no step or epoch record after {minutes:.0f} minutes: {self._log_path} has not grown past its startup output",
+            )
+        ]
+
+    def _silence_tolerance(self, log: TrainingLog) -> float:
+        """How long the log may go unwritten before it counts as stopped.
+
+        An epoch is the log's own heartbeat -- it prints at least its average-loss line once per
+        epoch -- so the tolerance is a few of those, derived from the log's measured pace instead
+        of being passed in.  Before the first step there is no pace to scale against, so the
+        startup grace period stands in for it.
+
+        Never below ``MIN_SILENCE_SECONDS``.  The measured pace is what the log *has* done, not a
+        licence to alarm on a few seconds of quiet -- a checkpoint write can take that -- and a log
+        whose timestamps do not resolve a pace would otherwise earn a tolerance of zero.
+        """
+        if log.seconds_per_step is not None and log.iterations_per_epoch:
+            return max(MIN_SILENCE_SECONDS, DEFAULT_STALE_AFTER_EPOCHS * log.seconds_per_step * log.iterations_per_epoch)
+        return self._startup_grace_seconds
 
 
 class TrainingLogWatcher:
@@ -364,7 +480,8 @@ class TrainingLogWatcher:
         log_path: Path,
         total_epochs: int,
         report_path: Path | None = None,
-        criteria: tuple[HealthCriterion, ...] | None = None,
+        non_finite_streak: int = DEFAULT_NON_FINITE_STREAK,
+        rise_window: int = DEFAULT_RISE_WINDOW,
         startup_grace_seconds: float = DEFAULT_STARTUP_GRACE_SECONDS,
     ) -> None:
         if total_epochs < 1:
@@ -372,23 +489,25 @@ class TrainingLogWatcher:
         self._log_path = log_path
         self._total_epochs = total_epochs
         self._report_path = report_path
-        self._criteria = criteria if criteria is not None else (NonFiniteLossCriterion(), MonotonicRiseCriterion())
-        self._startup_grace_seconds = startup_grace_seconds
+        self._criteria: tuple[HealthCriterion, ...] = (
+            NonFiniteLossCriterion(non_finite_streak),
+            MonotonicRiseCriterion(rise_window),
+            StalledLogCriterion(log_path, total_epochs, startup_grace_seconds),
+        )
         self._parser = TrainingLogParser()
 
     def run(self) -> dict:
         """Read the log, decide, write the report; return it.
 
-        A missing log is an ALARM rather than an exception: a poller that dies on a rotated
-        log stops watching, and a stopped watcher looks exactly like a healthy run.
+        A missing log parses to an empty record set rather than an exception: a poller that dies
+        on a rotated log stops watching, and a stopped watcher looks exactly like a healthy run --
+        the criteria then see the missing file for what it is.
         """
         if self._log_path.exists():
             log = self._parser.parse(self._log_path.read_text())
-            findings = [finding for criterion in self._criteria for finding in criterion.inspect(log)]
-            findings += self._stalled_start_findings(log)
         else:
             log = TrainingLog([], [], [])
-            findings = [HealthFinding(LOG_UNAVAILABLE, 0, f"{self._log_path} does not exist")]
+        findings = [finding for criterion in self._criteria for finding in criterion.inspect(log)]
         report = self._build_report(log, findings)
         if self._report_path is not None:
             self._report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -400,32 +519,10 @@ class TrainingLogWatcher:
                 file.write("\n")
         return report
 
-    def _stalled_start_findings(self, log: TrainingLog) -> list[HealthFinding]:
-        """A log that has stopped growing without ever recording training state.
-
-        The launcher creates the log through ``tee`` before the trainer writes a line, so a log
-        holding only torchrun warnings and config echoes is normal for its first minutes -- the
-        grace period is that window.  Past it such a log is a startup that failed, and every line
-        it holds is one the parser ignores: without this the report reads HEALTHY for a run that
-        never began, which is the one failure a poller cannot notice by itself.
-        """
-        if log.steps or log.epochs:
-            return []
-        age_seconds = datetime.now(UTC).timestamp() - self._log_path.stat().st_mtime
-        if age_seconds < self._startup_grace_seconds:
-            return []
-        return [
-            HealthFinding(
-                NO_TRAINING_STATE,
-                0,
-                f"no step or epoch record after {age_seconds / 60:.0f} minutes: {self._log_path} has not grown past its startup output",
-            )
-        ]
-
     def _build_report(self, log: TrainingLog, findings: list[HealthFinding]) -> dict:
         epochs_remaining = self._epochs_remaining(log)
         return {
-            "verdict": ALARM if findings else HEALTHY,
+            "verdict": Verdict.ALARM if findings else Verdict.HEALTHY,
             "generated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
             "log_path": str(self._log_path),
             "progress": {
@@ -451,15 +548,24 @@ class TrainingLogWatcher:
         in_flight = log.epoch_fraction if log.epoch_fraction is not None else 0.0
         return max(0.0, self._total_epochs - log.epochs_completed - in_flight)
 
-    def _curve_point(self, point: dict) -> dict:
-        """One loss-curve point as the report holds it.
+    def _curve_point(self, point: LossCurvePoint) -> dict:
+        """One loss-curve point as the report holds it."""
+        return {
+            "epoch": point.epoch,
+            "step_mean_loss": self._json_loss(point.step_mean_loss),
+            "reported_average_loss": self._json_loss(point.reported_average_loss),
+        }
+
+    @staticmethod
+    def _json_loss(loss: float | None) -> float | None:
+        """A loss as JSON holds it.
 
         JSON has no NaN or Infinity literal: `json.dump` writes them as bare tokens that strict
         consumers refuse and that `jq` silently rewrites (``Infinity`` becomes 1.797e308).  A
-        transient non-finite loss is expected and is not an alarm, so the curve has to carry it
-        some other way -- null, this report's existing spelling of "no value here".
+        transient non-finite loss is expected and is not an alarm, so the curve carries it as
+        null -- this report's existing spelling of "no value here".
         """
-        return {key: (None if isinstance(value, float) and not math.isfinite(value) else value) for key, value in point.items()}
+        return None if loss is None or not math.isfinite(loss) else loss
 
     def _timing(self, log: TrainingLog, epochs_remaining: float) -> dict:
         seconds_per_epoch = log.seconds_per_step * log.iterations_per_epoch if log.seconds_per_step is not None and log.iterations_per_epoch else None
@@ -497,7 +603,11 @@ def main() -> None:
         "--startup-grace-seconds",
         type=float,
         default=DEFAULT_STARTUP_GRACE_SECONDS,
-        help=f"how long a log may hold no step or epoch record before it counts as a failed start (default {DEFAULT_STARTUP_GRACE_SECONDS})",
+        help=(
+            "how long a log may go unwritten before the run counts as stopped, for as long as no step pace is known "
+            f"(default {DEFAULT_STARTUP_GRACE_SECONDS}); once steps are logged the tolerance is "
+            f"{DEFAULT_STALE_AFTER_EPOCHS} measured epochs instead, so this needs no tuning per workload"
+        ),
     )
     args = parser.parse_args()
 
@@ -505,7 +615,8 @@ def main() -> None:
         log_path=args.log,
         total_epochs=args.total_epochs,
         report_path=args.report,
-        criteria=(NonFiniteLossCriterion(args.non_finite_streak), MonotonicRiseCriterion(args.rise_window)),
+        non_finite_streak=args.non_finite_streak,
+        rise_window=args.rise_window,
         startup_grace_seconds=args.startup_grace_seconds,
     ).run()
 
@@ -517,7 +628,7 @@ def main() -> None:
     )
     for finding in report["findings"]:
         print(f"  [{finding['kind']}] epoch {finding['epoch']}: {finding['detail']}")
-    if report["verdict"] == ALARM:
+    if report["verdict"] == Verdict.ALARM:
         print("ALARM is advisory: spec section 4.7 leaves killing the run to the operator.")
         raise SystemExit(1)
 
