@@ -40,19 +40,53 @@ constructor/CLI parameter, and the defaults live in one place:
   a *weak* spine discriminator (only 0.05 % of likely-spine series exceed it, because
   the dataset admission criteria already capped every axis at 350 mm); the mask-volume
   ratio below does the actual spine rejection.
-- **Mask-volume ratio [2 %, 35 %] — first-principles initial value, not yet data
-  calibrated** (no HD-BET masks on disk until the replay zips land).  Calibration
-  protocol for the download ticket: once the first study zips are extracted, run this
-  filter over them and check (a) atlas-referenced SWI/MRA series pass at ~100 % — if
-  not, the ratio band is miscalibrated; (b) the T2w pass rate lands near v1's brain-T2w
-  anchor (669 usable source volumes across all splits — data/README.md section 3.4);
-  (c) whole-brain sagittal 1 mm iso acquisitions sit well inside the band.  Tight-FOV
-  thick-slice brain acquisitions can approach the 35 % ceiling by construction
-  (brain volume / small FOV box), so expect the upper bound to be the sensitive one.
 
-The module is deliberately dependency-light (nibabel + numpy only) and callable without
-the sampling script, so the forgetting gen-real reference-set sampling (spec section
-5.1, ticket D5) reuses it as-is.
+  The sharp edge is real and was observed: the first rejection of the whole T6 run was a
+  T2w series whose mask ratio was a healthy 0.128 -- i.e. brain -- rejected solely because
+  one axis measured 300.0002 mm, overshooting the ceiling by 0.00024 mm of floating-point
+  noise (spacing x shape, not anatomy).  The comparison is deliberately exact: the 300 mm
+  value is the dataset's own nominal axis bound, so a volume sitting exactly on it is at
+  the boundary the calibration chose, and holding the line costs one top-up rather than
+  letting a class of borderline volumes through.  Raising the ceiling to swallow
+  float noise would be the change to make if false rejects ever became expensive; today
+  they are not (2 of the complete 3,810-series roster).
+- **Mask-volume ratio [2 %, 35 %] — calibrated 2026-09-10 against the first real
+  HD-BET masks on disk**, two directions:
+  (a) *False rejects* — 1,494 paired brain series from atlas-registered studies (the
+  ``MR-RATE-atlas`` release, whose volumes are registered to a common brain template)
+  were pushed through this filter unchanged: measured ratio p0 = 0.121, p50 = 0.162,
+  p99 = 0.206, max = 0.228; **0 of 1,494 rejected**.  The whole brain population sits
+  comfortably inside the band, so the filter does not eat brain volumes.
+  (b) *False accepts* — the replay sweep itself (Train split, all five modalities as the
+  download proceeds) has so far seen nothing below the floor either; the measured
+  population is p0 ≈ 0.075 and 0.29 at the top, still entirely inside the band.  The
+  floor is therefore doing its job by construction rather than by lucky calibration: a
+  spine FOV has almost no brain tissue for HD-BET to find, so its ratio collapses toward
+  zero rather than edging under the threshold.
+  (c) *The ceiling has since been approached* — the forgetting reference set (val split,
+  202 series) reached 0.337 on a SWI volume, within 1.4 % of the 35 % ceiling while still
+  passing.  So the upper bound is not untested slack: thick-slice brain acquisitions can
+  climb towards it, and a future tightening of the ceiling should be checked against those
+  volumes rather than assumed free.
+  Consequence for the top-up loop: the two conditions together rejected **2 of the 3,810
+  series** in the T6 sweep -- both on FOV, neither on the ratio -- and 0 of the reference
+  set's 202.  The refill path is implemented and tested, but has not yet had to fire on
+  real data.
+
+Verified on real data during the T6 run: the derived twins are voxel-exact
+(``image x mask``, geometry preserved), both for replay volumes and for the forgetting
+reference set.
+
+The calibration numbers above come from one-off scripts, not from anything committed: they read
+volumes out of the HF caches, and the project's convention (``skills/publish_experiment.md``)
+publishes experiment one-offs as release assets rather than as repo code.  They ship in the T6
+run release's ``scripts-t6-replay-latent-20260910.tar.gz`` (``spine_calibration.py`` and
+``spine_calib2..4.py``), next to the run's verdict logs, from which the replay and reference
+populations are recomputed without re-reading a volume.
+
+The module is deliberately dependency-light (numpy, plus the shared ``scripts.image_mask_pair``
+loader that carries the image/mask grid check) and callable without the sampling script, so the
+forgetting gen-real reference-set sampling (spec section 5.1, ticket D5) reuses it as-is.
 
 Usage (single pair, for calibration and inspection)::
 
@@ -73,8 +107,9 @@ import json
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-import nibabel as nib
 import numpy as np
+
+from .image_mask_pair import ImageMaskPair
 
 
 @dataclass(frozen=True)
@@ -104,11 +139,9 @@ class SpineFilter:
 
     def check(self, image_path: Path, mask_path: Path) -> SpineFilterResult:
         """Raise ValueError if the pair does not share a voxel grid; never on a spine verdict."""
-        image = nib.load(str(image_path))
-        mask = nib.load(str(mask_path))
-        if image.shape != mask.shape:
-            raise ValueError(f"image {image.shape} and mask {mask.shape} differ in voxel grid ({image_path})")
-        mask_voxels = int(np.count_nonzero(np.asanyarray(mask.dataobj)))
+        pair = ImageMaskPair(image_path, mask_path)
+        image = pair.image
+        mask_voxels = int(np.count_nonzero(np.asanyarray(pair.mask.dataobj)))
         total_voxels = int(np.prod(image.shape))
         ratio = mask_voxels / total_voxels
         zooms = image.header.get_zooms()[: len(image.shape)]

@@ -28,7 +28,8 @@ import numpy as np
 import pytest
 
 from scripts.create_brats_dataset_json import SUFFIX_TO_MODALITY
-from scripts.create_brats_sidecars import BratsSidecarGenerator, TrainingEntry
+from scripts.create_brats_sidecars import BratsSidecarGenerator
+from scripts.latent_sidecars import LatentEntry
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRAINING_DATA_DIRNAME = "ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData"
@@ -37,13 +38,13 @@ LATENT_SPACING = (0.9375, 0.9375, 1.2109375)
 
 
 @pytest.fixture
-def dataset_entries() -> list[TrainingEntry]:
+def dataset_entries() -> list[LatentEntry]:
     """The dataset.json training entries for the fake cases, one per suffix."""
     entries = []
     for case in FAKE_CASES:
         for suffix, modality in sorted(SUFFIX_TO_MODALITY.items()):
             image = f"brats2023-gli/{TRAINING_DATA_DIRNAME}/{case}/{case}-{suffix}.nii.gz"
-            entries.append(TrainingEntry(image=image, modality=modality))
+            entries.append(LatentEntry(image=image, modality=modality))
     return entries
 
 
@@ -63,17 +64,17 @@ def write_latent() -> Callable[[Path, str, tuple[float, float, float]], Path]:
 
 @pytest.fixture
 def embedding_base_dir(
-    tmp_path: Path, write_latent: Callable[[Path, str, tuple[float, float, float]], Path], dataset_entries: list[TrainingEntry]
+    tmp_path: Path, write_latent: Callable[[Path, str, tuple[float, float, float]], Path], dataset_entries: list[LatentEntry]
 ) -> Path:
     """An embedding base dir holding one latent per fake dataset.json entry, all with LATENT_SPACING."""
     base = tmp_path / "embeddings"
     for entry in dataset_entries:
-        write_latent(base, entry.embedding_relative_path(), LATENT_SPACING)
+        write_latent(base, entry.embedding_relative_path, LATENT_SPACING)
     return base
 
 
 @pytest.fixture
-def dataset_json(tmp_path: Path, dataset_entries: list[TrainingEntry]) -> Path:
+def dataset_json(tmp_path: Path, dataset_entries: list[LatentEntry]) -> Path:
     path = tmp_path / "dataset.json"
     path.write_text(json.dumps({"training": [asdict(entry) for entry in dataset_entries], "validation": []}))
     return path
@@ -89,20 +90,20 @@ def build_generator(dataset_json: Path, embedding_base_dir: Path) -> Callable[[]
     return _build
 
 
-class TestTrainingEntry:
+class TestLatentEntry:
     def test_embedding_relative_path_follows_training_code_convention(self) -> None:
-        entry = TrainingEntry(image="brats2023-gli/data/case-t1n.nii.gz", modality="mri_t1n")
-        assert entry.embedding_relative_path() == "brats2023-gli/data/case-t1n_emb.nii.gz"
+        entry = LatentEntry(image="brats2023-gli/data/case-t1n.nii.gz", modality="mri_t1n")
+        assert entry.embedding_relative_path == "brats2023-gli/data/case-t1n_emb.nii.gz"
 
 
 class TestBratsSidecarGenerator:
     def test_writes_one_sidecar_per_training_entry(
-        self, build_generator: Callable[[], BratsSidecarGenerator], dataset_entries: list[TrainingEntry]
+        self, build_generator: Callable[[], BratsSidecarGenerator], dataset_entries: list[LatentEntry]
     ) -> None:
         assert build_generator().write_sidecars() == len(dataset_entries)
 
     def test_sidecar_lies_next_to_latent_with_json_extension(
-        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_entries: list[TrainingEntry]
+        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_entries: list[LatentEntry]
     ) -> None:
         build_generator().write_sidecars()
 
@@ -112,12 +113,12 @@ class TestBratsSidecarGenerator:
         assert expected.is_file()
 
     def test_sidecar_records_header_spacing_and_modality(
-        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_entries: list[TrainingEntry]
+        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_entries: list[LatentEntry]
     ) -> None:
         build_generator().write_sidecars()
 
         entry = dataset_entries[0]
-        sidecar = json.loads((embedding_base_dir / entry.sidecar_relative_path()).read_text())
+        sidecar = json.loads((embedding_base_dir / entry.sidecar_relative_path).read_text())
         assert set(sidecar) == {"spacing", "modality"}
         assert sidecar["spacing"] == pytest.approx(list(LATENT_SPACING))
         assert sidecar["modality"] == entry.modality
@@ -126,31 +127,31 @@ class TestBratsSidecarGenerator:
         self,
         build_generator: Callable[[], BratsSidecarGenerator],
         embedding_base_dir: Path,
-        dataset_entries: list[TrainingEntry],
+        dataset_entries: list[LatentEntry],
         write_latent: Callable[[Path, str, tuple[float, float, float]], Path],
     ) -> None:
         odd_spacing = (2.0, 1.5, 3.25)
         entry = dataset_entries[-1]
-        (embedding_base_dir / entry.embedding_relative_path()).unlink()
-        write_latent(embedding_base_dir, entry.embedding_relative_path(), odd_spacing)
+        (embedding_base_dir / entry.embedding_relative_path).unlink()
+        write_latent(embedding_base_dir, entry.embedding_relative_path, odd_spacing)
         build_generator().write_sidecars()
 
-        sidecar = json.loads((embedding_base_dir / entry.sidecar_relative_path()).read_text())
+        sidecar = json.loads((embedding_base_dir / entry.sidecar_relative_path).read_text())
         assert sidecar["spacing"] == pytest.approx(list(odd_spacing))
 
     def test_sidecar_modality_matches_dataset_json_entry_wise(
-        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_entries: list[TrainingEntry]
+        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_entries: list[LatentEntry]
     ) -> None:
         build_generator().write_sidecars()
 
         for entry in dataset_entries:
-            sidecar = json.loads((embedding_base_dir / entry.sidecar_relative_path()).read_text())
+            sidecar = json.loads((embedding_base_dir / entry.sidecar_relative_path).read_text())
             assert sidecar["modality"] == entry.modality, entry.image
 
     def test_missing_latent_raises_and_writes_no_sidecars(
-        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_entries: list[TrainingEntry]
+        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_entries: list[LatentEntry]
     ) -> None:
-        (embedding_base_dir / dataset_entries[0].embedding_relative_path()).unlink()
+        (embedding_base_dir / dataset_entries[0].embedding_relative_path).unlink()
 
         with pytest.raises(ValueError, match="missing"):
             build_generator().write_sidecars()
@@ -158,7 +159,7 @@ class TestBratsSidecarGenerator:
         assert not list(embedding_base_dir.rglob("*.json"))
 
     def test_rerun_overwrites_sidecars_to_match_updated_dataset_json(
-        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_json: Path, dataset_entries: list[TrainingEntry]
+        self, build_generator: Callable[[], BratsSidecarGenerator], embedding_base_dir: Path, dataset_json: Path, dataset_entries: list[LatentEntry]
     ) -> None:
         build_generator().write_sidecars()
         payload = json.loads(dataset_json.read_text())
@@ -166,12 +167,12 @@ class TestBratsSidecarGenerator:
         dataset_json.write_text(json.dumps(payload))
         build_generator().write_sidecars()
 
-        sidecar = json.loads((embedding_base_dir / dataset_entries[0].sidecar_relative_path()).read_text())
+        sidecar = json.loads((embedding_base_dir / dataset_entries[0].sidecar_relative_path).read_text())
         assert sidecar["modality"] == "mri_t1ce"
 
 
 class TestCommandLine:
-    def test_end_to_end_generation(self, embedding_base_dir: Path, dataset_json: Path, dataset_entries: list[TrainingEntry]) -> None:
+    def test_end_to_end_generation(self, embedding_base_dir: Path, dataset_json: Path, dataset_entries: list[LatentEntry]) -> None:
         result = subprocess.run(
             [
                 sys.executable,
