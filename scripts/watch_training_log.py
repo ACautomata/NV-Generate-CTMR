@@ -16,8 +16,9 @@ The execution discipline for every tier is "no resume, training must not be inte
 killed tier restarts from epoch 1, so the only decision an agent may take is to *notice* and
 *escalate*.  Two failure modes are named by the spec, and this watcher is how they are caught:
 
-- a loss that stays non-finite across a sustained run of steps (a one-off inf is GradScaler's
-  normal business under AMP), and
+- a loss that stays non-finite across a sustained run -- counted both over the per-step records
+  and over the all-reduced per-epoch averages, since each resolution is blind where the other
+  sees (a one-off inf is GradScaler's normal business under AMP), and
 - a loss that rises monotonically for ~20 consecutive epochs.
 
 Both alarm criteria are loose on purpose -- a false alarm here costs a whole tier, since the
@@ -26,7 +27,8 @@ only available response is to kill the run and retrain it from epoch 1.
 Both are advisory: the report says ALARM and ``main`` exits 1 so a polling shell can react,
 but killing the run stays a human decision (spec section 4.7).  The same report carries the
 numbers the acceptance record needs -- per-epoch loss curve, measured seconds per step, ETA,
-and the snapshot files seen so far -- so one parser serves both jobs.
+and the snapshot files seen so far -- so one parser serves both jobs.  It is strict JSON: a
+bare ``NaN`` token would leave every later poll unreadable to strict consumers.
 
 Cost: a 300-epoch run logs one line per optimizer step (~1.1M lines, ~170 MB), and this
 reads all of it on every poll.  That is seconds against a poll interval of minutes; the
@@ -53,9 +55,12 @@ ALARM = "ALARM"
 NON_FINITE_LOSS = "non_finite_loss"
 MONOTONIC_RISE = "monotonic_rise"
 LOG_UNAVAILABLE = "log_unavailable"
+NO_TRAINING_STATE = "no_training_state"
 
 DEFAULT_RISE_WINDOW = 20
 DEFAULT_NON_FINITE_STREAK = 20
+DEFAULT_NON_FINITE_EPOCH_STREAK = 3
+DEFAULT_STARTUP_GRACE_SECONDS = 1800
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 # `[2026-09-11 17:02:08.979][ INFO](training) - [2026-09-11 17:02:08] epoch 1, iter 1/3714, loss: 1.0373, lr: 0.000010000000.`
@@ -107,12 +112,16 @@ class TrainingLog:
 
     @property
     def epochs_completed(self) -> int:
-        """The highest epoch the log reports -- not the number of average-loss lines seen.
+        """The highest epoch the log shows as finished.
 
-        A log rotated mid-run keeps its epoch numbering, and counting lines would read such a
-        run as barely started.
+        Two record types witness completion and a rotated log may keep only one of them.  An
+        ``epoch N average loss`` line means N is done; step records inside epoch N mean N-1 is
+        done, since the trainer can only be in epoch N once N-1 has finished.  Reading the
+        average lines alone would report a log rotated mid-epoch as barely started.
         """
-        return max((epoch.epoch for epoch in self.epochs), default=0)
+        from_epochs = max((epoch.epoch for epoch in self.epochs), default=0)
+        from_steps = self.steps[-1].epoch - 1 if self.steps else 0
+        return max(from_epochs, from_steps)
 
     @property
     def iterations_per_epoch(self) -> int | None:
@@ -120,12 +129,19 @@ class TrainingLog:
 
     @property
     def epoch_fraction(self) -> float | None:
-        """How far into its current epoch the newest logged step is.
+        """How far into the epoch the run is currently working on, or None before the first step.
 
         An epoch here runs ~20 minutes, so the completed count alone leaves a reader guessing
-        whether the next snapshot is imminent or a whole epoch away.
+        whether the next snapshot is imminent or a whole epoch away.  Zero once that epoch's
+        average-loss line has landed: the steps then belong to a finished epoch, and counting
+        their fraction again would charge the ETA for an epoch already paid for.
         """
-        return self.steps[-1].fractional_epoch_position if self.steps else None
+        if not self.steps:
+            return None
+        newest = self.steps[-1]
+        if any(epoch.epoch == newest.epoch for epoch in self.epochs):
+            return 0.0
+        return newest.fractional_epoch_position
 
     @property
     def seconds_per_step(self) -> float | None:
@@ -150,16 +166,19 @@ class TrainingLog:
         """Per-epoch loss, from the step lines and from the script's own average-loss lines.
 
         The two agree only approximately: the reported average is the all-reduced number across
-        ranks, while ``step_mean_loss`` is recomputed here from this rank's log.  Both are kept
-        because the curve must survive a log whose epoch lines have not been written yet.
+        ranks, while ``step_mean_loss`` is recomputed here from this rank's log.  Both are kept,
+        and an epoch appears if either record type mentions it: a rotated log can retain one
+        without the other, and an epoch missing from the curve is an epoch missing from the
+        acceptance record this report feeds.  Either half is None when its record is absent.
         """
         reported = {epoch.epoch: epoch.average_loss for epoch in self.epochs}
         per_epoch_steps: dict[int, list[float]] = {}
         for step in self.steps:
             per_epoch_steps.setdefault(step.epoch, []).append(step.loss)
+        means = {epoch: sum(losses) / len(losses) for epoch, losses in per_epoch_steps.items()}
         return [
-            {"epoch": epoch, "step_mean_loss": sum(losses) / len(losses), "reported_average_loss": reported.get(epoch)}
-            for epoch, losses in sorted(per_epoch_steps.items())
+            {"epoch": epoch, "step_mean_loss": means.get(epoch), "reported_average_loss": reported.get(epoch)}
+            for epoch in sorted(means.keys() | reported.keys())
         ]
 
 
@@ -215,44 +234,86 @@ class TrainingLogParser:
 
 
 class NonFiniteLossCriterion:
-    """Alarms when a loss stays non-finite across a sustained run of steps.
+    """Alarms when the loss stops being finite and stays that way.
 
     One NaN/inf loss is not a failure.  Under AMP ``GradScaler`` skips that step and backs the
     scale off, and training continues; alarming on a single one would be this tool's highest
     false-positive surface, and a false alarm here costs the whole tier -- there is no resume,
     so spec section 4.7 loosens the criteria precisely to keep the operator from killing a run
     that is fine.  A run that has actually diverged stops producing finite losses altogether, so
-    the streak is what the criterion counts.
+    a streak is what this criterion counts, at both resolutions the log offers.
 
-    Epoch averages are deliberately not a separate trigger: a single non-finite step makes its
-    epoch average non-finite too, so alarming there would smuggle the transient case back in.
-    A non-finite average is still visible in the loss curve.
+    Two resolutions, because each is blind where the other sees.  The step records come from
+    rank 0 alone -- ``diff_model_train.py`` logs the per-iter line under ``local_rank == 0`` --
+    so a nonzero rank that diverges never shows up there; the epoch average is all-reduced, so
+    it does.  That average is correspondingly coarser: one bad step on any rank makes its whole
+    epoch non-finite, which is why a lone non-finite epoch is still not an alarm.  Every epoch
+    here covers the whole dataset exactly once, so a flaky sample lands in a single epoch and
+    only a persistent fault can reach consecutive ones.
     """
 
-    def __init__(self, consecutive_steps: int = DEFAULT_NON_FINITE_STREAK) -> None:
+    def __init__(
+        self,
+        consecutive_steps: int = DEFAULT_NON_FINITE_STREAK,
+        consecutive_epochs: int = DEFAULT_NON_FINITE_EPOCH_STREAK,
+    ) -> None:
         if consecutive_steps < 1:
             raise ValueError(f"consecutive_steps must be at least one step, got {consecutive_steps}")
+        if consecutive_epochs < 1:
+            raise ValueError(f"consecutive_epochs must be at least one epoch, got {consecutive_epochs}")
         self._consecutive_steps = consecutive_steps
+        self._consecutive_epochs = consecutive_epochs
 
     def inspect(self, log: TrainingLog) -> list[HealthFinding]:
-        streak_start: StepRecord | None = None
-        streak = 0
+        findings = []
+        steps = self._sustained_step_run(log)
+        if steps is not None:
+            first, last = steps[0], steps[-1]
+            findings.append(
+                HealthFinding(
+                    NON_FINITE_LOSS,
+                    last.epoch,
+                    f"{len(steps)} consecutive steps are non-finite, from epoch {first.epoch} step "
+                    f"{first.iter} through epoch {last.epoch} step {last.iter} (latest {last.loss})",
+                )
+            )
+        epochs = self._sustained_epoch_run(log)
+        if epochs is not None:
+            first, last = epochs[0], epochs[-1]
+            findings.append(
+                HealthFinding(
+                    NON_FINITE_LOSS,
+                    last.epoch,
+                    f"{len(epochs)} consecutive epochs are non-finite after the all-reduce, epochs "
+                    f"{first.epoch}-{last.epoch} (latest {last.average_loss}); step records come from "
+                    f"rank 0 alone, so a nonzero rank is where to look",
+                )
+            )
+        return findings
+
+    def _sustained_step_run(self, log: TrainingLog) -> list[StepRecord] | None:
+        """The first run of non-finite step losses reaching the threshold, if the log holds one."""
+        streak: list[StepRecord] = []
         for step in log.steps:
             if math.isfinite(step.loss):
-                streak_start, streak = None, 0
+                streak = []
                 continue
-            streak_start = streak_start if streak_start is not None else step
-            streak += 1
-            if streak >= self._consecutive_steps:
-                return [
-                    HealthFinding(
-                        NON_FINITE_LOSS,
-                        step.epoch,
-                        f"{streak} consecutive steps are non-finite, from epoch {streak_start.epoch} step "
-                        f"{streak_start.iter} through epoch {step.epoch} step {step.iter} (latest {step.loss})",
-                    )
-                ]
-        return []
+            streak.append(step)
+            if len(streak) >= self._consecutive_steps:
+                return streak
+        return None
+
+    def _sustained_epoch_run(self, log: TrainingLog) -> list[EpochRecord] | None:
+        """The first run of non-finite epoch averages reaching the threshold, if any."""
+        streak: list[EpochRecord] = []
+        for epoch in log.epochs:
+            if math.isfinite(epoch.average_loss):
+                streak = []
+                continue
+            streak.append(epoch)
+            if len(streak) >= self._consecutive_epochs:
+                return streak
+        return None
 
 
 class MonotonicRiseCriterion:
@@ -304,6 +365,7 @@ class TrainingLogWatcher:
         total_epochs: int,
         report_path: Path | None = None,
         criteria: tuple[HealthCriterion, ...] | None = None,
+        startup_grace_seconds: float = DEFAULT_STARTUP_GRACE_SECONDS,
     ) -> None:
         if total_epochs < 1:
             raise ValueError(f"total_epochs must be positive, got {total_epochs}")
@@ -311,6 +373,7 @@ class TrainingLogWatcher:
         self._total_epochs = total_epochs
         self._report_path = report_path
         self._criteria = criteria if criteria is not None else (NonFiniteLossCriterion(), MonotonicRiseCriterion())
+        self._startup_grace_seconds = startup_grace_seconds
         self._parser = TrainingLogParser()
 
     def run(self) -> dict:
@@ -322,6 +385,7 @@ class TrainingLogWatcher:
         if self._log_path.exists():
             log = self._parser.parse(self._log_path.read_text())
             findings = [finding for criterion in self._criteria for finding in criterion.inspect(log)]
+            findings += self._stalled_start_findings(log)
         else:
             log = TrainingLog([], [], [])
             findings = [HealthFinding(LOG_UNAVAILABLE, 0, f"{self._log_path} does not exist")]
@@ -329,12 +393,37 @@ class TrainingLogWatcher:
         if self._report_path is not None:
             self._report_path.parent.mkdir(parents=True, exist_ok=True)
             with self._report_path.open("w") as file:
-                json.dump(report, file, indent=2)
+                # The curve carries None where a loss is non-finite, so this never fires today;
+                # `allow_nan=False` is the guard that keeps a later source of non-finite report
+                # values from silently writing tokens no strict JSON reader accepts.
+                json.dump(report, file, indent=2, allow_nan=False)
                 file.write("\n")
         return report
 
+    def _stalled_start_findings(self, log: TrainingLog) -> list[HealthFinding]:
+        """A log that has stopped growing without ever recording training state.
+
+        The launcher creates the log through ``tee`` before the trainer writes a line, so a log
+        holding only torchrun warnings and config echoes is normal for its first minutes -- the
+        grace period is that window.  Past it such a log is a startup that failed, and every line
+        it holds is one the parser ignores: without this the report reads HEALTHY for a run that
+        never began, which is the one failure a poller cannot notice by itself.
+        """
+        if log.steps or log.epochs:
+            return []
+        age_seconds = datetime.now(UTC).timestamp() - self._log_path.stat().st_mtime
+        if age_seconds < self._startup_grace_seconds:
+            return []
+        return [
+            HealthFinding(
+                NO_TRAINING_STATE,
+                0,
+                f"no step or epoch record after {age_seconds / 60:.0f} minutes: {self._log_path} has not grown past its startup output",
+            )
+        ]
+
     def _build_report(self, log: TrainingLog, findings: list[HealthFinding]) -> dict:
-        epochs_remaining = max(0, self._total_epochs - log.epochs_completed)
+        epochs_remaining = self._epochs_remaining(log)
         return {
             "verdict": ALARM if findings else HEALTHY,
             "generated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -348,12 +437,31 @@ class TrainingLogWatcher:
                 "epoch_fraction": log.epoch_fraction,
             },
             "timing": self._timing(log, epochs_remaining),
-            "loss_curve": log.loss_curve,
+            "loss_curve": [self._curve_point(point) for point in log.loss_curve],
             "snapshots": log.snapshots,
             "findings": [{"kind": finding.kind, "epoch": finding.epoch, "detail": finding.detail} for finding in findings],
         }
 
-    def _timing(self, log: TrainingLog, epochs_remaining: int) -> dict:
+    def _epochs_remaining(self, log: TrainingLog) -> float:
+        """Epochs of work left, counting the part of the epoch in flight already done.
+
+        Charging that epoch in full would overstate the time left by every step already invested
+        in it -- close to a whole epoch at the end of one, ~20 minutes here.
+        """
+        in_flight = log.epoch_fraction if log.epoch_fraction is not None else 0.0
+        return max(0.0, self._total_epochs - log.epochs_completed - in_flight)
+
+    def _curve_point(self, point: dict) -> dict:
+        """One loss-curve point as the report holds it.
+
+        JSON has no NaN or Infinity literal: `json.dump` writes them as bare tokens that strict
+        consumers refuse and that `jq` silently rewrites (``Infinity`` becomes 1.797e308).  A
+        transient non-finite loss is expected and is not an alarm, so the curve has to carry it
+        some other way -- null, this report's existing spelling of "no value here".
+        """
+        return {key: (None if isinstance(value, float) and not math.isfinite(value) else value) for key, value in point.items()}
+
+    def _timing(self, log: TrainingLog, epochs_remaining: float) -> dict:
         seconds_per_epoch = log.seconds_per_step * log.iterations_per_epoch if log.seconds_per_step is not None and log.iterations_per_epoch else None
         eta_seconds = seconds_per_epoch * epochs_remaining if seconds_per_epoch is not None else None
         return {
@@ -385,6 +493,12 @@ def main() -> None:
         default=DEFAULT_NON_FINITE_STREAK,
         help=f"consecutive non-finite steps before the NaN/inf alarm (default {DEFAULT_NON_FINITE_STREAK}; one-off losses are normal under AMP)",
     )
+    parser.add_argument(
+        "--startup-grace-seconds",
+        type=float,
+        default=DEFAULT_STARTUP_GRACE_SECONDS,
+        help=f"how long a log may hold no step or epoch record before it counts as a failed start (default {DEFAULT_STARTUP_GRACE_SECONDS})",
+    )
     args = parser.parse_args()
 
     report = TrainingLogWatcher(
@@ -392,6 +506,7 @@ def main() -> None:
         total_epochs=args.total_epochs,
         report_path=args.report,
         criteria=(NonFiniteLossCriterion(args.non_finite_streak), MonotonicRiseCriterion(args.rise_window)),
+        startup_grace_seconds=args.startup_grace_seconds,
     ).run()
 
     progress, timing = report["progress"], report["timing"]

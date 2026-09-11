@@ -20,15 +20,19 @@ report whose verdict a polling shell can act on via the exit code.
 """
 
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
 
 from scripts.watch_training_log import (
     ALARM,
+    DEFAULT_STARTUP_GRACE_SECONDS,
     HEALTHY,
     LOG_UNAVAILABLE,
     MONOTONIC_RISE,
+    NO_TRAINING_STATE,
     NON_FINITE_LOSS,
     EpochRecord,
     MonotonicRiseCriterion,
@@ -163,6 +167,28 @@ class TestNonFiniteLossCriterion:
     def test_a_non_positive_streak_threshold_is_refused(self) -> None:
         with pytest.raises(ValueError, match="consecutive_steps"):
             NonFiniteLossCriterion(consecutive_steps=0)
+
+    def test_a_sustained_run_of_non_finite_epoch_averages_alarms(self) -> None:
+        # The per-iter line is guarded by `local_rank == 0` in `diff_model_train.py` while the
+        # epoch average is all-reduced across ranks, so a nonzero rank that diverges never appears
+        # in the step records -- the average is the only place it surfaces, and a watcher reading
+        # steps alone calls such a run healthy for the rest of its life.
+        log = "\n".join(epoch_line(epoch, float("inf")) for epoch in range(5, 8))
+
+        findings = NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log))
+
+        assert len(findings) == 1
+        assert findings[0].kind == NON_FINITE_LOSS
+        assert "3 consecutive epochs" in findings[0].detail
+        assert findings[0].epoch == 7
+
+    def test_a_lone_non_finite_epoch_average_does_not_alarm(self) -> None:
+        # The tolerance is the step criterion's, for the same reason: one bad step on any rank
+        # makes its whole epoch average non-finite, so a single one is a transient, not a
+        # divergence. Full-epoch coverage makes a repeat over consecutive epochs the real signal.
+        log = "\n".join([epoch_line(5, 0.93), epoch_line(6, float("inf")), epoch_line(7, 0.92)])
+
+        assert NonFiniteLossCriterion().inspect(TrainingLogParser().parse(log)) == []
 
 
 class TestMonotonicRiseCriterion:
@@ -325,3 +351,91 @@ class TestTrainingLogWatcher:
         report = TrainingLogWatcher(log_path, total_epochs=300).run()
 
         assert report["loss_curve"] == [{"epoch": 1, "step_mean_loss": 1.0, "reported_average_loss": 0.9352}]
+
+    def test_the_written_report_is_valid_json_after_a_transient_non_finite_loss(self, tmp_path: Path) -> None:
+        # A transient NaN is expected and permitted, but `json.dump` writes it as a bare `NaN`
+        # token, which is not JSON. Strict consumers refuse the whole report and `jq` silently
+        # rewrites it (`Infinity` becomes 1.797e308); either way every later poll stays unreadable.
+        log_path = tmp_path / "train.log"
+        log_path.write_text("\n".join([step_line(2, 10, 1.0), step_line(2, 11, float("nan")), step_line(2, 12, 0.9)]))
+        report_path = tmp_path / "status.json"
+
+        TrainingLogWatcher(log_path, total_epochs=300, report_path=report_path).run()
+
+        report = json.loads(report_path.read_text(), parse_constant=lambda constant: pytest.fail(f"bare {constant} token"))
+        assert report["verdict"] == HEALTHY
+        assert report["loss_curve"][0]["step_mean_loss"] is None
+
+    def test_eta_credits_the_part_of_the_current_epoch_already_done(self, tmp_path: Path) -> None:
+        # `epochs_completed` counts whole epochs, so charging the epoch in flight in full overstates
+        # the time left by every step already invested in it -- near the end of the final epoch,
+        # by almost a whole one.
+        log_path = tmp_path / "train.log"
+        log_path.write_text(
+            "\n".join(
+                [
+                    epoch_line(1, 0.9),
+                    epoch_line(2, 0.9),
+                    step_line(3, 1, 1.0, ts="2026-09-11 17:00:00.000", total=2000),
+                    step_line(3, 1001, 1.0, ts="2026-09-11 17:00:20.000", total=2000),
+                ]
+            )
+        )
+
+        report = TrainingLogWatcher(log_path, total_epochs=10).run()
+
+        remaining_epochs = 10 - 2 - 1001 / 2000
+        assert report["progress"]["epochs_remaining"] == pytest.approx(remaining_epochs)
+        assert report["timing"]["eta_seconds"] == pytest.approx(remaining_epochs * 40.0)
+
+    def test_progress_survives_a_log_rotated_mid_epoch(self, tmp_path: Path) -> None:
+        # A log rotated mid-epoch opens on that epoch's step lines, and its average-loss line may
+        # not be written yet. Reading completion from the average lines alone reports such a run as
+        # barely started and hands the whole run back as remaining.
+        log_path = tmp_path / "train.log"
+        log_path.write_text("\n".join([step_line(5, 10, 1.0), step_line(5, 11, 0.9)]))
+
+        report = TrainingLogWatcher(log_path, total_epochs=300).run()
+
+        assert report["progress"]["epochs_completed"] == 4
+        assert report["progress"]["epochs_remaining"] == pytest.approx(300 - 4 - 11 / 3714)
+
+    def test_loss_curve_keeps_epochs_known_only_from_their_average_line(self, tmp_path: Path) -> None:
+        # Rotation can keep the `epoch N average loss` line without N's step lines. The curve is
+        # what the acceptance record exports, so a finished epoch must not vanish from it.
+        log_path = tmp_path / "train.log"
+        log_path.write_text("\n".join([epoch_line(1, 0.9), epoch_line(2, 0.85), step_line(3, 1, 0.8)]))
+
+        report = TrainingLogWatcher(log_path, total_epochs=300).run()
+
+        assert [(point["epoch"], point["step_mean_loss"], point["reported_average_loss"]) for point in report["loss_curve"]] == [
+            (1, None, 0.9),
+            (2, None, 0.85),
+            (3, 0.8, None),
+        ]
+
+    def test_a_log_that_never_logged_training_state_alarms_once_it_stops_growing(self, tmp_path: Path) -> None:
+        # The launcher `tee`s the log into existence before the trainer writes a line, so a log
+        # holding only torchrun warnings and config echoes is normal for the first minutes. A
+        # startup that failed leaves that same log behind forever, and the poller would report
+        # HEALTHY for the rest of the day -- the parser ignores every line such a log contains.
+        log_path = tmp_path / "train.log"
+        log_path.write_text(
+            "W0911 17:01:58.825000 3599076 torch/distributed/run.py:982] Setting OMP_NUM_THREADS\n"
+            "[2026-09-11 17:02:03.498][ INFO](training) - [config] num_epochs -> 300.\n"
+        )
+        stale = time.time() - DEFAULT_STARTUP_GRACE_SECONDS - 60
+        os.utime(log_path, (stale, stale))
+
+        report = TrainingLogWatcher(log_path, total_epochs=300).run()
+
+        assert report["verdict"] == ALARM
+        assert [finding["kind"] for finding in report["findings"]] == [NO_TRAINING_STATE]
+
+    def test_a_log_that_has_just_started_is_not_alarmed_on(self, tmp_path: Path) -> None:
+        log_path = tmp_path / "train.log"
+        log_path.write_text("[2026-09-11 17:02:03.498][ INFO](training) - [config] num_epochs -> 300.\n")
+
+        report = TrainingLogWatcher(log_path, total_epochs=300).run()
+
+        assert report["verdict"] == HEALTHY
