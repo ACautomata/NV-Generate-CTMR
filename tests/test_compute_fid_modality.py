@@ -216,3 +216,46 @@ class TestComposeChainOrdering:
         assert out[0, 4, 4, 5] == 1000  # over-range clipped to HU max
         assert out[0, 0, 0, 0] == -1000  # padding region uses CT air
         assert out[0, 15, 15, 15] == -1000
+
+
+class TestFidResult:
+    """The result record added by T8 (#24): one FID invocation -> one frozen json artifact."""
+
+    def make_result(self) -> "compute_fid.FidResult":
+        return compute_fid.FidResult(
+            comparison_tag="label9_seed42",
+            fid_xy=10.1,
+            fid_yz=11.2,
+            fid_zx=12.3,
+            fid_avg=11.2,
+            modality="mr",
+            model_name="radimagenet_resnet50",
+            num_images=50,
+            real_filelist="ref/mri_t1.txt",
+            synth_filelist="synth/label9_seed42.txt",
+            target_shape="256x256x128",
+            center_slices_ratio=0.4,
+        )
+
+    def test_round_trips_through_json(self, tmp_path) -> None:
+        result = self.make_result()
+        path = tmp_path / "fid_label9_seed42.json"
+
+        result.save(path)
+        restored = compute_fid.FidResult.load(path)
+
+        assert restored == result
+
+    def test_json_carries_the_provenance_needed_for_the_freeze(self, tmp_path) -> None:
+        path = tmp_path / "fid.json"
+
+        self.make_result().save(path)
+
+        import json
+
+        payload = json.loads(path.read_text())
+        assert payload["comparison_tag"] == "label9_seed42"
+        assert payload["fid_avg"] == 11.2
+        assert payload["modality"] == "mr"
+        assert payload["real_filelist"] == "ref/mri_t1.txt"
+        assert payload["synth_filelist"] == "synth/label9_seed42.txt"
