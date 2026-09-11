@@ -139,11 +139,14 @@ class ConditioningPlan:
 class BaselineVolumeGenerator:
     """Runs the task table on one rank: networks loaded once, volumes saved per deterministic name."""
 
-    def __init__(self, args: argparse.Namespace, device: torch.device, logger: logging.Logger, namer: SampleNamer) -> None:
+    def __init__(
+        self, args: argparse.Namespace, device: torch.device, logger: logging.Logger, namer: SampleNamer, decoder_roi_size: list[int] | None = None
+    ) -> None:
         self._args = args
         self._device = device
         self._logger = logger
         self._namer = namer
+        self._decoder_roi_size = decoder_roi_size
         self._autoencoder, self._unet, self._scale_factor = load_models(args, device, logger)
         num_downsample_level = max(
             1,
@@ -172,6 +175,7 @@ class BaselineVolumeGenerator:
                 plan.output_size,
                 self._divisor,
                 self._logger,
+                self._decoder_roi_size,
             )
             save_image(data, plan.output_size, plan.out_spacing, str(self._namer.path_for(task.label, task.seed, index)), self._logger)
             written += 1
@@ -191,17 +195,25 @@ def main() -> None:
     parser.add_argument("--count", type=int, default=50, help="volumes per (label, seed) task (default 50)")
     parser.add_argument("--output-dir", type=Path, required=True, help="directory for the generated volumes")
     parser.add_argument("--output-prefix", required=True, help="filename prefix of the generated volumes")
+    parser.add_argument(
+        "--decoder-roi",
+        default=None,
+        help="VAE decode sliding-window roi as HxWxD (e.g. 40x40x16). Omit for the historical single-window [80,80,80]; "
+        "keep identical across all models any comparison involves (protocol constant).",
+    )
     args = parser.parse_args()
 
     config = load_config(args.env_config, args.model_config, args.model_def)
     local_rank, world_size, device = initialize_distributed(args.num_gpus)
     logger = setup_logging("baseline_generation")
     config.cfg_guidance_scale = config.diffusion_unet_inference["cfg_guidance_scale"]
+    decoder_roi = [int(value) for value in args.decoder_roi.split("x")] if args.decoder_roi else None
 
     table = TaskTable.from_args(labels=args.labels, seeds=args.seeds, count=args.count)
     namer = SampleNamer(args.output_dir, args.output_prefix)
     plan = ConditioningPlan(config.diffusion_unet_inference, device)
-    generator = BaselineVolumeGenerator(config, device, logger, namer)
+    generator = BaselineVolumeGenerator(config, device, logger, namer, decoder_roi_size=decoder_roi)
+    logger.info(f"decoder roi: {decoder_roi or '[80, 80, 80] (historical default)'}")
 
     my_tasks = table.shard(local_rank, world_size)
     logger.info(f"[rank {local_rank}/{world_size}] {len(my_tasks)}/{len(table)} tasks, {args.count} volumes each")

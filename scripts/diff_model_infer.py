@@ -112,6 +112,7 @@ def run_inference(
     output_size: tuple,
     divisor: int,
     logger: logging.Logger,
+    decoder_roi_size: list | None = None,
 ) -> np.ndarray:
     """
     Run the inference to generate synthetic images.
@@ -126,9 +127,14 @@ def run_inference(
         bottom_region_index_tensor (torch.Tensor): Bottom region index tensor.
         spacing_tensor (torch.Tensor): Spacing tensor.
         modality_tensor (torch.Tensor): Modality tensor.
-        output_size (tuple): Output size of the synthetic image.
         divisor (int): Divisor for downsample level.
         logger (logging.Logger): Logger for logging information.
+        decoder_roi_size (list or None): Sliding-window roi for the VAE decode step.
+            None keeps the historical [80, 80, 80]. A roi at or above the latent
+            size decodes the volume in one window and needs tens of GB; smaller
+            rois slide over the latent with gaussian blending (slightly different
+            boundary numerics, ~20x less activation memory) — set once and keep
+            identical across all models any comparison involves.
 
     Returns:
         np.ndarray: Generated synthetic image data.
@@ -212,7 +218,7 @@ def run_inference(
                 image, _ = noise_scheduler.step(model_output, t, image, next_t)  # type: ignore
 
         inferer = SlidingWindowInferer(
-            roi_size=[80, 80, 80],
+            roi_size=decoder_roi_size or [80, 80, 80],
             sw_batch_size=1,
             progress=True,
             mode="gaussian",
