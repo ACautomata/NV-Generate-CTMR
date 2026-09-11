@@ -125,7 +125,7 @@ import json
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -258,22 +258,8 @@ class FidResult:
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "comparison_tag": self.comparison_tag,
-            "fid_xy": self.fid_xy,
-            "fid_yz": self.fid_yz,
-            "fid_zx": self.fid_zx,
-            "fid_avg": self.fid_avg,
-            "modality": self.modality,
-            "model_name": self.model_name,
-            "num_images": self.num_images,
-            "real_filelist": self.real_filelist,
-            "synth_filelist": self.synth_filelist,
-            "target_shape": self.target_shape,
-            "center_slices_ratio": self.center_slices_ratio,
-        }
         with path.open("w") as file:
-            json.dump(payload, file, indent=2)
+            json.dump(asdict(self), file, indent=2)
 
     @classmethod
     def load(cls, path: Path) -> FidResult:
@@ -540,7 +526,7 @@ def main(
     output_root: str = "./features/features-512x512x512",
     target_shape: str = "512x512x512",
     comparison_tag: str = "",
-    result_json: str = None,
+    result_json: str | None = None,
 ):
     """
     Compute 2.5D FID using distributed GPU processing.

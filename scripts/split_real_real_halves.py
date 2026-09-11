@@ -37,7 +37,7 @@ writes ``split_record.json`` (both halves + seed, the frozen artifact),
 import argparse
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 BRATS_LABEL_SUFFIX = {"mri_t1n": "t1n", "mri_t1ce": "t1c", "mri_t2w": "t2w", "mri_t2f": "t2f"}
@@ -56,16 +56,7 @@ class SplitFreezeRecord:
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w") as file:
-            json.dump(
-                {
-                    "seed": self.seed,
-                    "half_a": self.half_a,
-                    "half_b": self.half_b,
-                    "validation_source": self.validation_source,
-                },
-                file,
-                indent=2,
-            )
+            json.dump(asdict(self), file, indent=2)
 
     @classmethod
     def load(cls, path: Path) -> "SplitFreezeRecord":

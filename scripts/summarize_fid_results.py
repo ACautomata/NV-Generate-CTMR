@@ -72,10 +72,33 @@ class FidSummary:
 
     def summarize(self) -> dict:
         """Nest records by their tag classification; duplicate tags are refused."""
-        if not self.records:
-            raise ValueError("no records to summarize")
+        rows = self._sorted_rows()
         baseline: dict[str, dict[str, dict]] = {}
         floor: dict[str, dict] = {}
+        for kind, tag, _primary, _secondary, values in rows:
+            if kind == "baseline_gen_real":
+                baseline.setdefault(_primary, {})[_secondary] = values
+            else:
+                floor[_primary] = values
+        return {"generated_from": self.sources, "baseline_gen_real": baseline, "real_real_floor": floor}
+
+    def save(self, json_path: Path, csv_path: Path) -> None:
+        """Write the json freeze and its flat csv rendering."""
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        with json_path.open("w") as file:
+            json.dump(self.summarize(), file, indent=2)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with csv_path.open("w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=CSV_FIELDS)
+            writer.writeheader()
+            for kind, tag, _primary, _secondary, values in self._sorted_rows():
+                writer.writerow({"kind": kind, "tag": tag, **values})
+
+    def _sorted_rows(self) -> list[tuple[str, str, str, str, dict]]:
+        """(kind, tag, primary, secondary, fid values) per record, tag-sorted, duplicates refused."""
+        if not self.records:
+            raise ValueError("no records to summarize")
+        rows = []
         seen: set[str] = set()
         for record in sorted(self.records, key=lambda item: item.comparison_tag):
             if record.comparison_tag in seen:
@@ -83,34 +106,8 @@ class FidSummary:
             seen.add(record.comparison_tag)
             kind, primary, secondary = ComparisonTag.classify(record.comparison_tag)
             values = {"fid_xy": record.fid_xy, "fid_yz": record.fid_yz, "fid_zx": record.fid_zx, "fid_avg": record.fid_avg}
-            if kind == "baseline_gen_real":
-                baseline.setdefault(primary, {})[secondary] = values
-            else:
-                floor[primary] = values
-        return {"generated_from": self.sources, "baseline_gen_real": baseline, "real_real_floor": floor}
-
-    def save(self, json_path: Path, csv_path: Path) -> None:
-        """Write the json freeze and its flat csv rendering."""
-        summary = self.summarize()
-        json_path.parent.mkdir(parents=True, exist_ok=True)
-        with json_path.open("w") as file:
-            json.dump(summary, file, indent=2)
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
-        with csv_path.open("w", newline="") as file:
-            writer = csv.DictWriter(file, fieldnames=CSV_FIELDS)
-            writer.writeheader()
-            for record in sorted(self.records, key=lambda item: item.comparison_tag):
-                kind, primary, secondary = ComparisonTag.classify(record.comparison_tag)
-                writer.writerow(
-                    {
-                        "kind": kind,
-                        "tag": record.comparison_tag,
-                        "fid_xy": record.fid_xy,
-                        "fid_yz": record.fid_yz,
-                        "fid_zx": record.fid_zx,
-                        "fid_avg": record.fid_avg,
-                    }
-                )
+            rows.append((kind, record.comparison_tag, primary, secondary, values))
+        return rows
 
 
 def main() -> None:

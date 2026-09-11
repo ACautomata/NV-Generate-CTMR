@@ -67,7 +67,7 @@ class SmokeQuota:
 
 
 class LatentPaths:
-    """Derives the on-disk latent and sidecar paths of a dataset.json entry.
+    """Derives the on-disk latent and sidecar paths of a dataset.json entry and reads latent headers.
 
     Mirrors the training-side derivation (``image.replace(".nii.gz", "_emb.nii.gz")``
     under the embedding base dir; sidecar = latent path + ".json").
@@ -83,12 +83,9 @@ class LatentPaths:
         latent = self.latent(image_relative)
         return latent.parent / (latent.name + ".json")
 
-
-class LatentShapeReader:
-    """Reads a latent's voxel shape from its NIfTI header."""
-
-    def shape(self, latent_path: Path) -> tuple[int, ...]:
-        return tuple(int(value) for value in nib.load(latent_path).shape)
+    def shape(self, image_relative: str) -> tuple[int, ...]:
+        """The latent's voxel shape, from its NIfTI header."""
+        return tuple(int(value) for value in nib.load(self.latent(image_relative)).shape)
 
 
 class SmokeSubsetBuilder:
@@ -98,7 +95,6 @@ class SmokeSubsetBuilder:
         self._entries = entries
         self._quota = quota
         self._paths = LatentPaths(embedding_base_dir)
-        self._shape_reader = LatentShapeReader()
         self._seed = seed
 
     def build(self) -> list[dict]:
@@ -124,7 +120,7 @@ class SmokeSubsetBuilder:
                 raise FileNotFoundError(f"smoke latent missing (training would silently skip it): {latent}")
             if not self._paths.sidecar(entry["image"]).is_file():
                 raise FileNotFoundError(f"smoke sidecar missing: {self._paths.sidecar(entry['image'])}")
-            shapes.add(self._shape_reader.shape(latent))
+            shapes.add(self._paths.shape(entry["image"]))
         if len(shapes) < 2:
             raise ValueError(
                 f"smoke subset carries a single latent shape {sorted(shapes)[0]}; "

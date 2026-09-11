@@ -22,8 +22,9 @@ FID stage's filelists are built from. The GPU loop itself is not unit-tested.
 from pathlib import Path
 
 import pytest
+import torch
 
-from scripts.diff_model_infer_batch import GenerationTask, SampleNamer, TaskTable
+from scripts.diff_model_infer_batch import ConditioningPlan, GenerationTask, SampleNamer, TaskTable
 
 
 class TestTaskTable:
@@ -100,10 +101,6 @@ class TestConditioningPlan:
     """CPU-constructible: the x1e2/half-precision contract of the conditioning tensors."""
 
     def test_tensors_scale_by_1e2_and_match_config(self) -> None:
-        import torch
-
-        from scripts.diff_model_infer_batch import ConditioningPlan
-
         config = {
             "dim": [256, 256, 128],
             "spacing": [0.94, 0.94, 1.36],

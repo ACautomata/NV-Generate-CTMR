@@ -24,6 +24,7 @@ keeps FID comparable.
 """
 
 import importlib
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -250,8 +251,6 @@ class TestFidResult:
         path = tmp_path / "fid.json"
 
         self.make_result().save(path)
-
-        import json
 
         payload = json.loads(path.read_text())
         assert payload["comparison_tag"] == "label9_seed42"

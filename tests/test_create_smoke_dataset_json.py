@@ -21,6 +21,7 @@ smoke run that quietly shrank would prove nothing.
 """
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,7 +29,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 
-from scripts.create_smoke_dataset_json import SmokeQuota, SmokeSubsetBuilder
+from scripts.create_smoke_dataset_json import SmokeQuota, SmokeSubsetBuilder, main
 
 BRATS_ENTRY = "brats2023-gli/ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData/BraTS-GLI-00000-000/BraTS-GLI-00000-000-t1n.nii.gz"
 REPLAY_ENTRY = "mri/batch00/AAAAA00000/img/AAAAA00000_t1w-raw-axi.nii.gz"
@@ -59,8 +60,8 @@ def make_entries(brats: int, replay: int) -> list[dict]:
 class TestSmokeSubsetBuilder:
     def test_subset_is_deterministic_for_a_seed(self, latent_dir: Path) -> None:
         entries = make_entries(brats=6, replay=6)
-        for image, _ in [(e["image"], None) for e in entries]:
-            write_latent(latent_dir, image, shape=(64, 64, 32) if "brats" in image else (48, 48, 32))
+        for e in entries:
+            write_latent(latent_dir, e["image"], shape=(64, 64, 32) if "brats" in e["image"] else (48, 48, 32))
 
         quota = SmokeQuota(per_label=2, labels=("mri_t1n", "mri_t1"))
         first = SmokeSubsetBuilder(entries, quota, latent_dir, seed=42).build()
@@ -141,8 +142,6 @@ class TestMain:
             "--output",
             str(output),
         ]
-        from scripts.create_smoke_dataset_json import main
-
         main()
 
         payload = json.loads(output.read_text())
@@ -150,6 +149,11 @@ class TestMain:
         assert all(set(e) == {"image", "modality"} for e in payload["training"])
 
     def test_cli_is_invocable_as_a_module(self) -> None:
-        import scripts.create_smoke_dataset_json as module
+        result = subprocess.run(
+            [sys.executable, "-m", "scripts.create_smoke_dataset_json", "--help"],
+            capture_output=True,
+            text=True,
+        )
 
-        assert hasattr(module, "main")
+        assert result.returncode == 0
+        assert "--dataset-json" in result.stdout

@@ -49,6 +49,10 @@ from .diff_model_infer import load_models, run_inference, save_image
 from .diff_model_setting import initialize_distributed, load_config, setup_logging
 from .sample import check_input_ct
 
+# CT-label range in configs/modality_mapping.json (labels 1-7 carry CT geometry
+# constraints; MR labels are >= 8). Mirrors the check in diff_model_infer.
+CT_LABEL_RANGE = range(1, 8)
+
 
 @dataclass(frozen=True)
 class GenerationTask:
@@ -161,7 +165,7 @@ class BaselineVolumeGenerator:
     def run_task(self, task: GenerationTask, plan: ConditioningPlan) -> int:
         """Generate the task's still-missing volumes; returns how many were written."""
         set_determinism(task.seed)
-        if 1 <= task.label <= 7:
+        if task.label in CT_LABEL_RANGE:
             check_input_ct(None, None, None, plan.output_size, plan.out_spacing, None)
         written = 0
         for index in self._namer.pending_indices(task):
