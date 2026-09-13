@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +33,67 @@ from torch.nn.parallel import DistributedDataParallel
 
 from .diff_model_setting import initialize_distributed, load_config, setup_logging
 from .utils import define_instance
+
+
+@dataclass
+class ResumeState:
+    """
+    Training state read back from a checkpoint written by the same run, used with
+    ``--resume`` to continue epoch counting instead of restarting from scratch.
+
+    Args:
+        start_epoch (int): Number of epochs already completed; the training loop
+            resumes at global epoch ``start_epoch + 1``.
+        scale_factor (torch.Tensor): The scale factor the checkpoint was trained
+            with, reused as-is so the resumed run keeps the same data scaling.
+    """
+
+    start_epoch: int
+    scale_factor: torch.Tensor
+
+
+def read_resume_state(checkpoint: dict) -> ResumeState:
+    """
+    Parse the resume state out of a checkpoint produced by ``save_checkpoint``.
+
+    Args:
+        checkpoint (dict): Checkpoint dictionary as written by ``save_checkpoint``.
+
+    Returns:
+        ResumeState: Epoch to continue from and the checkpoint's scale factor.
+
+    Raises:
+        ValueError: If the checkpoint lacks the ``epoch`` or ``scale_factor`` entry
+            and therefore cannot be resumed from.
+    """
+    missing = [key for key in ("epoch", "scale_factor") if key not in checkpoint]
+    if missing:
+        raise ValueError(f"checkpoint is not resumable: missing {', '.join(missing)} (is this a pretrained checkpoint, not one from this run?)")
+    return ResumeState(start_epoch=int(checkpoint["epoch"]), scale_factor=checkpoint["scale_factor"])
+
+
+def plan_resume_schedule(n_epochs: int, start_epoch: int, dataset_size: int, batch_size: int) -> tuple[int, int]:
+    """
+    Compute the epoch count and lr-schedule span left after resuming at ``start_epoch``.
+
+    Args:
+        n_epochs (int): Total number of epochs the run is targeting.
+        start_epoch (int): Number of epochs already completed before the resume.
+        dataset_size (int): Number of training entries in the merged dataset.
+        batch_size (int): Per-rank batch size.
+
+    Returns:
+        tuple[int, int]: Remaining epochs, and the total step count the PolynomialLR
+            schedule spans (the decay curve is stretched over the remaining epochs only).
+
+    Raises:
+        ValueError: If the checkpoint already covers all requested epochs.
+    """
+    remaining_epochs = n_epochs - start_epoch
+    if remaining_epochs <= 0:
+        raise ValueError(f"checkpoint already completed {start_epoch} of {n_epochs} epochs; nothing left to train")
+    total_steps = int((remaining_epochs * dataset_size) / batch_size)
+    return remaining_epochs, total_steps
 
 
 def augment_modality_label(modality_tensor, prob=0.1):
@@ -140,7 +202,9 @@ def prepare_data(
     return DataLoader(train_ds, num_workers=6, batch_size=batch_size, shuffle=True)
 
 
-def load_unet(args: argparse.Namespace, device: torch.device, logger: logging.Logger) -> torch.nn.Module:
+def load_unet(
+    args: argparse.Namespace, device: torch.device, logger: logging.Logger, resume: bool = False
+) -> tuple[torch.nn.Module, ResumeState | None]:
     """
     Load the UNet model.
 
@@ -148,9 +212,12 @@ def load_unet(args: argparse.Namespace, device: torch.device, logger: logging.Lo
         args (argparse.Namespace): Configuration arguments.
         device (torch.device): Device to load the model on.
         logger (logging.Logger): Logger for logging information.
+        resume (bool): Treat ``existing_ckpt_filepath`` as a checkpoint written by
+            the same run: epoch counting continues from it and its scale_factor is
+            reused. Without it the checkpoint only seeds the weights.
 
     Returns:
-        torch.nn.Module: Loaded UNet model.
+        tuple: The loaded UNet model, and the resume state (None unless ``resume``).
     """
     unet = define_instance(args, "diffusion_unet_def").to(device)
     unet = torch.nn.SyncBatchNorm.convert_sync_batchnorm(unet)
@@ -158,6 +225,7 @@ def load_unet(args: argparse.Namespace, device: torch.device, logger: logging.Lo
     if dist.is_initialized():
         unet = DistributedDataParallel(unet, device_ids=[device], find_unused_parameters=True)
 
+    resume_state = None
     if args.existing_ckpt_filepath is None:
         logger.info("Training from scratch.")
     else:
@@ -167,9 +235,17 @@ def load_unet(args: argparse.Namespace, device: torch.device, logger: logging.Lo
             unet.module.load_state_dict(checkpoint_unet["unet_state_dict"], strict=False)
         else:
             unet.load_state_dict(checkpoint_unet["unet_state_dict"], strict=False)
-        logger.info(f"Pretrained checkpoint {args.existing_ckpt_filepath} loaded.")
 
-    return unet
+        if resume:
+            resume_state = read_resume_state(checkpoint_unet)
+            logger.info(
+                f"Resuming from {args.existing_ckpt_filepath}: continuing at global epoch {resume_state.start_epoch + 1}, "
+                f"scale_factor {resume_state.scale_factor} taken from the checkpoint."
+            )
+        else:
+            logger.info(f"Pretrained checkpoint {args.existing_ckpt_filepath} loaded.")
+
+    return unet, resume_state
 
 
 def calculate_scale_factor(train_loader: DataLoader, device: torch.device, logger: logging.Logger) -> torch.Tensor:
@@ -403,7 +479,9 @@ def save_checkpoint(
     )
 
 
-def diff_model_train(env_config_path: str, model_config_path: str, model_def_path: str, num_gpus: int, amp: bool = True) -> None:
+def diff_model_train(
+    env_config_path: str, model_config_path: str, model_def_path: str, num_gpus: int, amp: bool = True, resume: bool = False
+) -> None:
     """
     Main function to train a diffusion model.
 
@@ -413,6 +491,9 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
         model_def_path (str): Path to the model definition file.
         num_gpus (int): Number of GPUs to use for training.
         amp (bool): Use automatic mixed precision training.
+        resume (bool): Continue the run from the checkpoint at ``existing_ckpt_filepath``
+            (epoch counting and scale_factor taken from it) instead of restarting from
+            epoch 1. The lr schedule is re-created to span the remaining epochs only.
     """
     args = load_config(env_config_path, model_config_path, model_def_path)
     local_rank, world_size, device = initialize_distributed(num_gpus)
@@ -428,10 +509,11 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
         logger.info(f"[config] num_epochs -> {args.diffusion_unet_train['n_epochs']}.")
         logger.info(f"[config] num_train_timesteps -> {args.noise_scheduler['num_train_timesteps']}.")
         logger.info(f"[config] save_interval -> {args.diffusion_unet_train.get('save_interval', 0)} (0 disables snapshots).")
+        logger.info(f"[config] resume -> {resume}.")
 
         Path(args.model_dir).mkdir(parents=True, exist_ok=True)
 
-    unet = load_unet(args, device, logger)
+    unet, resume_state = load_unet(args, device, logger, resume=resume)
     noise_scheduler = define_instance(args, "noise_scheduler")
     # DDP hides the wrapped module's custom attributes; same idiom as load_unet.
     raw_unet = unet.module if dist.is_initialized() else unet
@@ -474,11 +556,28 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
         modality_mapping=args.modality_mapping,
     )
 
-    scale_factor = calculate_scale_factor(train_loader, device, logger)
+    if resume_state is not None:
+        # Keep the exact scale_factor the earlier epochs were trained with: recomputing
+        # it here would draw a fresh random first batch (shuffle=True) and shift the
+        # data scaling mid-run.
+        scale_factor = resume_state.scale_factor
+        logger.info(f"scale_factor -> {scale_factor} (taken from the resumed checkpoint, recompute skipped).")
+    else:
+        scale_factor = calculate_scale_factor(train_loader, device, logger)
     optimizer = create_optimizer(unet, args.diffusion_unet_train["lr"])
 
     save_interval = args.diffusion_unet_train.get("save_interval", 0)
-    total_steps = (args.diffusion_unet_train["n_epochs"] * len(train_loader.dataset)) / args.diffusion_unet_train["batch_size"]
+    start_epoch = resume_state.start_epoch if resume_state is not None else 0
+    remaining_epochs, total_steps = plan_resume_schedule(
+        n_epochs=args.diffusion_unet_train["n_epochs"],
+        start_epoch=start_epoch,
+        dataset_size=len(train_loader.dataset),
+        batch_size=args.diffusion_unet_train["batch_size"],
+    )
+    if resume_state is not None:
+        logger.info(
+            f"[resume] remaining epochs -> {remaining_epochs} (global {start_epoch + 1}..{args.diffusion_unet_train['n_epochs']}), lr schedule spans {total_steps} steps."
+        )
     lr_scheduler = create_lr_scheduler(optimizer, total_steps)
     loss_pt = torch.nn.L1Loss()
     scaler = GradScaler("cuda")
@@ -486,7 +585,7 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
     torch.set_float32_matmul_precision("highest")
     logger.info("torch.set_float32_matmul_precision -> highest.")
 
-    for epoch in range(args.diffusion_unet_train["n_epochs"]):
+    for epoch in range(start_epoch, args.diffusion_unet_train["n_epochs"]):
         loss_torch = train_one_epoch(
             epoch,
             unet,
@@ -550,6 +649,11 @@ if __name__ == "__main__":
     parser.add_argument("-t", "--model_def_path", type=str, default="./configs/config_maisi.json", help="Path to model definition file")
     parser.add_argument("-g", "--num_gpus", type=int, default=1, help="Number of GPUs to use for training")
     parser.add_argument("--no_amp", dest="amp", action="store_false", help="Disable automatic mixed precision training")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue the run from the checkpoint at existing_ckpt_filepath (epoch counting and scale_factor taken from it) instead of restarting from epoch 1.",
+    )
 
     args = parser.parse_args()
-    diff_model_train(args.env_config_path, args.model_config_path, args.model_def_path, args.num_gpus, args.amp)
+    diff_model_train(args.env_config_path, args.model_config_path, args.model_def_path, args.num_gpus, args.amp, resume=args.resume)
