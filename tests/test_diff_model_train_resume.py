@@ -1,8 +1,8 @@
 # Tests for resuming diff_model_train from a checkpoint written by the same run
 # (T9a restart, issue #25): epoch counting continues, scale_factor is taken from
 # the checkpoint, and the lr schedule spans only the remaining epochs.
-import torch
 import pytest
+import torch
 
 from scripts.diff_model_train import ResumeState, plan_resume_schedule, read_resume_state
 

@@ -202,7 +202,9 @@ def prepare_data(
     return DataLoader(train_ds, num_workers=6, batch_size=batch_size, shuffle=True)
 
 
-def load_unet(args: argparse.Namespace, device: torch.device, logger: logging.Logger, resume: bool = False) -> tuple[torch.nn.Module, ResumeState | None]:
+def load_unet(
+    args: argparse.Namespace, device: torch.device, logger: logging.Logger, resume: bool = False
+) -> tuple[torch.nn.Module, ResumeState | None]:
     """
     Load the UNet model.
 
@@ -477,7 +479,9 @@ def save_checkpoint(
     )
 
 
-def diff_model_train(env_config_path: str, model_config_path: str, model_def_path: str, num_gpus: int, amp: bool = True, resume: bool = False) -> None:
+def diff_model_train(
+    env_config_path: str, model_config_path: str, model_def_path: str, num_gpus: int, amp: bool = True, resume: bool = False
+) -> None:
     """
     Main function to train a diffusion model.
 
@@ -571,7 +575,9 @@ def diff_model_train(env_config_path: str, model_config_path: str, model_def_pat
         batch_size=args.diffusion_unet_train["batch_size"],
     )
     if resume_state is not None:
-        logger.info(f"[resume] remaining epochs -> {remaining_epochs} (global {start_epoch + 1}..{args.diffusion_unet_train['n_epochs']}), lr schedule spans {total_steps} steps.")
+        logger.info(
+            f"[resume] remaining epochs -> {remaining_epochs} (global {start_epoch + 1}..{args.diffusion_unet_train['n_epochs']}), lr schedule spans {total_steps} steps."
+        )
     lr_scheduler = create_lr_scheduler(optimizer, total_steps)
     loss_pt = torch.nn.L1Loss()
     scaler = GradScaler("cuda")
