@@ -38,6 +38,7 @@ Usage (on the GPU node)::
 """
 
 import argparse
+import json
 import random
 import subprocess
 import sys
