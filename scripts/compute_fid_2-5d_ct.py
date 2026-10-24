@@ -289,6 +289,12 @@ class CacheLayout:
         return self._cache_dir
 
     def shard(self, items: list) -> list:
+        # MONAI refuses to partition fewer items than partitions (the MRA val
+        # reference is 2 volumes); below world size hand the first ranks one
+        # item each so no rank ends up with an empty list — the later
+        # all_gather reassembles either way.
+        if len(items) < self._world_size:
+            return [items[self._local_rank]] if self._local_rank < len(items) else []
         partitioned = monai.data.partition_dataset(data=items, shuffle=False, num_partitions=self._world_size, even_divisible=False)
         return partitioned[self._local_rank]
 

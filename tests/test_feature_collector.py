@@ -134,6 +134,17 @@ class TestExtractionMode:
         assert extractor.calls == []
         assert float(xy[0, 0]) == 7.0 and float(zx[0, 0]) == 9.0
 
+    def test_fewer_items_than_ranks_gives_one_item_per_rank(self, tmp_path: Path) -> None:
+        single = "caseA/img/vol_a.nii.gz"
+        cache_file(tmp_path, single).parent.mkdir(parents=True, exist_ok=True)
+        torch.save((torch.ones(1, 1),) * 3, cache_file(tmp_path, single))
+
+        for rank in range(7):
+            collector = make_collector(tmp_path, CountingExtractor(), filelist_lines=[single], cache_only=True, local_rank=rank, world_size=7)
+            xy, _, _ = collector.collect()
+            expected = 1 if rank == 0 else 0
+            assert xy.shape[0] == expected
+
     def test_rank_partition_preserves_every_volume_once(self, tmp_path: Path) -> None:
         extractor = CountingExtractor()
         for rel in sorted(RELPATHS):
