@@ -350,9 +350,13 @@ class FeatureCollector:
             cache_path = self._layout.cache_path(relpath)
             if not cache_path.is_file():
                 raise FileNotFoundError(f"cache_only feature cache miss: {cache_path} (volume tree not touched)")
-            feats = torch.load(cache_path, weights_only=True)
+            # map_location=cpu: the frozen caches hold CUDA tensors, and having
+            # every rank restore them onto the GPU hung the DCU driver in
+            # kfd_wait_on_events. The features only need the GPU again for the
+            # all_gather, which main() does after collecting.
+            feats = torch.load(cache_path, weights_only=True, map_location="cpu")
             for plane_index in range(3):
-                per_plane[plane_index].append(feats[plane_index])
+                per_plane[plane_index].append(feats[plane_index].cpu())
         return tuple(torch.vstack(plane) for plane in per_plane)  # type: ignore[return-value]
 
     def _collect_via_loader(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -863,13 +867,18 @@ def main(
     # -------------------------------------------------------------------------
     # All-reduce / gather features across ranks
     # -------------------------------------------------------------------------
+    # cache-only collections come back on CPU (see FeatureCollector); the
+    # gather below is NCCL and needs every tensor on the device.
     features = [
-        real_features_xy,
-        real_features_yz,
-        real_features_zx,
-        synth_features_xy,
-        synth_features_yz,
-        synth_features_zx,
+        tensor.to(device)
+        for tensor in (
+            real_features_xy,
+            real_features_yz,
+            real_features_zx,
+            synth_features_xy,
+            synth_features_yz,
+            synth_features_zx,
+        )
     ]
 
     # 1) Gather local feature sizes across ranks
