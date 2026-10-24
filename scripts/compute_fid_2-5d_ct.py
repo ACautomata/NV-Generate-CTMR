@@ -277,6 +277,33 @@ class FidResult:
         return cls(**payload)
 
 
+class RadimagenetLoader:
+    """Loads RadImageNet ResNet-50 from the torch-hub cache without going online.
+
+    ``torch.hub.load`` resolves the repo ref against GitHub unconditionally —
+    even with a complete cache — and that HTTPS call dies behind the cluster
+    proxy (RemoteDisconnected killed production FID runs). The cache directory
+    carries the full package, so importing it directly and pointing the
+    loader at the cached checkpoint is equivalent, minus the network.
+    """
+
+    HUB_REPO_DIR = "Warvito_radimagenet-models_main"
+    HUB_CHECKPOINTS_DIR = "checkpoints"
+
+    def load(self) -> torch.nn.Module:
+        hub_dir = Path(torch.hub.get_dir())
+        repo_dir = hub_dir / self.HUB_REPO_DIR
+        if not repo_dir.is_dir():
+            raise FileNotFoundError(f"RadImageNet hub cache missing: {repo_dir}")
+        sys.path.insert(0, str(repo_dir))
+        try:
+            from radimagenet_models.models.resnet import radimagenet_resnet50
+
+            return radimagenet_resnet50(model_dir=str(hub_dir / self.HUB_CHECKPOINTS_DIR))
+        finally:
+            sys.path.remove(str(repo_dir))
+
+
 class CacheLayout:
     """Where one side's feature cache lives and which rank's share of it we serve."""
 
@@ -785,7 +812,7 @@ def main(
     # Load feature extraction model
     # -------------------------------------------------------------------------
     if model_name == "radimagenet_resnet50":
-        feature_network = torch.hub.load("Warvito/radimagenet-models", model="radimagenet_resnet50", verbose=True, trust_repo=True)
+        feature_network = RadimagenetLoader().load()
     else:
         import torchvision
 

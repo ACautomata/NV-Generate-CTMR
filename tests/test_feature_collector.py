@@ -167,3 +167,11 @@ def _write_volume(tmp_path: Path, relpath: str) -> None:
 
 def _dummy_volume() -> torch.Tensor:
     return torch.rand(1, 8, 8, 8)
+
+
+class TestRadimagenetLoader:
+    def test_missing_cache_is_a_hard_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(compute_fid.torch.hub, "get_dir", lambda: str(tmp_path))
+
+        with pytest.raises(FileNotFoundError, match="Warvito_radimagenet-models_main"):
+            compute_fid.RadimagenetLoader().load()
