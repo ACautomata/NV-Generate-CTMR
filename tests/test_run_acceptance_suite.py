@@ -32,9 +32,32 @@ from scripts.run_acceptance_suite import AcceptanceCommandPlanner, AcceptanceOrc
 BRAINS_CONFIG = "configs/config_maisi_diff_model_rflow-mr-brain.json"
 BRATS_CONFIG = "configs/config_maisi_diff_model_rflow-mr-brain-brats.json"
 NETWORK_CONFIG = "configs/config_network_rflow.json"
+def _write_lines(path: str, count: int) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(f"case{i:03d}/vol.nii.gz\n" for i in range(count)))
+
+
 def make_task_table(tmp_path: Path, epoch: int = 50) -> dict:
     run_root = tmp_path / "runs" / "t10"
     features_root = run_root / "freeze" / "features"
+    for rel, count in (
+        ("freeze/fid_filelists/ref/mri_t1.txt", 50),
+        ("freeze/fid_filelists/ref/mri_t2.txt", 50),
+        ("freeze/fid_filelists/ref/mri_flair.txt", 50),
+        ("freeze/fid_filelists/ref/mri_mra.txt", 2),
+        ("freeze/fid_filelists/ref/mri_swi.txt", 50),
+        ("freeze/fid_filelists/synth/label9_seed42.txt", 50),
+        ("freeze/fid_filelists/synth/label9_seed1337.txt", 50),
+        ("freeze/floor-split/filelist_val64_mri_t1n.txt", 64),
+    ):
+        _write_lines(str(run_root / rel), count)
+    for rel in (
+        "N300/e050/fid_filelists/synth/ftN300e050_label9_seed42.txt",
+        "N300/e050/fid_filelists/synth/ftN300e050_label9_seed1337.txt",
+        "N300/e050/fid_filelists/synth/bratsftN300e050_label40_seed42.txt",
+    ):
+        _write_lines(str(run_root / rel), 50)
     comparisons = [
         {
             "tag": "genreal_label9_seed42",

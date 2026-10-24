@@ -193,15 +193,28 @@ class AcceptanceCommandPlanner:
         found = sum(1 for _ in directory.glob(f"{prefix}_label*_seed*_*.nii.gz"))
         return found >= expected
 
+    @staticmethod
+    def _filelist_length(filelist_path: str) -> int:
+        with open(filelist_path) as file:
+            return sum(1 for line in file if line.strip())
+
     def fid_command(self, comparison: dict) -> list[str]:
         if comparison["kind"] == "gen_gen":
             return self._cpu_fid_command(comparison)
         return self._gpu_fid_command(comparison)
 
     def _gpu_fid_command(self, comparison: dict) -> list[str]:
+        # A comparison never needs more ranks than either side's volume count:
+        # the MRA reference is 2 volumes, and sharding 2 items across 7 ranks is
+        # both refused by MONAI's partitioner and pointless work.
+        n_ranks = min(
+            self._num_gpus,
+            AcceptanceCommandPlanner._filelist_length(comparison["real_filelist"]),
+            AcceptanceCommandPlanner._filelist_length(comparison["synth_filelist"]),
+        )
         return [
             "torchrun",
-            f"--nproc_per_node={self._num_gpus}",
+            f"--nproc_per_node={n_ranks}",
             "--nnodes=1",
             "--master_addr=localhost",
             f"--master_port={random.randint(20000, 39999)}",
