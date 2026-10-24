@@ -22,9 +22,10 @@ plane, and write the same ``FidResult`` json the GPU tool emits (the summarizer
 and the adjudicator cannot tell the difference).
 
 Feature provenance is inherited from however the directories were produced --
-extraction-time preprocessing lives with the cache, not here. Both sides must
-carry the same number of feature files; a mismatch is refused rather than
-silently truncated.
+extraction-time preprocessing lives with the cache, not here. The two sides
+need not hold the same number of feature files: each side is stacked in full
+(the BRATS reference is 64 real cases against 50 synthetic volumes), and a
+mismatch is expected rather than refused.
 """
 
 import argparse
@@ -37,6 +38,27 @@ from monai.metrics.fid import FIDMetric
 compute_fid = importlib.import_module("scripts.compute_fid_2-5d_ct")
 
 FidResult = compute_fid.FidResult
+
+
+class FeatureDirectoryStack:
+    """Reads one feature-cache directory into stacked per-plane feature tensors."""
+
+    def __init__(self, features_dir: Path, side: str) -> None:
+        self._dir = Path(features_dir)
+        self._side = side
+
+    def stack(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        files = sorted(self._dir.rglob("*.pt"))
+        if not files:
+            raise FileNotFoundError(f"{self._side} features directory has no .pt files: {self._dir}")
+        per_plane: list[list[torch.Tensor]] = [[], [], []]
+        for path in files:
+            # map_location: the T8/T17 caches were written from GPU extraction and
+            # hold CUDA tensors; this tool runs CPU-only.
+            feats = torch.load(path, weights_only=True, map_location="cpu")
+            for plane_index in range(3):
+                per_plane[plane_index].append(feats[plane_index].cpu())
+        return tuple(torch.vstack(plane) for plane in per_plane)  # type: ignore[return-value]
 
 
 class FeatureSetFidCalculator:
@@ -75,8 +97,8 @@ class FeatureSetFidCalculator:
         }
 
     def compute(self) -> FidResult:
-        real = _stack_planes(self._real_dir, "real")
-        synth = _stack_planes(self._synth_dir, "synth")
+        real = FeatureDirectoryStack(self._real_dir, "real").stack()
+        synth = FeatureDirectoryStack(self._synth_dir, "synth").stack()
 
         fid = FIDMetric()
         fid_xy = float(fid(synth[0], real[0]))
@@ -90,18 +112,6 @@ class FeatureSetFidCalculator:
             fid_avg=(fid_xy + fid_yz + fid_zx) / 3.0,
             **self._provenance,
         )
-
-
-def _stack_planes(features_dir: Path, side: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    files = sorted(features_dir.rglob("*.pt"))
-    if not files:
-        raise FileNotFoundError(f"{side} features directory has no .pt files: {features_dir}")
-    per_plane: list[list[torch.Tensor]] = [[], [], []]
-    for path in files:
-        feats = torch.load(path, weights_only=True)
-        for plane_index in range(3):
-            per_plane[plane_index].append(feats[plane_index])
-    return tuple(torch.vstack(plane) for plane in per_plane)  # type: ignore[return-value]
 
 
 def main() -> None:

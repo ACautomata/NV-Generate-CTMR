@@ -37,7 +37,8 @@ import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 
-BRATS_LABELS = (40, 41, 42, 43)
+from scripts.acceptance_protocol import BRATS_LABELS
+
 PLANES = ("sagittal", "coronal", "axial")
 MR_DISPLAY_RANGE = (0.0, 1000.0)
 
@@ -63,6 +64,7 @@ class TriplanarMontageBuilder:
 
     def __init__(self, output_dir: Path) -> None:
         self._output_dir = Path(output_dir)
+        self._renderer = MontageRenderer()
 
     def build_label_set(self, volume_dir: Path, prefix: str, label: int, seed: int, n_volumes: int, seed_choice: int = 42) -> list[Path]:
         paths = VolumeSelector.select(volume_dir, prefix, label, seed, n_volumes, seed_choice)
@@ -70,8 +72,9 @@ class TriplanarMontageBuilder:
 
         written = []
         for path in paths:
-            output = self._output_dir / f"montage_{prefix}_label{label}_seed{seed}_{path.stem.split('_')[-1]}.png"
-            _render_triplanar(CentralSliceExtractor.slices(path), output, title=path.name.replace(".nii.gz", ""))
+            index_token = path.name.replace(".nii.gz", "").split("_")[-1]
+            output = self._output_dir / f"montage_{prefix}_label{label}_seed{seed}_{index_token}.png"
+            self._renderer.render_triplanar(CentralSliceExtractor.slices(path), output, title=path.name.replace(".nii.gz", ""))
             written.append(output)
         return written
 
@@ -81,6 +84,7 @@ class QuickScanSheetBuilder:
 
     def __init__(self, output_dir: Path) -> None:
         self._output_dir = Path(output_dir)
+        self._renderer = MontageRenderer()
 
     def build_label_set(self, volume_dir: Path, prefix: str, label: int, seed: int, n_volumes: int, seed_choice: int = 42) -> list[Path]:
         paths = VolumeSelector.select(volume_dir, prefix, label, seed, n_volumes, seed_choice)
@@ -88,7 +92,7 @@ class QuickScanSheetBuilder:
 
         output = self._output_dir / f"quickscan_{prefix}_label{label}_seed{seed}.png"
         per_volume = [CentralSliceExtractor.slices(path) for path in paths]
-        _render_grid(per_volume, output, row_titles=[path.name.replace(".nii.gz", "") for path in paths])
+        self._renderer.render_grid(per_volume, output, row_titles=[path.name.replace(".nii.gz", "") for path in paths])
         return [output]
 
 
@@ -106,31 +110,33 @@ class VolumeSelector:
         return [available[i] for i in indices]
 
 
-def _render_triplanar(planes: dict[str, np.ndarray], output: Path, title: str) -> None:
-    figure, axes = plt.subplots(1, 3, figsize=(9, 3.4))
-    for axis, plane in zip(axes, PLANES):
-        axis.imshow(planes[plane].T, cmap="gray", vmin=MR_DISPLAY_RANGE[0], vmax=MR_DISPLAY_RANGE[1], origin="lower")
-        axis.set_title(plane, fontsize=8)
-        axis.axis("off")
-    figure.suptitle(title, fontsize=7)
-    figure.tight_layout()
-    figure.savefig(output, dpi=130)
-    plt.close(figure)
+class MontageRenderer:
+    """Grayscale matplotlib rendering of center slices in the generator's (0, 1000) output domain."""
 
-
-def _render_grid(per_volume: list[dict[str, np.ndarray]], output: Path, row_titles: list[str]) -> None:
-    figure, axes = plt.subplots(len(per_volume), 3, figsize=(9, 3.0 * len(per_volume)))
-    axes = np.atleast_2d(axes)
-    for row, (planes, row_title) in enumerate(zip(per_volume, row_titles)):
-        for column, plane in enumerate(PLANES):
-            axis = axes[row][column]
+    def render_triplanar(self, planes: dict[str, np.ndarray], output: Path, title: str) -> None:
+        figure, axes = plt.subplots(1, 3, figsize=(9, 3.4))
+        for axis, plane in zip(axes, PLANES):
             axis.imshow(planes[plane].T, cmap="gray", vmin=MR_DISPLAY_RANGE[0], vmax=MR_DISPLAY_RANGE[1], origin="lower")
+            axis.set_title(plane, fontsize=8)
             axis.axis("off")
-            if column == 0:
-                axis.set_title(row_title, fontsize=6, loc="left")
-    figure.tight_layout()
-    figure.savefig(output, dpi=110)
-    plt.close(figure)
+        figure.suptitle(title, fontsize=7)
+        figure.tight_layout()
+        figure.savefig(output, dpi=130)
+        plt.close(figure)
+
+    def render_grid(self, per_volume: list[dict[str, np.ndarray]], output: Path, row_titles: list[str]) -> None:
+        figure, axes = plt.subplots(len(per_volume), 3, figsize=(9, 3.0 * len(per_volume)))
+        axes = np.atleast_2d(axes)
+        for row, (planes, row_title) in enumerate(zip(per_volume, row_titles)):
+            for column, plane in enumerate(PLANES):
+                axis = axes[row][column]
+                axis.imshow(planes[plane].T, cmap="gray", vmin=MR_DISPLAY_RANGE[0], vmax=MR_DISPLAY_RANGE[1], origin="lower")
+                axis.axis("off")
+                if column == 0:
+                    axis.set_title(row_title, fontsize=6, loc="left")
+        figure.tight_layout()
+        figure.savefig(output, dpi=110)
+        plt.close(figure)
 
 
 class VisualKitAssembler:

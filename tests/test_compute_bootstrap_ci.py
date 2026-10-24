@@ -19,14 +19,14 @@ and results must be reproducible under a fixed seed.
 """
 
 import json
-from pathlib import Path
+from pathlib import Path, Path as _Path
 
 import numpy as np
 import pytest
 import torch
 from monai.metrics.fid import FIDMetric
 
-from scripts.compute_bootstrap_ci import BaselineCiRunner, EighFrechetDistance, VolumeBootstrapCi, bootstrap_fid_distribution
+from scripts.compute_bootstrap_ci import BaselineCiRunner, EighFrechetDistance, VolumeBootstrapCi
 
 
 def write_features(root: Path, n_volumes: int, seed: int, offset: float = 0.0) -> None:
@@ -68,7 +68,7 @@ class TestBootstrapDistribution:
         y = np.vstack([torch.load(p, weights_only=True)[0].numpy() for p in sorted(real.glob("vol_*/feat.pt"))]).astype(np.float64)
 
         point = EighFrechetDistance.fid(x, y)
-        samples = bootstrap_fid_distribution(x, y, n_resamples=40, seed=7)
+        samples = _distribution_via_helper(x, y, n_resamples=40, seed=7)
 
         assert samples.shape == (40,)
         assert np.percentile(samples, 2.5) <= point <= np.percentile(samples, 97.5) or point <= np.percentile(samples, 97.5) * 1.5
@@ -78,8 +78,8 @@ class TestBootstrapDistribution:
         x = np.vstack([torch.load(p, weights_only=True)[0].numpy() for p in sorted(synth.glob("vol_*/feat.pt"))]).astype(np.float64)
         y = np.vstack([torch.load(p, weights_only=True)[0].numpy() for p in sorted(real.glob("vol_*/feat.pt"))]).astype(np.float64)
 
-        first = bootstrap_fid_distribution(x, y, n_resamples=10, seed=3)
-        second = bootstrap_fid_distribution(x, y, n_resamples=10, seed=3)
+        first = _distribution_via_helper(x, y, n_resamples=10, seed=3)
+        second = _distribution_via_helper(x, y, n_resamples=10, seed=3)
 
         assert np.array_equal(first, second)
 
@@ -165,3 +165,9 @@ class TestVolumeBootstrapCi:
         ).compute()["fid_xy"]["point"]
 
         assert self_ci["fid_xy"]["ci95"][1] < shifted_point  # self-bootstrap stays far below a real distribution gap
+
+
+def _distribution_via_helper(x, y, n_resamples: int, seed: int):
+    """The resampling loop, reached through the class that owns it (no IO involved)."""
+    ci = VolumeBootstrapCi(real_features_dir=_Path("/unused"), synth_features_dir=_Path("/unused"), comparison_tag="t", n_resamples=n_resamples, seed=seed)
+    return ci._bootstrap_distribution(x, y)

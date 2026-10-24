@@ -24,9 +24,7 @@ import argparse
 import json
 from pathlib import Path
 
-FORGETTING_LABELS = (9, 10, 11, 16, 20, 29, 30, 31, 32, 33)
-BRATS_LABELS = (40, 41, 42, 43)
-GENERATION_SEEDS = (42, 1337)
+from scripts.acceptance_protocol import BRATS_LABELS, FORGETTING_LABELS, GENERATION_SEEDS
 VERDICT_ZH = {"pass": "通过", "quickscan": "快扫", "hard_fail": "硬 fail"}
 SNAPSHOT_ZH = {"pass": "遗忘全过", "quickscan_pending": "待快扫裁决", "fail": "遗忘 fail（淘汰）"}
 

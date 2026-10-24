@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.adjudicate_forgetting import FORGETTING_LABELS, ForgettingAdjudicator, MatrixCandidateRanker
+from scripts.adjudicate_forgetting import FORGETTING_LABELS, ForgettingAdjudicator, MatrixCandidateRanker, VisualVerdictRecorder
 
 BASELINE_FID = 5.0
 PASSING = (5.2, (4.9, 5.5))  # Δ=4%, overlapping -> pass
@@ -192,7 +192,76 @@ class TestMatrixCandidateRanker:
         assert ranking["retest"] == {"branch": "scale_up_replay", "reason": "no snapshot passes forgetting"}
         assert ranking["candidates"] == []
 
+    def test_scale_down_branch_when_visual_fails_every_brats_snapshot(self, tmp_path: Path) -> None:
+        results = tmp_path / "results"
+        self._write_adjudication(results / "N300e300.json", forgetting="pass", brats_mean=12.0, brats_visual="fail")
+        self._write_adjudication(results / "N500e300.json", forgetting="pass", brats_mean=8.0, brats_visual="fail")
+
+        ranking = MatrixCandidateRanker(adjudication_dir=results).rank()
+
+        assert ranking["retest"]["branch"] == "scale_down_replay"
+        assert ranking["retest"]["reason"] == "every snapshot failed the BRATS visual check"
+
+    def test_interpolation_branch_on_cross(self, tmp_path: Path) -> None:
+        results = tmp_path / "results"
+        # N300 passes forgetting but fails visuals; N500 fails forgetting but passes visuals.
+        self._write_adjudication(results / "N300e300.json", forgetting="pass", brats_mean=9.0, brats_visual="fail")
+        self._write_adjudication(results / "N500e300.json", forgetting="fail", brats_mean=5.0, brats_visual="pass")
+
+        ranking = MatrixCandidateRanker(adjudication_dir=results).rank()
+
+        assert ranking["retest"]["branch"] == "interpolate_midpoint"
+        assert ranking["retest"]["forgetting_clean_anchor"]["run_id"] == "N300e300"
+        assert ranking["retest"]["brats_clean_anchor"]["run_id"] == "N500e300"
+        assert ranking["retest"]["midpoint_replay_n"] == 400
+
+    def test_quickscan_pending_snapshots_delay_the_retest_decision(self, tmp_path: Path) -> None:
+        results = tmp_path / "results"
+        self._write_adjudication(results / "N300e300.json", forgetting="quickscan_pending", brats_mean=9.0)
+
+        ranking = MatrixCandidateRanker(adjudication_dir=results).rank()
+
+        assert ranking["retest"] is None
+        assert ranking["candidates"] == []
+
     @staticmethod
-    def _write_adjudication(path: Path, forgetting: str, brats_mean: float) -> None:
+    def _write_adjudication(path: Path, forgetting: str, brats_mean: float, brats_visual: str | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"forgetting_verdict": forgetting, "brats_fid_mean": brats_mean, "run_id": path.stem}))
+        path.write_text(json.dumps({"forgetting_verdict": forgetting, "brats_fid_mean": brats_mean, "run_id": path.stem, "brats_visual": brats_visual}))
+
+
+class TestVisualVerdictRecorder:
+    def test_records_brats_visual_and_quickscan_conclusions(self, tmp_path: Path) -> None:
+        snapshot_dir = write_full_snapshot(tmp_path / "snapshot")
+        payload = make_adjudicator(tmp_path, snapshot_dir).adjudicate()
+        payload["run_id"] = "N300e300"
+        path = tmp_path / "adjudication.json"
+        path.write_text(json.dumps(payload))
+
+        recorder = VisualVerdictRecorder(path)
+        updated = recorder.record(brats_visual="fail", quickscan={"16": "pass"})
+
+        assert updated["brats_visual"] == "fail"
+        assert updated["quickscan_conclusions"] == {"16": "pass"}
+        reloaded = json.loads(path.read_text())
+        assert reloaded["brats_visual"] == "fail"
+
+    def test_quickscan_fail_resolves_the_pending_verdict(self, tmp_path: Path) -> None:
+        snapshot_dir = write_full_snapshot(tmp_path / "snapshot", {(16, 42): (5.7, (5.1, 6.3))})  # quickscan band
+        payload = make_adjudicator(tmp_path, snapshot_dir).adjudicate()
+        assert payload["forgetting_verdict"] == "quickscan_pending"
+        path = tmp_path / "adjudication.json"
+        path.write_text(json.dumps(payload))
+
+        updated = VisualVerdictRecorder(path).record(brats_visual=None, quickscan={"16": "pass"})
+
+        assert updated["forgetting_verdict"] == "pass"
+
+    def test_refuses_verdict_outside_vocabulary(self, tmp_path: Path) -> None:
+        snapshot_dir = write_full_snapshot(tmp_path / "snapshot")
+        payload = make_adjudicator(tmp_path, snapshot_dir).adjudicate()
+        path = tmp_path / "adjudication.json"
+        path.write_text(json.dumps(payload))
+
+        with pytest.raises(ValueError, match="pass/fail"):
+            VisualVerdictRecorder(path).record(brats_visual="maybe", quickscan=None)

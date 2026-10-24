@@ -277,6 +277,25 @@ class FidResult:
         return cls(**payload)
 
 
+class CacheLayout:
+    """Where one side's feature cache lives and which rank's share of it we serve."""
+
+    def __init__(self, cache_dir: str, local_rank: int, world_size: int) -> None:
+        self._cache_dir = cache_dir
+        self._local_rank = local_rank
+        self._world_size = world_size
+
+    def directory(self) -> str:
+        return self._cache_dir
+
+    def shard(self, items: list) -> list:
+        partitioned = monai.data.partition_dataset(data=items, shuffle=False, num_partitions=self._world_size, even_divisible=False)
+        return partitioned[self._local_rank]
+
+    def cache_path(self, relpath: str) -> Path:
+        return Path(os.path.join(self._cache_dir, relpath.replace(".nii.gz", ".pt")))
+
+
 class FeatureCollector:
     """One side's (real or synth) path from a filelist to stacked per-plane features.
 
@@ -312,12 +331,10 @@ class FeatureCollector:
             raise ValueError("cache_only=True with ignore_existing=True would re-extract from volumes that may not exist")
         self._dataset_root = dataset_root
         self._lines = sorted(filelist_lines)[:num_images]
-        self._cache_dir = cache_dir
+        self._layout = CacheLayout(cache_dir, local_rank, world_size)
         self._compose = compose_transforms
         self._extract = feature_extractor
         self._device = device
-        self._local_rank = local_rank
-        self._world_size = world_size
         self._ignore_existing = ignore_existing
         self._cache_only = cache_only
         self._num_workers = num_workers
@@ -327,17 +344,10 @@ class FeatureCollector:
             return self._collect_from_cache()
         return self._collect_via_loader()
 
-    def _shard(self, items: list) -> list:
-        partitioned = monai.data.partition_dataset(data=items, shuffle=False, num_partitions=self._world_size, even_divisible=False)
-        return partitioned[self._local_rank]
-
-    def _cache_path(self, relpath: str) -> Path:
-        return Path(os.path.join(self._cache_dir, relpath.replace(".nii.gz", ".pt")))
-
     def _collect_from_cache(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         per_plane: list[list[torch.Tensor]] = [[], [], []]
-        for relpath in self._shard(list(self._lines)):
-            cache_path = self._cache_path(relpath)
+        for relpath in self._layout.shard(list(self._lines)):
+            cache_path = self._layout.cache_path(relpath)
             if not cache_path.is_file():
                 raise FileNotFoundError(f"cache_only feature cache miss: {cache_path} (volume tree not touched)")
             feats = torch.load(cache_path, weights_only=True)
@@ -346,7 +356,7 @@ class FeatureCollector:
         return tuple(torch.vstack(plane) for plane in per_plane)  # type: ignore[return-value]
 
     def _collect_via_loader(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        filenames = self._shard([{"image": os.path.join(self._dataset_root, f)} for f in self._lines])
+        filenames = self._layout.shard([{"image": os.path.join(self._dataset_root, f)} for f in self._lines])
         dataset = monai.data.Dataset(data=filenames, transform=self._compose)
         loader = monai.data.DataLoader(dataset, num_workers=self._num_workers, batch_size=1, shuffle=False)
 
@@ -356,7 +366,7 @@ class FeatureCollector:
             fn = img.meta["filename_or_obj"][0]
             logger.info(f"data {idx}/{len(filenames)}: {fn}")
 
-            out_fp = Path(fn.replace(self._dataset_root, self._cache_dir).replace(".nii.gz", ".pt"))
+            out_fp = Path(fn.replace(self._dataset_root, self._layout.directory()).replace(".nii.gz", ".pt"))
             out_fp.parent.mkdir(parents=True, exist_ok=True)
 
             if (not self._ignore_existing) and os.path.isfile(out_fp):

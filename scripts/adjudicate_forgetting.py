@@ -34,10 +34,7 @@ import argparse
 import json
 from pathlib import Path
 
-QUICKSCAN_BAND = (0.10, 0.20)
-FORGETTING_LABELS = (9, 10, 11, 16, 20, 29, 30, 31, 32, 33)
-BRATS_LABELS = (40, 41, 42, 43)
-GENERATION_SEEDS = (42, 1337)
+from scripts.acceptance_protocol import BRATS_LABELS, FORGETTING_LABELS, GENERATION_SEEDS, QUICKSCAN_BAND
 
 
 class SeedComparison:
@@ -160,25 +157,21 @@ class ForgettingAdjudicator:
 class MatrixCandidateRanker:
     """§⑤.4 finalization path over the whole matrix: rank forgetting-clean snapshots by BRATS FID.
 
-    Also classifies whether the §⑤.4 retest rule fires: no snapshot through the
-    forgetting gate means replay-scale up-probe; the other branches (BRATS
-    visual fail, cross) need the HITL visual outcomes and stay open until then.
+    Also classifies whether the §⑤.4 retest rule fires, across its three branches:
+    every snapshot through the forgetting gate failing means replay-scale
+    up-probe; the BRATS visual check failing everywhere means down-probe; a
+    cross (forgetting-clean snapshots and visually-clean snapshots exist but
+    none is both) means interpolating the midpoint replay size between the
+    forgetting-clean anchor with the best BRATS FID and the visually-clean
+    anchor with the lowest replay tier. Branches needing the HITL visual
+    outcome stay open until every snapshot's ``brats_visual`` is recorded.
     """
 
     def __init__(self, adjudication_dir: Path) -> None:
         self._dir = Path(adjudication_dir)
 
     def rank(self) -> dict:
-        records = []
-        for path in sorted(self._dir.glob("*.json")):
-            payload = json.loads(path.read_text())
-            records.append(
-                {
-                    "run_id": payload.get("run_id", path.stem),
-                    "forgetting_verdict": payload["forgetting_verdict"],
-                    "brats_fid_mean": payload.get("brats_fid_mean"),
-                }
-            )
+        records = [self._read(path) for path in sorted(self._dir.glob("*.json"))]
 
         candidates = sorted(
             (r for r in records if r["forgetting_verdict"] == "pass" and r["brats_fid_mean"] is not None),
@@ -186,18 +179,114 @@ class MatrixCandidateRanker:
         )
         ranking: dict = {"candidates": candidates, "retest": None}
 
-        if not candidates and records and all(r["forgetting_verdict"] == "fail" for r in records):
+        decided = [r for r in records if r["forgetting_verdict"] in ("pass", "fail")]
+        if len(decided) < len(records):
+            return ranking  # a quickscan-pending snapshot keeps the whole-matrix decision open
+
+        if records and all(r["forgetting_verdict"] == "fail" for r in records):
             ranking["retest"] = {"branch": "scale_up_replay", "reason": "no snapshot passes forgetting"}
+            return ranking
+
+        visual_decided = [r for r in records if r["brats_visual"] is not None]
+        if len(visual_decided) < len(records):
+            return ranking  # waiting on the HITL visual verdicts before the down-probe/cross call
+
+        if all(r["brats_visual"] == "fail" for r in records):
+            ranking["retest"] = {"branch": "scale_down_replay", "reason": "every snapshot failed the BRATS visual check"}
+            return ranking
+
+        forgetting_clean = [r for r in records if r["forgetting_verdict"] == "pass"]
+        brats_clean = [r for r in records if r["brats_visual"] == "pass"]
+        if forgetting_clean and brats_clean and not any(r in forgetting_clean and r in brats_clean for r in records):
+            anchor_forgetting = min(forgetting_clean, key=lambda r: r["brats_fid_mean"])
+            anchor_brats = min(brats_clean, key=lambda r: r["tier"])
+            midpoint = (anchor_forgetting["tier"] + anchor_brats["tier"]) // 2
+            ranking["retest"] = {
+                "branch": "interpolate_midpoint",
+                "forgetting_clean_anchor": anchor_forgetting,
+                "brats_clean_anchor": anchor_brats,
+                "midpoint_replay_n": midpoint,
+                "reason": "forgetting-clean and visually-clean snapshots are disjoint (§⑤.4 cross)",
+            }
         return ranking
+
+    @staticmethod
+    def _read(path: Path) -> dict:
+        payload = json.loads(path.read_text())
+        run_id = payload.get("run_id", path.stem)
+        # run_id shape N{tier}e{epoch} — the tier is what sits between N and e.
+        tier = int(run_id[1:].split("e", 1)[0]) if run_id.startswith("N") and "e" in run_id else 0
+        return {
+            "run_id": run_id,
+            "tier": tier,
+            "forgetting_verdict": payload["forgetting_verdict"],
+            "brats_fid_mean": payload.get("brats_fid_mean"),
+            "brats_visual": payload.get("brats_visual"),
+        }
+
+
+class VisualVerdictRecorder:
+    """Writes the user's HITL visual outcomes back into an adjudication json.
+
+    The §⑤.3 five-check ruling on the 40 BRATS montages and the §⑤.2 quickscan
+    conclusions are the human's words; this records them verbatim so the
+    adjudication file stays the single source the ranker and the report read.
+    """
+
+    def __init__(self, adjudication_json: Path) -> None:
+        self._path = Path(adjudication_json)
+
+    def record(self, brats_visual: str | None, quickscan: dict[str, str] | None) -> dict:
+        payload = json.loads(self._path.read_text())
+        if brats_visual is not None:
+            if brats_visual not in ("pass", "fail"):
+                raise ValueError(f"brats_visual must be pass/fail, got {brats_visual!r}")
+            payload["brats_visual"] = brats_visual
+        if quickscan:
+            for label, verdict in quickscan.items():
+                if verdict not in ("pass", "fail"):
+                    raise ValueError(f"quickscan verdict for label {label} must be pass/fail, got {verdict!r}")
+            payload.setdefault("quickscan_conclusions", {}).update(quickscan)
+            # A quickscan verdict resolves the label and can flip the snapshot verdict.
+            label_verdicts = []
+            for label, entry in payload["labels"].items():
+                resolved = payload["quickscan_conclusions"].get(label)
+                label_verdicts.append("fail" if resolved == "fail" else ("pass" if resolved or entry["verdict"] == "pass" else entry["verdict"]))
+            payload["forgetting_verdict"] = ForgettingAdjudicator._snapshot_verdict({k: {"verdict": v} for k, v in zip(payload["labels"], label_verdicts)})
+        self._path.write_text(json.dumps(payload, indent=2) + "\n")
+        return payload
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--snapshot_dir", type=Path, required=True, help="one snapshot's directory (holds fid/ and ci/)")
-    parser.add_argument("--freeze_json", type=Path, required=True)
-    parser.add_argument("--baseline_ci_dir", type=Path, required=True)
-    parser.add_argument("--output_json", type=Path, required=True)
+    parser.add_argument("--snapshot_dir", type=Path, help="one snapshot's directory (holds fid/ and ci/) — single-snapshot adjudication mode")
+    parser.add_argument("--freeze_json", type=Path)
+    parser.add_argument("--baseline_ci_dir", type=Path)
+    parser.add_argument("--output_json", type=Path)
+    parser.add_argument("--rank", action="store_true", help="matrix mode: rank candidates and classify the §⑤.4 retest branch")
+    parser.add_argument("--adjudication_dir", type=Path, help="directory of per-snapshot adjudication jsons (with --rank)")
+    parser.add_argument("--record_visual", type=Path, help="adjudication json to record HITL visual outcomes into")
+    parser.add_argument("--brats_visual", choices=("pass", "fail"), help="the §⑤.3 five-check ruling")
+    parser.add_argument("--quickscan", nargs="*", help="quickscan conclusions as label=pass|fail pairs, e.g. 16=pass 20=fail")
     args = parser.parse_args()
+
+    if args.record_visual:
+        quickscan = dict(pair.split("=", 1) for pair in args.quickscan) if args.quickscan else None
+        payload = VisualVerdictRecorder(args.record_visual).record(brats_visual=args.brats_visual, quickscan=quickscan)
+        print(f"recorded: brats_visual={payload.get('brats_visual')} forgetting_verdict={payload['forgetting_verdict']}")
+        return
+
+    if args.rank:
+        if not args.adjudication_dir or not args.output_json:
+            parser.error("--rank requires --adjudication_dir and --output_json")
+        ranking = MatrixCandidateRanker(adjudication_dir=args.adjudication_dir).rank()
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        args.output_json.write_text(json.dumps(ranking, indent=2) + "\n")
+        print(f"ranking: {len(ranking['candidates'])} candidates, retest={ranking['retest']} -> {args.output_json}")
+        return
+
+    if not args.snapshot_dir or not args.freeze_json or not args.baseline_ci_dir or not args.output_json:
+        parser.error("single-snapshot mode requires --snapshot_dir/--freeze_json/--baseline_ci_dir/--output_json")
 
     payload = ForgettingAdjudicator(snapshot_dir=args.snapshot_dir, freeze_json=args.freeze_json, baseline_ci_dir=args.baseline_ci_dir).adjudicate()
     payload["run_id"] = args.snapshot_dir.name

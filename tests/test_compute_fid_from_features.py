@@ -65,7 +65,9 @@ class TestFeatureSetFidCalculator:
         result = make_calculator(real, synth).compute()
 
         expected = FIDMetric()
-        assert result.fid_xy == pytest.approx(float(expected(fid_from_features._stack_planes(synth, "s")[0], fid_from_features._stack_planes(real, "r")[0])))
+        synth_planes = fid_from_features.FeatureDirectoryStack(synth, "s").stack()
+        real_planes = fid_from_features.FeatureDirectoryStack(real, "r").stack()
+        assert result.fid_xy == pytest.approx(float(expected(synth_planes[0], real_planes[0])))
         assert result.fid_avg == pytest.approx((result.fid_xy + result.fid_yz + result.fid_zx) / 3.0)
 
     def test_identical_distributions_give_near_zero_fid(self, tmp_path: Path) -> None:

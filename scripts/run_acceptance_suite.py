@@ -13,8 +13,11 @@
 
 For each of the 18 snapshots (3 tiers x 6 epochs) the protocol of spec #13 §⑤
 is: generate the forgetting side (10 old labels x 2 seeds x 50 volumes, native
-v1 conditions), generate the BRATS side (4 new labels, BRATS geometry), then
-compute 44 FID comparisons. The frozen-reference side of every comparison
+v1 conditions), generate the BRATS side (4 new labels at seed 42, BRATS
+geometry), then compute 44 FID comparisons — 20 gen-real + 20 gen-gen (both
+seeds) and 4 BRATS (one per new label; §⑤.3 fixes the visual-check seed, and
+the BRATS comparison's num_images is 64 so the val64 reference enters in
+full). The frozen-reference side of every comparison
 lives in the T8/T17 feature cache, so gen-real and BRATS comparisons run the
 GPU extractor with ``--cache_only real`` (only the finetuned synth side is
 extracted) while gen-gen comparisons are frozen features on both sides and run
@@ -45,10 +48,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-FORGETTING_LABELS = [9, 10, 11, 16, 20, 29, 30, 31, 32, 33]
-BRATS_GENERATION_LABELS = [40, 41, 42, 43]
-GENERATION_SEEDS = [42, 1337]
-VAL_FULL_LABELS = ("mri_t1n", "mri_t1ce", "mri_t2w", "mri_t2f")
+from scripts.acceptance_protocol import BRATS_LABELS, FORGETTING_LABELS, GENERATION_SEEDS, VAL_FULL_LABELS, VOLUMES_PER_TASK
+
+BRATS_GENERATION_LABELS = BRATS_LABELS
 GPU_TOOL = "scripts.compute_fid_2-5d_ct"
 CPU_TOOL = "scripts.compute_fid_from_features"
 

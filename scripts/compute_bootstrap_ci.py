@@ -72,28 +72,24 @@ class EighFrechetDistance:
         return mean, cov
 
 
-def bootstrap_fid_distribution(x: np.ndarray, y: np.ndarray, n_resamples: int, seed: int) -> np.ndarray:
-    """FID values over ``n_resamples`` volume-level resamples of both sides."""
-    rng = np.random.default_rng(seed)
-    n_x, n_y = x.shape[0], y.shape[0]
-    samples = np.empty(n_resamples, dtype=np.float64)
-    for i in range(n_resamples):
-        resampled_x = x[rng.integers(0, n_x, size=n_x)]
-        resampled_y = y[rng.integers(0, n_y, size=n_y)]
-        samples[i] = EighFrechetDistance.fid(resampled_x, resampled_y)
-    return samples
+class BootstrapFeatureStack:
+    """Reads one feature-cache directory into float64 per-plane sample matrices."""
 
+    def __init__(self, features_dir: Path) -> None:
+        self._dir = Path(features_dir)
 
-def _stack_planes(features_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    files = sorted(features_dir.rglob("*.pt"))
-    if not files:
-        raise FileNotFoundError(f"no .pt features under {features_dir}")
-    per_plane: list[list[np.ndarray]] = [[], [], []]
-    for path in files:
-        feats = torch.load(path, weights_only=True)
-        for plane_index in range(3):
-            per_plane[plane_index].append(feats[plane_index].numpy().astype(np.float64))
-    return tuple(np.vstack(plane) for plane in per_plane)  # type: ignore[return-value]
+    def stack(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        files = sorted(self._dir.rglob("*.pt"))
+        if not files:
+            raise FileNotFoundError(f"no .pt features under {self._dir}")
+        per_plane: list[list[np.ndarray]] = [[], [], []]
+        for path in files:
+            # map_location: the T8/T17 caches were written from GPU extraction and
+            # hold CUDA tensors; this tool runs CPU-only workers.
+            feats = torch.load(path, weights_only=True, map_location="cpu")
+            for plane_index in range(3):
+                per_plane[plane_index].append(feats[plane_index].cpu().numpy().astype(np.float64))
+        return tuple(np.vstack(plane) for plane in per_plane)  # type: ignore[return-value]
 
 
 class VolumeBootstrapCi:
@@ -107,8 +103,8 @@ class VolumeBootstrapCi:
         self._seed = seed
 
     def compute(self) -> dict:
-        real_planes = _stack_planes(self._real_dir)
-        synth_planes = _stack_planes(self._synth_dir)
+        real_planes = BootstrapFeatureStack(self._real_dir).stack()
+        synth_planes = BootstrapFeatureStack(self._synth_dir).stack()
 
         payload: dict = {
             "comparison_tag": self._tag,
@@ -119,7 +115,7 @@ class VolumeBootstrapCi:
         }
         for plane_name, x, y in zip(("fid_xy", "fid_yz", "fid_zx"), synth_planes, real_planes):
             point = EighFrechetDistance.fid(x, y)
-            samples = bootstrap_fid_distribution(x, y, self._n_resamples, self._seed)
+            samples = self._bootstrap_distribution(x, y)
             payload[plane_name] = {
                 "point": point,
                 "ci95": [float(np.percentile(samples, 2.5)), float(np.percentile(samples, 97.5))],
@@ -132,6 +128,17 @@ class VolumeBootstrapCi:
             ],
         }
         return payload
+
+    def _bootstrap_distribution(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """FID values over ``n_resamples`` volume-level resamples of both sides."""
+        rng = np.random.default_rng(self._seed)
+        n_x, n_y = x.shape[0], y.shape[0]
+        samples = np.empty(self._n_resamples, dtype=np.float64)
+        for i in range(self._n_resamples):
+            resampled_x = x[rng.integers(0, n_x, size=n_x)]
+            resampled_y = y[rng.integers(0, n_y, size=n_y)]
+            samples[i] = EighFrechetDistance.fid(resampled_x, resampled_y)
+        return samples
 
     def write(self, output_json: Path) -> None:
         output_json = Path(output_json)
