@@ -189,26 +189,95 @@ class BootstrapSuiteRunner:
         return comparison["tag"]
 
 
+class BaselineCiRunner:
+    """Backfills bootstrap CIs for the frozen pretrained baseline (spec §⑤.5 one-time compute).
+
+    T8 froze the baseline's 20 gen-real FID point values but deferred every CI
+    to this ticket; §⑤.2's adjudication reads the CI relation between baseline
+    and snapshot, so the frozen reference needs its own CI before any snapshot
+    can be judged. The baseline is snapshot-independent — computed once into
+    ``<freeze>/ci_baseline/`` and reused by all 18 adjudications.
+    """
+
+    def __init__(self, features_root: Path, freeze_json: Path, modality: str = "mr", n_resamples: int = 1000, seed: int = 42, workers: int = 20) -> None:
+        self._features_root = Path(features_root)
+        self._modality = modality
+        self._freeze_json = Path(freeze_json)
+        self._n_resamples = n_resamples
+        self._seed = seed
+        self._workers = workers
+
+    def run(self) -> None:
+        freeze = json.loads(self._freeze_json.read_text())
+        baseline = freeze["baseline_gen_real"]
+        comparisons = [
+            {"tag": f"label{label}_seed{seed}", "label": label, "seed": seed}
+            for label in sorted(baseline, key=int)
+            for seed in sorted(baseline[label])
+        ]
+        pending = [c for c in comparisons if not self._output_path(c).exists()]
+        print(f"baseline CI: {len(pending)} of {len(comparisons)} pending", flush=True)
+        if not pending:
+            return
+        with ProcessPoolExecutor(max_workers=self._workers) as pool:
+            for tag in pool.map(self._run_one, pending):
+                print(f"  baseline ci done: {tag}", flush=True)
+
+    def _output_path(self, comparison: dict) -> Path:
+        return self._freeze_json.parent / "ci_baseline" / f"{comparison['tag']}.json"
+
+    def _run_one(self, comparison: dict) -> str:
+        modality_root = self._features_root / self._modality
+        seed = self._seed + (zlib.crc32(comparison["tag"].encode()) % 10000)
+        ci = VolumeBootstrapCi(
+            real_features_dir=modality_root / f"ref_label{comparison['label']}",
+            synth_features_dir=modality_root / f"synth_label{comparison['label']}_seed{comparison['seed']}",
+            comparison_tag=comparison["tag"],
+            n_resamples=self._n_resamples,
+            seed=seed,
+        )
+        ci.write(self._output_path(comparison))
+        return comparison["tag"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--task_table", type=Path, required=True)
+    parser.add_argument("--task_table", type=Path, help="task table for the snapshot CI stage")
+    parser.add_argument("--freeze_json", type=Path, help="fid_freeze.json for the one-time baseline CI stage")
+    parser.add_argument("--features_root", type=Path, help="feature cache root (default: task table's assets.features_root)")
     parser.add_argument("--snapshots", nargs="*", default=None, help="run_ids (default: every snapshot in the table)")
     parser.add_argument("--n_resamples", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--workers", type=int, default=64)
     args = parser.parse_args()
 
-    with open(args.task_table) as file:
-        task_table = json.load(file)
+    if not args.task_table and not args.freeze_json:
+        parser.error("one of --task_table / --freeze_json is required")
 
-    runner = BootstrapSuiteRunner(
-        task_table=task_table,
-        snapshot_run_ids=args.snapshots,
-        n_resamples=args.n_resamples,
-        seed=args.seed,
-        workers=args.workers,
-    )
-    runner.run()
+    features_root = args.features_root
+    if features_root is None and args.task_table:
+        with open(args.task_table) as file:
+            features_root = Path(json.load(file)["assets"]["features_root"])
+
+    if args.freeze_json:
+        BaselineCiRunner(
+            features_root=features_root,
+            freeze_json=args.freeze_json,
+            n_resamples=args.n_resamples,
+            seed=args.seed,
+            workers=args.workers,
+        ).run()
+
+    if args.task_table:
+        with open(args.task_table) as file:
+            task_table = json.load(file)
+        BootstrapSuiteRunner(
+            task_table=task_table,
+            snapshot_run_ids=args.snapshots,
+            n_resamples=args.n_resamples,
+            seed=args.seed,
+            workers=args.workers,
+        ).run()
 
 
 if __name__ == "__main__":

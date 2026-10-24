@@ -26,7 +26,7 @@ import pytest
 import torch
 from monai.metrics.fid import FIDMetric
 
-from scripts.compute_bootstrap_ci import EighFrechetDistance, VolumeBootstrapCi, bootstrap_fid_distribution
+from scripts.compute_bootstrap_ci import BaselineCiRunner, EighFrechetDistance, VolumeBootstrapCi, bootstrap_fid_distribution
 
 
 def write_features(root: Path, n_volumes: int, seed: int, offset: float = 0.0) -> None:
@@ -82,6 +82,45 @@ class TestBootstrapDistribution:
         second = bootstrap_fid_distribution(x, y, n_resamples=10, seed=3)
 
         assert np.array_equal(first, second)
+
+
+class TestBaselineCiRunner:
+    @pytest.fixture
+    def baseline_setup(self, tmp_path: Path) -> tuple[Path, Path]:
+        features_root = tmp_path / "freeze" / "features"
+        (features_root / "mr").mkdir(parents=True)
+        write_features(features_root / "mr" / "ref_label9", 6, seed=11)
+        write_features(features_root / "mr" / "ref_label10", 6, seed=12)
+        for label, seed in (("9", "42"), ("9", "1337"), ("10", "42"), ("10", "1337")):
+            write_features(features_root / "mr" / f"synth_label{label}_seed{seed}", 6, seed=int(label) + int(seed))
+
+        freeze_dir = tmp_path / "freeze"
+        (freeze_dir / "fid_freeze.json").write_text(
+            json.dumps({"baseline_gen_real": {"9": {"42": {"fid_avg": 5.0}, "1337": {"fid_avg": 5.1}}, "10": {"42": {"fid_avg": 4.0}, "1337": {"fid_avg": 4.1}}}})
+        )
+        return features_root, freeze_dir
+
+    def test_writes_one_ci_per_baseline_label_seed(self, baseline_setup: tuple[Path, Path]) -> None:
+        features_root, freeze_dir = baseline_setup
+
+        BaselineCiRunner(features_root=features_root, freeze_json=freeze_dir / "fid_freeze.json", n_resamples=8, seed=42).run()
+
+        written = sorted(p.name for p in (freeze_dir / "ci_baseline").glob("*.json"))
+        assert written == ["label10_seed1337.json", "label10_seed42.json", "label9_seed1337.json", "label9_seed42.json"]
+        payload = json.loads((freeze_dir / "ci_baseline" / "label9_seed42.json").read_text())
+        assert payload["comparison_tag"] == "label9_seed42"
+        assert payload["fid_xy"]["ci95"][0] <= payload["fid_xy"]["ci95"][1]
+
+    def test_skips_existing_baseline_ci(self, baseline_setup: tuple[Path, Path]) -> None:
+        features_root, freeze_dir = baseline_setup
+        ci_dir = freeze_dir / "ci_baseline"
+        ci_dir.mkdir()
+        (ci_dir / "label9_seed42.json").write_text('{"already": true}')
+
+        BaselineCiRunner(features_root=features_root, freeze_json=freeze_dir / "fid_freeze.json", n_resamples=4, seed=42).run()
+
+        assert json.loads((ci_dir / "label9_seed42.json").read_text())["already"] is True
+        assert (ci_dir / "label10_seed42.json").exists()  # the missing ones are still computed
 
 
 class TestVolumeBootstrapCi:
