@@ -42,6 +42,7 @@ Usage (on the GPU node)::
 
 import argparse
 import json
+import os
 import random
 import subprocess
 import sys
@@ -107,7 +108,12 @@ class ValFullFeatureAssembler:
 
 
 class SubprocessExecutor:
-    """Runs one staged command with its output captured to a timestamped log."""
+    """Runs one staged command with its output captured to a timestamped log.
+
+    Child processes default to torch-hub offline mode: every FID stage loads
+    the frozen RadImageNet cache, and a stray online revalidation from one rank
+    (GitHub through the cluster proxy) has already killed one production run.
+    """
 
     def __init__(self, code_root: Path, log_dir: Path) -> None:
         self._code_root = Path(code_root)
@@ -117,8 +123,10 @@ class SubprocessExecutor:
         self._log_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         log_path = self._log_dir / f"{stamp}-{Path(command[0]).name}.log"
+        env = dict(os.environ)
+        env.setdefault("TORCH_HUB_OFFLINE", "1")
         with log_path.open("w") as log_file:
-            result = subprocess.run(command, cwd=self._code_root, check=check, stdout=log_file, stderr=subprocess.STDOUT)
+            result = subprocess.run(command, cwd=self._code_root, check=check, stdout=log_file, stderr=subprocess.STDOUT, env=env)
         log_path.write_text(log_path.read_text() + f"\n[exit {result.returncode}] {' '.join(command)}\n")
 
 
