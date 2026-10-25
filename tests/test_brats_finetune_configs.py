@@ -92,10 +92,15 @@ class TestTrainingConfig:
         for key in ("lr", "batch_size", "cache_rate"):
             assert brats_train_config["diffusion_unet_train"][key] == upstream_train_config["diffusion_unet_train"][key]
 
-    def test_inference_section_kept_verbatim(self, brats_train_config: dict, upstream_train_config: dict) -> None:
-        # spec §⑤.1: forgetting checks run the native v1 inference conditions
-        # (dim/spacing/cfg/steps), so the section must stay byte-identical in meaning.
-        assert brats_train_config["diffusion_unet_inference"] == upstream_train_config["diffusion_unet_inference"]
+    def test_inference_shares_upstream_conditions_except_spacing(self, brats_train_config: dict, upstream_train_config: dict) -> None:
+        # T10 (spec §⑤.3): BRATS generation keeps the native v1 inference conditions
+        # (dim/cfg/steps/region indices) but targets the BRATS training geometry —
+        # spacing [0.94, 0.94, 1.21], the rounded sidecar-measured [0.9375, 0.9375, 1.2109].
+        inference = brats_train_config["diffusion_unet_inference"]
+        upstream = upstream_train_config["diffusion_unet_inference"]
+        for key in ("dim", "top_region_index", "bottom_region_index", "random_seed", "num_inference_steps", "modality", "cfg_guidance_scale"):
+            assert inference[key] == upstream[key]
+        assert inference["spacing"] == [0.94, 0.94, 1.21]
 
     def test_snapshot_grid_matches_spec(self, brats_train_config: dict) -> None:
         # Epochs {50, 100, 150, 200, 250, 300} = 6 snapshots per replay size.

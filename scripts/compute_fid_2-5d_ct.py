@@ -121,10 +121,12 @@ Function Arguments (main):
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -273,6 +275,148 @@ class FidResult:
         with path.open() as file:
             payload = json.load(file)
         return cls(**payload)
+
+
+class RadimagenetLoader:
+    """Loads RadImageNet ResNet-50 from the torch-hub cache without going online.
+
+    ``torch.hub.load`` resolves the repo ref against GitHub unconditionally —
+    even with a complete cache — and that HTTPS call dies behind the cluster
+    proxy (RemoteDisconnected killed production FID runs). The cache directory
+    carries the full package, so importing it directly and pointing the
+    loader at the cached checkpoint is equivalent, minus the network.
+    """
+
+    HUB_REPO_DIR = "Warvito_radimagenet-models_main"
+    HUB_CHECKPOINTS_DIR = "checkpoints"
+
+    def load(self) -> torch.nn.Module:
+        hub_dir = Path(torch.hub.get_dir())
+        repo_dir = hub_dir / self.HUB_REPO_DIR
+        if not repo_dir.is_dir():
+            raise FileNotFoundError(f"RadImageNet hub cache missing: {repo_dir}")
+        sys.path.insert(0, str(repo_dir))
+        try:
+            from radimagenet_models.models.resnet import radimagenet_resnet50
+
+            return radimagenet_resnet50(model_dir=str(hub_dir / self.HUB_CHECKPOINTS_DIR))
+        finally:
+            sys.path.remove(str(repo_dir))
+
+
+class CacheLayout:
+    """Where one side's feature cache lives and which rank's share of it we serve."""
+
+    def __init__(self, cache_dir: str, local_rank: int, world_size: int) -> None:
+        self._cache_dir = cache_dir
+        self._local_rank = local_rank
+        self._world_size = world_size
+
+    def directory(self) -> str:
+        return self._cache_dir
+
+    def shard(self, items: list) -> list:
+        # MONAI refuses to partition fewer items than partitions (the MRA val
+        # reference is 2 volumes); below world size hand the first ranks one
+        # item each so no rank ends up with an empty list — the later
+        # all_gather reassembles either way.
+        if len(items) < self._world_size:
+            return [items[self._local_rank]] if self._local_rank < len(items) else []
+        partitioned = monai.data.partition_dataset(data=items, shuffle=False, num_partitions=self._world_size, even_divisible=False)
+        return partitioned[self._local_rank]
+
+    def cache_path(self, relpath: str) -> Path:
+        return Path(os.path.join(self._cache_dir, relpath.replace(".nii.gz", ".pt")))
+
+
+class FeatureCollector:
+    """One side's (real or synth) path from a filelist to stacked per-plane features.
+
+    Wraps the extraction loop of ``main`` (DataLoader + shared preprocessing +
+    RadImageNet features) together with its on-disk ``.pt`` cache: an existing
+    cache file is served as-is, a missing one is extracted and written, and
+    ``ignore_existing`` forces re-extraction.
+
+    ``cache_only`` serves the frozen-reference case (ticket T10): the volume
+    tree behind the T8/T17 feature cache is gone (expired scratch disk), so
+    features must be served from the cache without instantiating any volume
+    loader. A missing cache entry is a hard error there — a silently shrunken
+    feature set would corrupt the FID — and ``ignore_existing`` is refused,
+    since there would be nothing to re-extract from.
+    """
+
+    def __init__(
+        self,
+        dataset_root: str,
+        filelist_lines: list[str],
+        cache_dir: str,
+        compose_transforms: Compose,
+        feature_extractor: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        device: torch.device,
+        num_images: int,
+        local_rank: int = 0,
+        world_size: int = 1,
+        ignore_existing: bool = False,
+        cache_only: bool = False,
+        num_workers: int = 6,
+    ) -> None:
+        if cache_only and ignore_existing:
+            raise ValueError("cache_only=True with ignore_existing=True would re-extract from volumes that may not exist")
+        self._dataset_root = dataset_root
+        self._lines = sorted(filelist_lines)[:num_images]
+        self._layout = CacheLayout(cache_dir, local_rank, world_size)
+        self._compose = compose_transforms
+        self._extract = feature_extractor
+        self._device = device
+        self._ignore_existing = ignore_existing
+        self._cache_only = cache_only
+        self._num_workers = num_workers
+
+    def collect(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self._cache_only:
+            return self._collect_from_cache()
+        return self._collect_via_loader()
+
+    def _collect_from_cache(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        per_plane: list[list[torch.Tensor]] = [[], [], []]
+        for relpath in self._layout.shard(list(self._lines)):
+            cache_path = self._layout.cache_path(relpath)
+            if not cache_path.is_file():
+                raise FileNotFoundError(f"cache_only feature cache miss: {cache_path} (volume tree not touched)")
+            # map_location=cpu: the frozen caches hold CUDA tensors, and having
+            # every rank restore them onto the GPU hung the DCU driver in
+            # kfd_wait_on_events. The features only need the GPU again for the
+            # all_gather, which main() does after collecting.
+            feats = torch.load(cache_path, weights_only=True, map_location="cpu")
+            for plane_index in range(3):
+                per_plane[plane_index].append(feats[plane_index].cpu())
+        return tuple(torch.vstack(plane) for plane in per_plane)  # type: ignore[return-value]
+
+    def _collect_via_loader(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        filenames = self._layout.shard([{"image": os.path.join(self._dataset_root, f)} for f in self._lines])
+        dataset = monai.data.Dataset(data=filenames, transform=self._compose)
+        loader = monai.data.DataLoader(dataset, num_workers=self._num_workers, batch_size=1, shuffle=False)
+
+        per_plane: list[list[torch.Tensor]] = [[], [], []]
+        for idx, batch_data in enumerate(loader, start=1):
+            img = batch_data["image"].to(self._device)
+            fn = img.meta["filename_or_obj"][0]
+            logger.info(f"data {idx}/{len(filenames)}: {fn}")
+
+            out_fp = Path(fn.replace(self._dataset_root, self._layout.directory()).replace(".nii.gz", ".pt"))
+            out_fp.parent.mkdir(parents=True, exist_ok=True)
+
+            if (not self._ignore_existing) and os.path.isfile(out_fp):
+                feats = torch.load(out_fp, weights_only=True)
+            else:
+                logger.info(f"image shape: {tuple(img.as_tensor().shape)}")
+                feats = self._extract(img.as_tensor())
+                logger.info(f"feats shapes: {feats[0].shape}, {feats[1].shape}, {feats[2].shape}")
+                torch.save(feats, out_fp)
+
+            for plane_index in range(3):
+                per_plane[plane_index].append(feats[plane_index])
+        return tuple(torch.vstack(plane) for plane in per_plane)  # type: ignore[return-value]
 
 
 def drop_empty_slice(slices, empty_threshold: float):
@@ -534,6 +678,7 @@ def main(
     target_shape: str = "512x512x512",
     comparison_tag: str = "",
     result_json: str | None = None,
+    cache_only: str = "none",
 ):
     """
     Compute 2.5D FID using distributed GPU processing.
@@ -639,6 +784,11 @@ def main(
         raise ValueError(f"Unsupported modality: {modality!r}. Choose from {sorted(MODALITY_PREPROCESSING)}.")
     preprocessing = MODALITY_PREPROCESSING[modality]
 
+    if cache_only not in ("none", "real", "synth", "both"):
+        raise ValueError(f"Unsupported cache_only: {cache_only!r}. Choose from ['none', 'real', 'synth', 'both'].")
+    if cache_only != "none":
+        logger.info(f"cache_only={cache_only}: the named side(s) are served from the feature cache; their volume trees are never touched.")
+
     # Merge logic for center slices
     enable_center_slices = enable_center_slices_ratio is not None
 
@@ -662,7 +812,7 @@ def main(
     # Load feature extraction model
     # -------------------------------------------------------------------------
     if model_name == "radimagenet_resnet50":
-        feature_network = torch.hub.load("Warvito/radimagenet-models", model="radimagenet_resnet50", verbose=True, trust_repo=True)
+        feature_network = RadimagenetLoader().load()
     else:
         import torchvision
 
@@ -692,136 +842,76 @@ def main(
         logger.info(f"center_slices_ratio: {center_slices_ratio_final}")
 
     # -------------------------------------------------------------------------
-    # Prepare Real Dataset
+    # Prepare Real / Synthetic Datasets (filelists only; the FeatureCollector
+    # owns partitioning, loading and caching per side)
     # -------------------------------------------------------------------------
     output_root_real = preprocessing.feature_cache_dir(output_root, real_features_dir)
     with open(real_filelist) as rf:
         real_lines = [line.strip() for line in rf.readlines()]
-    real_lines.sort()
     real_lines = real_lines[:num_images]
 
-    real_filenames = [{"image": os.path.join(real_dataset_root, f)} for f in real_lines]
-    real_filenames = monai.data.partition_dataset(data=real_filenames, shuffle=False, num_partitions=world_size, even_divisible=False)[local_rank]
-
-    # -------------------------------------------------------------------------
-    # Prepare Synthetic Dataset
-    # -------------------------------------------------------------------------
     output_root_synth = preprocessing.feature_cache_dir(output_root, synth_features_dir)
     with open(synth_filelist) as sf:
         synth_lines = [line.strip() for line in sf.readlines()]
-    synth_lines.sort()
     synth_lines = synth_lines[:num_images]
 
-    synth_filenames = [{"image": os.path.join(synth_dataset_root, f)} for f in synth_lines]
-    synth_filenames = monai.data.partition_dataset(data=synth_filenames, shuffle=False, num_partitions=world_size, even_divisible=False)[local_rank]
-
     # -------------------------------------------------------------------------
-    # Build MONAI transforms
+    # Extract features for both datasets
     # -------------------------------------------------------------------------
-    # One instance serves both loaders so real and synth share the exact same
-    # preprocessing — the FID-comparability requirement.
+    # One Compose instance serves both collectors so real and synth share the
+    # exact same preprocessing — the FID-comparability requirement.
     transforms = preprocessing.compose(
         target_shape=target_shape_tuple,
         resample_spacing=rs_spacing_tuple if enable_resampling else None,
         center_crop=enable_center_cropping,
         pad=enable_padding,
     )
+    extractor = functools.partial(
+        get_features_2p5d,
+        feature_network=feature_network,
+        center_slices=enable_center_slices,
+        center_slices_ratio=center_slices_ratio_final,
+        xy_only=False,
+    )
 
-    # -------------------------------------------------------------------------
-    # Create DataLoaders
-    # -------------------------------------------------------------------------
-    real_ds = monai.data.Dataset(data=real_filenames, transform=transforms)
-    real_loader = monai.data.DataLoader(real_ds, num_workers=6, batch_size=1, shuffle=False)
+    def build_collector(dataset_root: str, lines: list[str], cache_dir: str, side_cache_only: bool) -> FeatureCollector:
+        return FeatureCollector(
+            dataset_root=dataset_root,
+            filelist_lines=lines,
+            cache_dir=cache_dir,
+            compose_transforms=transforms,
+            feature_extractor=extractor,
+            device=device,
+            num_images=num_images,
+            local_rank=local_rank,
+            world_size=world_size,
+            ignore_existing=ignore_existing,
+            cache_only=side_cache_only,
+        )
 
-    synth_ds = monai.data.Dataset(data=synth_filenames, transform=transforms)
-    synth_loader = monai.data.DataLoader(synth_ds, num_workers=6, batch_size=1, shuffle=False)
-
-    # -------------------------------------------------------------------------
-    # Extract features for Real Dataset
-    # -------------------------------------------------------------------------
-    real_features_xy, real_features_yz, real_features_zx = [], [], []
-    for idx, batch_data in enumerate(real_loader, start=1):
-        img = batch_data["image"].to(device)
-        fn = img.meta["filename_or_obj"][0]
-        logger.info(f"[Rank {local_rank}] Real data {idx}/{len(real_filenames)}: {fn}")
-
-        out_fp = fn.replace(real_dataset_root, output_root_real).replace(".nii.gz", ".pt")
-        out_fp = Path(out_fp)
-        out_fp.parent.mkdir(parents=True, exist_ok=True)
-
-        if (not ignore_existing) and os.path.isfile(out_fp):
-            feats = torch.load(out_fp, weights_only=True)
-        else:
-            img_t = img.as_tensor()
-            logger.info(f"image shape: {tuple(img_t.shape)}")
-
-            feats = get_features_2p5d(
-                img_t,
-                feature_network,
-                center_slices=enable_center_slices,
-                center_slices_ratio=center_slices_ratio_final,
-                xy_only=False,
-            )
-            logger.info(f"feats shapes: {feats[0].shape}, {feats[1].shape}, {feats[2].shape}")
-            torch.save(feats, out_fp)
-
-        real_features_xy.append(feats[0])
-        real_features_yz.append(feats[1])
-        real_features_zx.append(feats[2])
-
-    real_features_xy = torch.vstack(real_features_xy)
-    real_features_yz = torch.vstack(real_features_yz)
-    real_features_zx = torch.vstack(real_features_zx)
+    real_collector = build_collector(real_dataset_root, real_lines, output_root_real, cache_only in ("real", "both"))
+    real_features_xy, real_features_yz, real_features_zx = real_collector.collect()
     logger.info(f"Real feature shapes: {real_features_xy.shape}, {real_features_yz.shape}, {real_features_zx.shape}")
 
-    # -------------------------------------------------------------------------
-    # Extract features for Synthetic Dataset
-    # -------------------------------------------------------------------------
-    synth_features_xy, synth_features_yz, synth_features_zx = [], [], []
-    for idx, batch_data in enumerate(synth_loader, start=1):
-        img = batch_data["image"].to(device)
-        fn = img.meta["filename_or_obj"][0]
-        logger.info(f"[Rank {local_rank}] Synth data {idx}/{len(synth_filenames)}: {fn}")
-
-        out_fp = fn.replace(synth_dataset_root, output_root_synth).replace(".nii.gz", ".pt")
-        out_fp = Path(out_fp)
-        out_fp.parent.mkdir(parents=True, exist_ok=True)
-
-        if (not ignore_existing) and os.path.isfile(out_fp):
-            feats = torch.load(out_fp, weights_only=True)
-        else:
-            img_t = img.as_tensor()
-            logger.info(f"image shape: {tuple(img_t.shape)}")
-
-            feats = get_features_2p5d(
-                img_t,
-                feature_network,
-                center_slices=enable_center_slices,
-                center_slices_ratio=center_slices_ratio_final,
-                xy_only=False,
-            )
-            logger.info(f"feats shapes: {feats[0].shape}, {feats[1].shape}, {feats[2].shape}")
-            torch.save(feats, out_fp)
-
-        synth_features_xy.append(feats[0])
-        synth_features_yz.append(feats[1])
-        synth_features_zx.append(feats[2])
-
-    synth_features_xy = torch.vstack(synth_features_xy)
-    synth_features_yz = torch.vstack(synth_features_yz)
-    synth_features_zx = torch.vstack(synth_features_zx)
+    synth_collector = build_collector(synth_dataset_root, synth_lines, output_root_synth, cache_only in ("synth", "both"))
+    synth_features_xy, synth_features_yz, synth_features_zx = synth_collector.collect()
     logger.info(f"Synth feature shapes: {synth_features_xy.shape}, {synth_features_yz.shape}, {synth_features_zx.shape}")
 
     # -------------------------------------------------------------------------
     # All-reduce / gather features across ranks
     # -------------------------------------------------------------------------
+    # cache-only collections come back on CPU (see FeatureCollector); the
+    # gather below is NCCL and needs every tensor on the device.
     features = [
-        real_features_xy,
-        real_features_yz,
-        real_features_zx,
-        synth_features_xy,
-        synth_features_yz,
-        synth_features_zx,
+        tensor.to(device)
+        for tensor in (
+            real_features_xy,
+            real_features_yz,
+            real_features_zx,
+            synth_features_xy,
+            synth_features_yz,
+            synth_features_zx,
+        )
     ]
 
     # 1) Gather local feature sizes across ranks
